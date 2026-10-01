@@ -1,0 +1,19 @@
+CRM NPD v4.5.1 — PACOTE COMPLETO
+
+1. Extraia a pasta inteira antes de executar.
+2. Feche completamente qualquer versão antiga do CRM antes de abrir esta.
+3. Execute run.bat.
+4. Este pacote JÁ CONTÉM o banco crm_npd.db sincronizado com os quatro relatórios enviados em 01/10/2026.
+5. Se você quiser preservar alterações feitas no seu banco depois de enviar o CRM para análise, faça uma cópia do seu crm_npd.db antes de trocar de versão.
+
+IMPORTAÇÃO SISPLAN
+- Use os quatro relatórios juntos (721 + 731 + 104 + 733).
+- O CRM valida mês a mês linhas e valores antes de aceitar a atualização.
+- Se os quatro arquivos forem exatamente iguais ao último snapshot, a importação é ignorada para não reconstruir 120 mil+ linhas sem necessidade.
+- O backup de segurança da transação é feito fora da pasta do CRM, na pasta temporária do Windows, e removido depois da validação.
+
+VALORES DE CONTROLE DESTA BASE
+- Faturamento setembro/2026 (731): R$ 997.044,89
+- Faturamento outubro/2026 (731): R$ 1.818,00
+
+Versão: 4.5.1

@@ -1,0 +1,45 @@
+# Ambiente virtual
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Segredos: nunca versionar credenciais do Firebird nem chaves de IA
+.env
+.env.*
+!.env.example
+
+# Banco do CRM (121 MB) e arquivos WAL do SQLite.
+# Os dados sao reconstruiveis pela sincronizacao com o ERP.
+crm_npd.db
+crm_npd.db-shm
+crm_npd.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Base Firebird do ERP (2,8 GB) e backups. Jamais versionar.
+*.FDB
+*.fdb
+*.zip
+*.rar
+*.7z
+
+# Snapshot do golden master: pode ser grande e e regerado por script.
+# O baseline aprovado fica em tests/golden/baseline/ e e versionado explicitamente.
+tests/golden/output/
+
+# CSVs exportados do Sisplan: contem dados de clientes reais
+*.csv
+!tests/**/*.csv
+
+# Artefatos locais
+*.log
+.DS_Store
+Thumbs.db

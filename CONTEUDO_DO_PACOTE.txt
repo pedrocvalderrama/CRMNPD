@@ -1,0 +1,15 @@
+CRM 01.10 v4.5.1 COMPLETO
+
+Arquivos principais:
+- run.bat
+- app.py
+- crm_npd.db
+- requirements.txt
+- ATUALIZAR_DEPENDENCIAS.bat
+- crm_npd/legacy_monolith.py
+- crm_npd/migrations.py
+- crm_npd/patches.py
+- crm_npd/routes/*
+- crm_npd/services/*
+
+Este pacote foi conferido antes da entrega.

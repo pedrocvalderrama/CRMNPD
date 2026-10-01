@@ -1,0 +1,36 @@
+CRM NPD v4.5.1 — 01/10/2026
+
+CORREÇÕES DESTA VERSÃO
+- Importação dos 4 relatórios otimizada: removido gargalo N+1 do cálculo de score usado nas tarefas automáticas.
+- Score global de identidades agora é calculado em lote, lendo o faturamento uma vez em vez de milhares de SELECTs.
+- Inserts de PEDIDOS/FATURAMENTO/LIQUIDEZ agrupados com executemany para reduzir overhead do SQLite.
+- Backup transacional da atualização passou para a pasta temporária do Windows, evitando gravar/sincronizar 100+ MB dentro de Google Drive/OneDrive a cada atualização.
+- Backup temporário é removido automaticamente após sucesso ou restauração.
+- Os 4 CSVs recebem fingerprint SHA-256. Se forem exatamente os mesmos do último snapshot, o CRM não reconstrói a base: a atualização termina praticamente na hora.
+- Validação pós-importação também executa PRAGMA foreign_key_check.
+- Índice customers(codigo) incluído para acelerar resolução de clientes.
+- Mantidas as travas UNIQUE das dedupe_key de 721/731/733/104.
+- Mantida validação mensal CSV x banco antes de aceitar a atualização.
+- Mantida a fonte única de faturamento mensal = relatório 731.
+- Mantida a reconciliação de desfecho do 104 para Oportunidades/Funil.
+
+BASE ENTREGUE JÁ SINCRONIZADA COM OS 4 CSVs ENVIADOS EM 01/10
+- 721 PEDIDOS: 37.873 linhas
+- 731 FATURAMENTO: 31.512 linhas
+- 104 ORÇAMENTO: 9.914 linhas
+- 733 LIQUIDEZ: 44.885 linhas
+
+CONFERÊNCIA 731
+- Setembro/2026: 518 linhas = R$ 997.044,89
+- Outubro/2026: 4 linhas = R$ 1.818,00
+
+VALIDAÇÃO FINAL
+- Dedupe duplicada: 0 nas quatro tabelas
+- Dedupe vazia: 0 nas quatro tabelas
+- SQLite integrity_check: ok
+- foreign_key_check: 0 erros
+
+TESTE DE DESEMPENHO NO AMBIENTE DE DESENVOLVIMENTO
+- Rebuild completo dos quatro CSVs + validações + identidades + tarefas: ~34 s.
+- Reimportação dos mesmos quatro arquivos: ignorada por SHA-256, sem rebuild.
+(O tempo no PC final depende do disco/antivírus, mas o gargalo de minutos foi removido.)
