@@ -1,0 +1,15 @@
+# Ferramentas de desenvolvimento. Nao sao necessarias para rodar o CRM.
+#   .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# Testes
+pytest==9.1.1
+pytest-cov==7.1.0
+coverage==7.16.2
+
+# Tipagem estatica: as formulas em crm_npd/metrics devem passar em modo estrito
+mypy==2.4.0
+
+# Lint e formatacao
+ruff==0.16.10

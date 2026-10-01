@@ -1,0 +1,74 @@
+[project]
+name = "crm-npd"
+version = "5.0.0dev"
+description = "CRM interno NPD Embalagens, integrado ao ERP Sisplan"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "golden: regressao golden-master; exige crm_npd.db presente",
+    "firebird: exige conexao real com o ERP Sisplan",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+# O monolito legado nao e lintado: ele sera esvaziado fase a fase, nao corrigido.
+extend-exclude = ["crm_npd/legacy_monolith.py", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "D", "TID"]
+ignore = [
+    "D203",  # conflita com D211
+    "D213",  # usamos resumo na primeira linha (estilo Google)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ANN", "TID251"]
+"scripts/**" = ["D", "ANN", "TID251"]
+# TID251 veta imports de banco/web. Fica ativo apenas em metrics/ e domain/;
+# as camadas abaixo existem justamente para falar com banco e com a web.
+"crm_npd/repositories/**" = ["TID251"]
+"crm_npd/services/**" = ["TID251"]
+"crm_npd/sync/**" = ["TID251"]
+"crm_npd/web/**" = ["TID251"]
+"crm_npd/cli/**" = ["TID251"]
+"crm_npd/config/**" = ["TID251"]
+"crm_npd/db.py" = ["TID251"]
+"crm_npd/migrations.py" = ["TID251"]
+"crm_npd/patches.py" = ["TID251"]
+"crm_npd/bootstrap.py" = ["TID251"]
+"app.py" = ["TID251"]
+
+# REGRA ARQUITETURAL: as formulas sao funcoes puras. Se um import de banco ou de
+# web aparecer em crm_npd/metrics, o lint falha. Foi assim que o monolito chegou a
+# ter periodo_ciclo_faturamento_manual abrindo conexao SQLite dentro de um
+# calculo de datas (legacy_monolith.py:2080).
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"sqlite3".msg = "Camada de dados e proibida em crm_npd/metrics e crm_npd/domain."
+"flask".msg = "Camada web e proibida em crm_npd/metrics e crm_npd/domain."
+"fdb".msg = "Driver de banco e proibido em crm_npd/metrics e crm_npd/domain."
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+exclude = ["crm_npd/legacy_monolith\\.py", "\\.venv"]
+
+# As formulas precisam ser 100% tipadas: e nelas que mora o dinheiro.
+[[tool.mypy.overrides]]
+module = ["crm_npd.metrics.*", "crm_npd.domain.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*", "fdb.*", "openai.*", "openpyxl.*"]
+ignore_missing_imports = true
