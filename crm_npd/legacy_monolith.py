@@ -30,6 +30,27 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
+# Refatoracao em andamento: as formulas de negocio sairam deste arquivo para
+# crm_npd/metrics, onde sao funcoes puras, tipadas e testadas. As funcoes abaixo
+# viraram adaptadores finos: elas traduzem sqlite3.Row/dict para os tipos do
+# dominio e delegam o calculo. Nenhum numero muda nesse processo, o que e
+# garantido pela suite golden-master em tests/golden.
+from crm_npd.domain import (
+    EstatisticasIdentidade,
+    EtapaFunil,
+    FaixaScore,
+    LinhaComissao,
+    Periodo,
+    StatusManualCliente,
+)
+from crm_npd.metrics import comissao as f_comissao
+from crm_npd.metrics import funil as f_funil
+from crm_npd.metrics import percentuais as f_pct
+from crm_npd.metrics import periodos as f_periodos
+from crm_npd.metrics import recompra as f_recompra
+from crm_npd.metrics import score_cliente as f_score_cliente
+from crm_npd.metrics import score_vendedor as f_score_vendedor
+
 import matplotlib
 matplotlib.use("Agg")  # server-side
 import matplotlib.pyplot as plt
@@ -842,14 +863,14 @@ def ensure_vendors_schema(conn):
     conn.commit()
 
 def periodo_mes_calendario(ref: Optional[date] = None) -> Tuple[date, date]:
-    """Retorna o mês cheio (Dia 1 ao último dia) da data de referência."""
-    ref = ref or date.today()
-    # Dia 1 do mês atual
-    d0 = date(ref.year, ref.month, 1)
-    # Dia 1 do próximo mês - 1 dia = Último dia do mês atual
-    nxt = (d0.replace(day=28) + timedelta(days=4)).replace(day=1)
-    d1 = nxt - timedelta(days=1)
-    return d0, d1
+    """Adaptador: ver crm_npd.metrics.periodos.mes_calendario.
+
+    Esta funcao estava definida duas vezes no arquivo (aqui e perto do fim), com
+    implementacoes diferentes para o mesmo resultado. A segunda sobrescrevia esta
+    em tempo de import. Agora existe uma unica definicao, delegando a formula.
+    """
+    mes = f_periodos.mes_calendario(ref or date.today())
+    return mes.inicio, mes.fim
 
 
 def faturamento_mes_calendario(conn, ref: Optional[date] = None, ate_hoje: bool = True) -> Dict[str, Any]:
@@ -931,16 +952,10 @@ def month_range(ref: Optional[date] = None) -> Tuple[date, date]:
 
 
 def business_days_between(d0: date, d1: date) -> int:
-    """Conta dias úteis simples (seg-sex)."""
+    """Adaptador: ver crm_npd.metrics.periodos.dias_uteis."""
     if d1 < d0:
         return 0
-    n = 0
-    cur = d0
-    while cur <= d1:
-        if cur.weekday() < 5:
-            n += 1
-        cur += timedelta(days=1)
-    return n
+    return f_periodos.dias_uteis(Periodo(inicio=d0, fim=d1))
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
@@ -976,33 +991,19 @@ def safe_float(x: Any, default: float = 0.0) -> float:
 
 
 def safe_pct(parte: float, total: float, default: float = 0.0) -> float:
-    try:
-        parte_f = float(parte or 0)
-        total_f = float(total or 0)
-        if total_f == 0:
-            return float(default)
-        return (parte_f / total_f) * 100.0
-    except Exception:
-        return float(default)
+    """Adaptador: ver crm_npd.metrics.percentuais.percentual."""
+    return f_pct.percentual(parte, total, default)
 
 
 def pct_delta(atual: float, anterior: float, default_zero_base: float = 0.0) -> float:
-    try:
-        atual_f = float(atual or 0)
-        anterior_f = float(anterior or 0)
-        if anterior_f == 0:
-            if atual_f == 0:
-                return float(default_zero_base)
-            return 100.0
-        return ((atual_f - anterior_f) / anterior_f) * 100.0
-    except Exception:
-        return float(default_zero_base)
+    """Adaptador: ver crm_npd.metrics.percentuais.variacao_percentual."""
+    return f_pct.variacao_percentual(atual, anterior, default_zero_base)
+
 
 def mercos_meta_panel(faturado: float, meta: float, dias_uteis_restantes: int) -> Dict[str, Any]:
-    pct = (faturado / meta * 100) if meta else 0.0
-    falta = max(meta - faturado, 0.0)
-    por_dia = (falta / dias_uteis_restantes) if dias_uteis_restantes > 0 else 0.0
-    return {"pct": pct, "falta": falta, "por_dia": por_dia}
+    """Adaptador: ver crm_npd.metrics.percentuais.painel_meta."""
+    painel = f_pct.painel_meta(faturado, meta, dias_uteis_restantes)
+    return {"pct": painel.pct, "falta": painel.falta, "por_dia": painel.por_dia}
 
 def get_user_vendor_id(conn, user) -> Optional[int]:
     """
@@ -1087,26 +1088,14 @@ def get_identity_invoices(conn, identity_key: str):
 
 
 def clamp_score(v, min_v=0, max_v=100):
-    try:
-        v = float(v)
-    except:
-        v = 0
-    return max(min_v, min(max_v, v))
+    """Adaptador: ver crm_npd.metrics.score_cliente.limitar_score."""
+    return f_score_cliente.limitar_score(v, float(min_v), float(max_v))
 
 
 def score_faixa(score: float) -> dict:
-    s = clamp_score(score)
-
-    if s >= 85:
-        return {"faixa": "A+", "label": "Elite", "cor": "success"}
-    elif s >= 70:
-        return {"faixa": "A", "label": "Muito forte", "cor": "primary"}
-    elif s >= 55:
-        return {"faixa": "B", "label": "Bom", "cor": "info"}
-    elif s >= 35:
-        return {"faixa": "C", "label": "Morno", "cor": "warning"}
-    else:
-        return {"faixa": "D", "label": "Frio", "cor": "secondary"}
+    """Adaptador: ver crm_npd.metrics.score_cliente.faixa_de_score."""
+    faixa = f_score_cliente.faixa_de_score(score)
+    return {"faixa": str(faixa), "label": faixa.label, "cor": faixa.cor}
 
 def soft_color_from_bootstrap(color_name: str) -> str:
     palette = {
@@ -1210,104 +1199,64 @@ def get_identity_sales_stats(conn, customer_ids: List[int], ref: Optional[date] 
         "atraso_atual": atraso_atual,
     }
 
+def _stats_para_dominio(stats: dict) -> EstatisticasIdentidade:
+    """Converte o dicionario de estatisticas do monolito no tipo do dominio."""
+    ultima = stats.get("ultima_data")
+    if isinstance(ultima, str) and ultima.strip():
+        try:
+            ultima = date.fromisoformat(ultima.strip()[:10])
+        except ValueError:
+            ultima = None
+    elif not isinstance(ultima, date):
+        ultima = None
+    return EstatisticasIdentidade(
+        valor_total=float(stats.get("valor_total") or 0),
+        pedidos=int(stats.get("pedidos") or 0),
+        intervalo_mediano=stats.get("intervalo_mediano"),
+        atraso_atual=stats.get("atraso_atual"),
+        ultima_data=ultima,
+    )
+
+
 def calc_frequency_score(intervalo_mediano: Optional[float], pedidos: int) -> float:
-    """
-    Mede a qualidade da frequência real de recompra.
-    Aqui não importa se o cliente está dentro da própria média.
-    O que importa é se a média dele é boa para o negócio.
-    """
-    pedidos = int(pedidos or 0)
+    """Adaptador: ver crm_npd.metrics.score_cliente.score_frequencia."""
+    return f_score_cliente.score_frequencia(intervalo_mediano, pedidos)
 
-    if pedidos <= 1:
-        return 15.0
-
-    if intervalo_mediano is None:
-        return 20.0
-
-    intervalo = float(intervalo_mediano or 0)
-
-    if intervalo <= 30:
-        return 100.0
-    elif intervalo <= 45:
-        return 95.0
-    elif intervalo <= 60:
-        return 88.0
-    elif intervalo <= 90:
-        return 75.0
-    elif intervalo <= 120:
-        return 60.0
-    elif intervalo <= 150:
-        return 45.0
-    elif intervalo <= 180:
-        return 32.0
-    elif intervalo <= 240:
-        return 20.0
-    else:
-        return 8.0
 
 def calc_repurchase_score(stats: dict) -> float:
-    """
-    Mede o comportamento atual em relação ao padrão do cliente.
-    Não mede se a frequência é boa para o negócio.
-    Mede apenas se ele está dentro ou fora da janela esperada dele.
-    """
-    pedidos = int(stats.get("pedidos") or 0)
-    intervalo_mediano = stats.get("intervalo_mediano")
-    atraso_atual = stats.get("atraso_atual")
-
-    if pedidos <= 1:
-        return 20.0
-
-    if not intervalo_mediano or intervalo_mediano <= 0:
-        return 30.0
-
-    if atraso_atual is None:
-        return 40.0
-
-    razao = float(atraso_atual) / float(intervalo_mediano)
-
-    if razao <= 0.80:
-        return 100.0
-    elif razao <= 1.00:
-        return 90.0
-    elif razao <= 1.15:
-        return 75.0
-    elif razao <= 1.35:
-        return 55.0
-    elif razao <= 1.70:
-        return 35.0
-    elif razao <= 2.20:
-        return 18.0
-    else:
-        return 5.0
+    """Adaptador: ver crm_npd.metrics.score_cliente.score_recompra."""
+    return f_score_cliente.score_recompra(_stats_para_dominio(stats))
 
 
 def calc_value_score(valor_cliente: float, valor_ref_max: float) -> float:
+    """Adaptador: ver crm_npd.metrics.score_cliente.score_valor."""
+    return f_score_cliente.score_valor(valor_cliente, valor_ref_max)
+
+
+def montar_score_identidade(stats: dict, valor_max: float) -> dict:
+    """Monta o registro de score de uma identidade no formato esperado pelas telas.
+
+    Fonte unica do calculo. Antes da refatoracao, este bloco estava duplicado em
+    ``_build_identity_score_map_global_fast`` e em ``build_identity_score_map``,
+    com a mesma formula escrita duas vezes.
     """
-    Score relativo ao tamanho do cliente dentro da carteira.
-    """
-    valor_cliente = float(valor_cliente or 0)
-    valor_ref_max = float(valor_ref_max or 0)
-
-    if valor_ref_max <= 0:
-        return 0.0
-
-    pct = valor_cliente / valor_ref_max
-
-    if pct >= 0.90:
-        return 100.0
-    elif pct >= 0.70:
-        return 90.0
-    elif pct >= 0.50:
-        return 78.0
-    elif pct >= 0.30:
-        return 62.0
-    elif pct >= 0.15:
-        return 45.0
-    elif pct >= 0.05:
-        return 28.0
-    else:
-        return 12.0
+    dominio = _stats_para_dominio(stats)
+    resultado = f_score_cliente.calcular_score(dominio, valor_max)
+    faixa = resultado.faixa
+    return {
+        "score": resultado.score,
+        "score_frequencia": resultado.frequencia,
+        "score_recompra": resultado.recompra,
+        "score_valor": resultado.valor,
+        "faixa": str(faixa),
+        "label": faixa.label,
+        "cor": faixa.cor,
+        "valor_total": float(stats.get("valor_total") or 0),
+        "pedidos": int(stats.get("pedidos") or 0),
+        "intervalo_mediano": stats.get("intervalo_mediano"),
+        "atraso_atual": stats.get("atraso_atual"),
+        "ultima_data": stats.get("ultima_data"),
+    }
 
 
 def _build_identity_score_map_global_fast(conn) -> Dict[str, dict]:
@@ -1374,41 +1323,10 @@ def _build_identity_score_map_global_fast(conn) -> Dict[str, dict]:
         raw[ident] = stats
         valor_max = max(valor_max, stats["valor_total"])
 
-    final_map: Dict[str, dict] = {}
-    for identity_key, stats in raw.items():
-        pedidos = int(stats.get("pedidos") or 0)
-        intervalo_mediano = stats.get("intervalo_mediano")
-        freq_score = calc_frequency_score(intervalo_mediano, pedidos)
-        rep_score = calc_repurchase_score(stats)
-        val_score = calc_value_score(stats["valor_total"], valor_max)
-        final_score = round((freq_score * 0.55) + (rep_score * 0.25) + (val_score * 0.20), 1)
-        if pedidos <= 1:
-            final_score = min(final_score, 25.0)
-        elif intervalo_mediano is not None:
-            intervalo = float(intervalo_mediano or 0)
-            if intervalo > 240:
-                final_score = min(final_score, 39.0)
-            elif intervalo > 180:
-                final_score = min(final_score, 54.0)
-            elif intervalo > 120:
-                final_score = min(final_score, 69.0)
-        final_score = round(max(0.0, min(100.0, final_score)), 1)
-        faixa = score_faixa(final_score)
-        final_map[identity_key] = {
-            "score": final_score,
-            "score_frequencia": round(freq_score, 1),
-            "score_recompra": round(rep_score, 1),
-            "score_valor": round(val_score, 1),
-            "faixa": faixa["faixa"],
-            "label": faixa["label"],
-            "cor": faixa["cor"],
-            "valor_total": float(stats["valor_total"] or 0),
-            "pedidos": pedidos,
-            "intervalo_mediano": stats.get("intervalo_mediano"),
-            "atraso_atual": stats.get("atraso_atual"),
-            "ultima_data": stats.get("ultima_data"),
-        }
-    return final_map
+    return {
+        identity_key: montar_score_identidade(stats, valor_max)
+        for identity_key, stats in raw.items()
+    }
 
 
 def build_identity_score_map(conn, user=None, customer_ids_scope: Optional[List[int]] = None) -> Dict[str, dict]:
@@ -1476,109 +1394,29 @@ def build_identity_score_map(conn, user=None, customer_ids_scope: Optional[List[
         raw[identity_key] = stats
         valor_max = max(valor_max, float(stats["valor_total"] or 0))
 
-    final_map = {}
-
-    for identity_key, stats in raw.items():
-        pedidos = int(stats.get("pedidos") or 0)
-        intervalo_mediano = stats.get("intervalo_mediano")
-
-        freq_score = calc_frequency_score(
-            intervalo_mediano,
-            pedidos
-        )
-
-        rep_score = calc_repurchase_score(stats)
-        val_score = calc_value_score(stats["valor_total"], valor_max)
-
-        final_score = round(
-            (freq_score * 0.55) +
-            (rep_score * 0.25) +
-            (val_score * 0.20),
-            1
-        )
-
-        # travas de negócio
-        # cliente com pouca recorrência ou recompra lenta não pode virar elite
-        if pedidos <= 1:
-            final_score = min(final_score, 25.0)
-        elif intervalo_mediano is not None:
-            intervalo = float(intervalo_mediano or 0)
-
-            if intervalo > 240:
-                final_score = min(final_score, 39.0)   # no máximo faixa C
-            elif intervalo > 180:
-                final_score = min(final_score, 54.0)   # no máximo faixa C/B baixa
-            elif intervalo > 120:
-                final_score = min(final_score, 69.0)   # no máximo faixa B
-
-        final_score = round(max(0.0, min(100.0, final_score)), 1)
-
-        faixa = score_faixa(final_score)
-
-        final_map[identity_key] = {
-            "score": final_score,
-            "score_frequencia": round(freq_score, 1),
-            "score_recompra": round(rep_score, 1),
-            "score_valor": round(val_score, 1),
-            "faixa": faixa["faixa"],
-            "label": faixa["label"],
-            "cor": faixa["cor"],
-            "valor_total": float(stats["valor_total"] or 0),
-            "pedidos": pedidos,
-            "intervalo_mediano": stats.get("intervalo_mediano"),
-            "atraso_atual": stats.get("atraso_atual"),
-            "ultima_data": stats.get("ultima_data"),
-        }
-
-    return final_map
+    return {
+        identity_key: montar_score_identidade(stats, valor_max)
+        for identity_key, stats in raw.items()
+    }
 
 def get_task_priority_from_score(score_data: dict) -> dict:
-    """
-    Define prioridade comercial da tarefa com base no score do cliente
-    e no atraso de recompra.
-    """
-    score = float(score_data.get("score") or 0)
-    faixa = str(score_data.get("faixa") or "D").upper()
-    atraso_atual = score_data.get("atraso_atual")
-    intervalo_mediano = score_data.get("intervalo_mediano")
+    """Adaptador: ver crm_npd.metrics.score_cliente.prioridade_tarefa."""
+    bruta = str(score_data.get("faixa") or "D").upper()
+    try:
+        faixa = FaixaScore(bruta)
+    except ValueError:
+        faixa = FaixaScore.FRIO
 
-    urgencia = False
-    if atraso_atual is not None and intervalo_mediano not in (None, 0):
-        try:
-            urgencia = float(atraso_atual) >= float(intervalo_mediano)
-        except:
-            urgencia = False
-
-    # cliente forte + atrasado = urgente
-    if faixa in ("A+", "A") and urgencia:
-        return {
-            "prioridade": "URGENTE",
-            "cor": "danger",
-            "ordem": 0,
-            "motivo": "Cliente forte fora da janela ideal de recompra"
-        }
-
-    if faixa in ("A+", "A"):
-        return {
-            "prioridade": "ALTA",
-            "cor": "warning",
-            "ordem": 1,
-            "motivo": "Cliente estratégico / muito bom"
-        }
-
-    if faixa == "B":
-        return {
-            "prioridade": "MÉDIA",
-            "cor": "info",
-            "ordem": 2,
-            "motivo": "Cliente bom com potencial"
-        }
-
+    prioridade = f_score_cliente.prioridade_tarefa(
+        faixa,
+        score_data.get("atraso_atual"),
+        score_data.get("intervalo_mediano"),
+    )
     return {
-        "prioridade": "BAIXA",
-        "cor": "secondary",
-        "ordem": 3,
-        "motivo": "Cliente de baixa prioridade comercial"
+        "prioridade": str(prioridade),
+        "cor": prioridade.cor,
+        "ordem": prioridade.ordem,
+        "motivo": f_score_cliente.MOTIVO_PRIORIDADE[prioridade],
     }
 
 def enrich_identity_score_for_ui(score_data: dict) -> dict:
@@ -2072,9 +1910,8 @@ def set_dia_fechamento_faturamento(conn, periodo: str, dia_fechamento: int) -> N
 
 
 def _safe_date_with_day(year: int, month: int, day: int) -> date:
-    import calendar
-    last = calendar.monthrange(year, month)[1]
-    return date(year, month, min(max(1, int(day)), last))
+    """Adaptador: ver crm_npd.metrics.periodos.dia_valido_no_mes."""
+    return f_periodos.dia_valido_no_mes(year, month, day)
 
 
 def periodo_ciclo_faturamento_manual(ref: Optional[date] = None) -> Tuple[date, date]:
@@ -2082,21 +1919,22 @@ def periodo_ciclo_faturamento_manual(ref: Optional[date] = None) -> Tuple[date, 
 
     Ex.: Abril com fechamento 25 => 26/03 a 25/04.
     Sem configuração manual, mantém o padrão antigo: 25/mês anterior a 24/mês atual.
+
+    A leitura do dia de fechamento continua aqui porque depende do banco; o
+    cálculo das datas em si está em crm_npd.metrics.periodos.ciclo_faturamento,
+    testável sem banco.
     """
     ref = ref or date.today()
     periodo = ref.strftime("%Y-%m")
     try:
         with conectar() as conn:
-            dia = get_dia_fechamento_faturamento(conn, periodo, default=24)
+            dia = get_dia_fechamento_faturamento(
+                conn, periodo, default=f_periodos.DIA_FECHAMENTO_PADRAO
+            )
     except Exception:
-        dia = 24
-    end_ = _safe_date_with_day(ref.year, ref.month, dia)
-    if ref.month == 1:
-        py, pm = ref.year - 1, 12
-    else:
-        py, pm = ref.year, ref.month - 1
-    start_ = _safe_date_with_day(py, pm, dia) + timedelta(days=1)
-    return start_, end_
+        dia = f_periodos.DIA_FECHAMENTO_PADRAO
+    ciclo = f_periodos.ciclo_faturamento(ref, dia)
+    return ciclo.inicio, ciclo.fim
 
 
 # -----------------------------
@@ -3196,10 +3034,8 @@ def year_bounds(d: date) -> Tuple[date, date]:
 
 
 def projection_month(current_total: float, days_elapsed: int, total_days: int) -> float:
-    if days_elapsed <= 0:
-        return 0.0
-    avg_per_day = current_total / days_elapsed
-    return avg_per_day * total_days
+    """Adaptador: ver crm_npd.metrics.percentuais.projecao_linear."""
+    return f_pct.projecao_linear(current_total, days_elapsed, total_days)
 
 def fig_to_base64(fig) -> str:
     buf = io.BytesIO()
@@ -5551,9 +5387,8 @@ def infer_order_product_family(grupo_ref: str = '', tipo_item_ref: str = '', pap
 
 
 def end_of_month(d: date) -> date:
-    if d.month == 12:
-        return date(d.year, 12, 31)
-    return date(d.year, d.month + 1, 1) - timedelta(days=1)
+    """Adaptador: ver crm_npd.metrics.periodos.ultimo_dia_do_mes."""
+    return f_periodos.ultimo_dia_do_mes(d)
 
 
 def get_ref_date_param(param_name: str = 'data_ref') -> date:
@@ -11588,9 +11423,9 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
         # Regra final: qualquer JIT faturado entra na comissão, mas nunca ganha bônus de NOVO.
         if is_jit:
             is_novo = False
-        base_pct = 1.0
-        bonus_pct = 1.0 if is_novo else 0.0
-        comissao_linha = valor * ((base_pct + bonus_pct) / 100.0)
+        base_pct, bonus_pct, comissao_linha = f_comissao.comissao_linha_interno(
+            valor, is_novo=is_novo
+        )
 
         total_comissao += comissao_linha
 
@@ -11614,10 +11449,8 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
             "doc_ref": doc_atual,
         })
 
-    extra_bonus = 0.0
-    if total_faturamento > 100000:
-        extra_bonus = (total_faturamento - 100000) * 0.01
-        total_comissao += extra_bonus
+    extra_bonus = f_comissao.bonus_volume(total_faturamento)
+    total_comissao += extra_bonus
 
     return {
         "faturamento": total_faturamento,
@@ -11659,7 +11492,7 @@ def linhas_comissao_externo_liquidez(conn, vendor_id: int, d0: date, d1: date):
 
     for r in rows:
         valor = float(r["valor"] or 0)
-        comissao = valor * 0.07
+        comissao = f_comissao.comissao_linha_externo(valor)
         total += comissao
 
         lines.append({
@@ -11667,7 +11500,7 @@ def linhas_comissao_externo_liquidez(conn, vendor_id: int, d0: date, d1: date):
             "cliente": r["cliente"] or "—",
             "pedido": r["pedido"] or "",
             "valor": valor,
-            "base_pct": 7.0,
+            "base_pct": f_comissao.PCT_EXTERNO_LIQUIDEZ,
             "bonus_pct": 0.0,
             "comissao": comissao,
             "is_novo": False,
@@ -14194,7 +14027,9 @@ def _crm_can_access_lead(conn, lead_id, user):
 
 
 SISPLAN_STAGE_ORDER = ["NOVO", "CONTATO", "NEGOCIACAO", "APROVACAO", "GANHO", "PERDIDO", "ENCERRADO"]
-SISPLAN_FINAL_STAGES = ("GANHO", "PERDIDO", "ENCERRADO")
+# Derivados do enum para que etapa, probabilidade e "o que sai do pipeline"
+# tenham uma unica fonte. Antes eram listas literais mantidas a mao.
+SISPLAN_FINAL_STAGES = tuple(str(e) for e in EtapaFunil if e.e_final)
 SISPLAN_STAGE_LABELS = {
     "NOVO": "Novo orçamento",
     "CONTATO": "Contato / Retorno",
@@ -14213,7 +14048,7 @@ SISPLAN_STAGE_ICONS = {
     "PERDIDO": "bi-x-circle",
     "ENCERRADO": "bi-archive",
 }
-SISPLAN_STAGE_PROB = {"NOVO": 15, "CONTATO": 30, "NEGOCIACAO": 60, "APROVACAO": 80, "GANHO": 100, "PERDIDO": 0, "ENCERRADO": 0}
+SISPLAN_STAGE_PROB = {str(e): e.probabilidade for e in EtapaFunil}
 
 
 def _sisplan_stage(desc_status, pedido_id=None, status_code=None):
@@ -14223,27 +14058,7 @@ def _sisplan_stage(desc_status, pedido_id=None, status_code=None):
     de status final (F) > etapas ainda abertas. Assim, um orçamento que recebeu
     desfecho na atualização seguinte deixa imediatamente Oportunidades/Funil.
     """
-    pedido = str(pedido_id or "").strip()
-    if pedido and pedido != "0":
-        return "GANHO"
-    desc = _norm_jit_text_py(desc_status or "")
-    code = _norm_jit_text_py(status_code or "")
-    if any(x in desc for x in ("PEDIDO APROVADO", "PEDIDO FATURADO")):
-        return "GANHO"
-    if any(x in desc for x in ("CANCELADO", "PERDIDO", "SEM PERFIL")):
-        return "PERDIDO"
-    # No relatório 104, F representa registro finalizado. Se não houve pedido
-    # e a descrição não definiu ganho/perda acima, ele sai do pipeline ativo
-    # como encerrado sem inventar um motivo comercial.
-    if code == "F":
-        return "ENCERRADO"
-    if any(x in desc for x in ("AGUARDANDO", "LIBERADO PARA", "GERAR PEDIDO", "RESTRICAO FINANCEIRA")):
-        return "APROVACAO"
-    if any(x in desc for x in ("NEGOCIACAO", "PESQUISA DE PRECO", "BUSCA OUTRO PRODUTO")):
-        return "NEGOCIACAO"
-    if any(x in desc for x in ("CONTATO FUTURO", "NAO RETORNOU", "ENCAMINHADO PARA VENDEDOR", "MANUTENCAO DE CARTEIRA", "MANUTENCAO DE INATIVO")):
-        return "CONTATO"
-    return "NOVO"
+    return str(f_funil.determinar_etapa(desc_status, pedido_id, status_code))
 
 
 def _sisplan_scope_sql(conn, scope_vendor_id, alias="o"):
@@ -14307,26 +14122,25 @@ def _sisplan_period_rows(conn, d0, d1, scope_vendor_id=None, vendor_name="", q="
 
 
 def _sisplan_metrics_from_rows(rows):
-    active = [r for r in rows if r["etapa_crm"] not in SISPLAN_FINAL_STAGES]
-    # Conversão usa apenas desfechos comerciais conhecidos (ganho/perda).
-    # ENCERRADO sai do pipeline, mas não distorce a taxa de ganho.
-    closed = [r for r in rows if r["etapa_crm"] in ("GANHO", "PERDIDO")]
-    won = [r for r in closed if r["etapa_crm"] == "GANHO"]
-    actionable = [r for r in active if r["etapa_crm"] in ("CONTATO", "NEGOCIACAO", "APROVACAO")]
-    pipeline = sum(float(r.get("valor_total") or 0) for r in active)
-    weighted = sum(float(r.get("valor_total") or 0) * (float(r.get("probabilidade") or 0) / 100.0) for r in active)
-    stale = sum(1 for r in actionable if int(r.get("dias_aberto") or 0) >= 14)
-    conversion = (len(won) / len(closed) * 100.0) if closed else 0.0
+    """Adaptador: ver crm_npd.metrics.funil.calcular_metricas."""
+    m = f_funil.calcular_metricas(
+        (
+            EtapaFunil(r["etapa_crm"]),
+            float(r.get("valor_total") or 0),
+            int(r.get("dias_aberto") or 0),
+        )
+        for r in rows
+    )
     return {
-        "active": len(active),
-        "pipeline": pipeline,
-        "weighted": weighted,
-        "overdue": stale,
-        "stale": stale,
-        "won": len(won),
-        "closed": len(closed),
-        "conversion": conversion,
-        "actionable": len(actionable),
+        "active": m.ativos,
+        "pipeline": m.pipeline,
+        "weighted": m.ponderado,
+        "overdue": m.parados,
+        "stale": m.parados,
+        "won": m.ganhos,
+        "closed": m.fechados,
+        "conversion": m.conversao,
+        "actionable": m.acionaveis,
     }
 
 
@@ -14580,10 +14394,8 @@ def _performance_bounds(data_ref: str):
 
 
 def _performance_pct_delta(atual, anterior):
-    atual, anterior = float(atual or 0), float(anterior or 0)
-    if abs(anterior) < 1e-9:
-        return None if abs(atual) > 1e-9 else 0.0
-    return (atual - anterior) / abs(anterior) * 100.0
+    """Adaptador: ver crm_npd.metrics.percentuais.variacao_percentual_ou_nulo."""
+    return f_pct.variacao_percentual_ou_nulo(atual, anterior)
 
 
 def _performance_vendor_catalog(conn):
@@ -14702,59 +14514,37 @@ def _performance_assign_scores(rows):
         # Pontuação de carteira: NOVO vale 1,0; RECUPERADO 0,8; recorrência normal 0,30.
         # Recuperado já está dentro de rep_count, então não é contado duas vezes.
         for r in team_rows:
-            novos = max(0.0, float(r.get("clientes_novos") or 0))
-            reps = max(0.0, float(r.get("clientes_repeticao") or 0))
-            recup = min(reps, max(0.0, float(r.get("clientes_recuperados") or 0)))
-            rep_normal = max(0.0, reps - recup)
-            r["carteira_pontos_brutos"] = novos * 1.0 + recup * 0.8 + rep_normal * 0.30
+            r["carteira_pontos_brutos"] = f_score_vendedor.pontos_carteira(
+                r.get("clientes_novos") or 0,
+                r.get("clientes_repeticao") or 0,
+                r.get("clientes_recuperados") or 0,
+            )
         max_carteira = max([float(r.get("carteira_pontos_brutos") or 0) for r in team_rows] + [1.0])
 
         for r in team_rows:
-            activity_pct = min(100.0, float(r.get("orc_qtd") or 0) / max_orc * 100.0) if max_orc else 0.0
-            pipeline_pct = min(100.0, math.sqrt(max(0.0, float(r.get("orc_valor") or 0) / max_orc_val)) * 100.0) if max_orc_val else 0.0
-            sample_factor = min(1.0, math.sqrt(max(0.0, float(r.get("orc_qtd") or 0)) / 30.0))
-            conv_effective = float(r.get("conv_pct") or 0) * sample_factor
-            conversion_pct = min(100.0, conv_effective / 60.0 * 100.0)
-            result_pct = min(100.0, math.sqrt(max(0.0, float(r.get("fat_valor") or 0) / max_fat)) * 100.0) if max_fat else 0.0
-            carteira_pct = min(100.0, float(r.get("carteira_pontos_brutos") or 0) / max_carteira * 100.0) if max_carteira else 0.0
-
-            momentum_pct = 0.0
-            od = r.get("orc_delta")
-            cd = float(r.get("conv_delta_pp") or 0)
-            if od is not None:
-                momentum_pct += 50.0 if od > 0 else (25.0 if od >= -10 else 0.0)
-            if cd > 0:
-                momentum_pct += 50.0
-            elif cd >= -2:
-                momentum_pct += 25.0
-
-            score = (
-                activity_pct * 0.50 +
-                pipeline_pct * 0.15 +
-                conversion_pct * 0.10 +
-                result_pct * 0.10 +
-                carteira_pct * 0.10 +
-                momentum_pct * 0.05
+            dims = f_score_vendedor.calcular_dimensoes(
+                orcamentos_qtd=int(r.get("orc_qtd") or 0),
+                orcamentos_valor=float(r.get("orc_valor") or 0),
+                faturamento_valor=float(r.get("fat_valor") or 0),
+                conversao_pct=float(r.get("conv_pct") or 0),
+                carteira_pontos=float(r.get("carteira_pontos_brutos") or 0),
+                variacao_orcamentos_pct=r.get("orc_delta"),
+                variacao_conversao_pp=float(r.get("conv_delta_pp") or 0),
+                max_orcamentos_qtd=max_orc,
+                max_orcamentos_valor=max_orc_val,
+                max_faturamento=max_fat,
+                max_carteira_pontos=max_carteira,
             )
-            r["score"] = round(max(0.0, min(100.0, score)), 1)
+            r["score"] = f_score_vendedor.calcular_score(dims)
             r["score_dims"] = {
-                "atividade": round(activity_pct, 1),
-                "pipeline": round(pipeline_pct, 1),
-                "conversao": round(conversion_pct, 1),
-                "resultado": round(result_pct, 1),
-                "carteira": round(carteira_pct, 1),
-                "evolucao": round(momentum_pct, 1),
+                "atividade": round(dims.atividade, 1),
+                "pipeline": round(dims.pipeline, 1),
+                "conversao": round(dims.conversao, 1),
+                "resultado": round(dims.resultado, 1),
+                "carteira": round(dims.carteira, 1),
+                "evolucao": round(dims.evolucao, 1),
             }
-            if r["score"] >= 85:
-                r["score_label"], r["score_tone"] = "Destaque", "success"
-            elif r["score"] >= 70:
-                r["score_label"], r["score_tone"] = "Forte", "primary"
-            elif r["score"] >= 50:
-                r["score_label"], r["score_tone"] = "Regular", "info"
-            elif r["score"] >= 30:
-                r["score_label"], r["score_tone"] = "Atenção", "warning"
-            else:
-                r["score_label"], r["score_tone"] = "Baixa atividade", "danger"
+            r["score_label"], r["score_tone"] = f_score_vendedor.rotular_score(r["score"])
 
 def _performance_build_context(conn, data_ref, include_customer_mix: bool = True, catalog=None):
     data_ref, ref, d0, d1, prev0, prev1 = _performance_bounds(data_ref)
@@ -17470,16 +17260,6 @@ def meta_vendedor(conn: sqlite3.Connection, vendor_id: int) -> float:
     return meta_vendedor_calc(conn, vendor_id, meses=3, fator=1.0)
 
 # --- BLOCO 1: NOVAS FUNÇÕES E ROTA DE TIPO ---
-
-def periodo_mes_calendario(ref: Optional[date] = None) -> Tuple[date, date]:
-    """Retorna o dia 1 e o último dia do mês da data de referência (Ciclo Comercial)."""
-    ref = ref or date.today()
-    d0 = date(ref.year, ref.month, 1)
-    if ref.month == 12:
-        d1 = date(ref.year, 12, 31)
-    else:
-        d1 = date(ref.year, ref.month + 1, 1) - timedelta(days=1)
-    return d0, d1
 
 def ensure_vendor_type_column(conn):
     """Garante que a coluna 'tipo' exista na tabela vendors."""

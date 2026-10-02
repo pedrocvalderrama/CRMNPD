@@ -12,6 +12,7 @@ from statistics import median
 from typing import Any, Optional
 
 from ..config import DB_PATH, CACHE_TTL_SECONDS
+from ..metrics import recompra as f_recompra
 from .cache import TTLCache
 
 _customer_cache = TTLCache()
@@ -638,12 +639,7 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
             try:
                 data_mov = date.fromisoformat(ds[:10])
                 hist = [d for d in history_by_identity.get(ik, []) if d < data_mov]
-                if len(hist) >= 2:
-                    intervals = [(hist[i] - hist[i-1]).days for i in range(1, len(hist)) if (hist[i] - hist[i-1]).days >= 0]
-                    if intervals:
-                        med = float(median(intervals))
-                        gap = (data_mov - hist[-1]).days
-                        is_recuperado = med > 0 and gap > med
+                is_recuperado = f_recompra.e_cliente_recuperado(data_mov, hist)
             except Exception:
                 is_recuperado = False
 
