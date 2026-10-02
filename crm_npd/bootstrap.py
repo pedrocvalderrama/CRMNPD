@@ -1,23 +1,29 @@
 from __future__ import annotations
 import importlib
+import logging
+from .logging_conf import configurar_logging
+from .migrations import aplicar_migracoes
 from .patches import patch_legacy_runtime, refresh_runtime_version
-from .migrations import apply_safe_migrations
+from .web.erros import registrar_handlers
+
+logger = logging.getLogger(__name__)
 
 
 def create_app():
+    configurar_logging()
     legacy = importlib.import_module('crm_npd.legacy_monolith')
     patch_legacy_runtime(legacy)
     legacy.init_db()
     with legacy.conectar() as conn:
         legacy.ensure_users_schema(conn)
-        apply_safe_migrations(conn)
+        aplicar_migracoes(conn)
         try:
             legacy.force_site_vendor_types(conn)
         except Exception:
-            pass
+            logger.exception("falha ao forcar tipos SITE dos vendedores")
     legacy.ensure_admin_seed()
-    # Importante: não reprocessar redes na inicialização.
-    # Isso pode deixar a subida do app lenta ou travar em bases grandes.
-    # O reprocessamento passa a ser manual por rota/botão dentro do sistema.
+    registrar_handlers(legacy.app)
+    from .web.blueprints import registrar_blueprints
+    registrar_blueprints(legacy.app)
     refresh_runtime_version(legacy)
     return legacy.app

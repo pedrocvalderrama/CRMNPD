@@ -1,0 +1,8 @@
+/* Folha extraida do monolito. Enquanto BASE_HTML existir, este arquivo
+   e a base para as rotas que ja usam render_template. Nao duplique regras
+   sem retirar o equivalente do monolito. */
+
+:root {
+  --crm-ink: #222;
+  --crm-muted: #6c757d;
+}

@@ -1,7 +1,7 @@
 # Reconciliação de fórmulas divergentes
 
-> **Status: aguardando decisão.** Nenhuma unificação foi aplicada. O código continua
-> calculando exatamente como calculava antes, e o golden master comprova isso.
+> **Status: decisões aplicadas em 2026-10-01.** O golden master foi regravado
+> depois destas mudanças, com a justificativa em cada item.
 
 O monolito calcula a mesma métrica de formas diferentes em lugares diferentes. Durante a
 extração das fórmulas para `crm_npd/metrics/`, cada versão foi preservada como estava,
@@ -216,18 +216,17 @@ a significar a mesma coisa que "cliente" significa em todas as outras telas.
 
 ---
 
-## Decisões necessárias
+## Decisões (2026-10-01)
 
-| # | Decisão | Minha recomendação | Quem decide |
-|---|---|---|---|
-| 1 | Bônus de cliente novo: uma vez (A) ou todo o primeiro ciclo (B) | Manter A, e corrigir a dupla contagem em `novo_ids`/`rep_ids` | **Negócio** — mexe em comissão |
-| 2 | Unidade do mix | Identidade, com rótulo explícito onde for por pedido | Negócio |
-| 3 | Intervalo de recompra | Mediana | Técnico, com aviso |
-| 4 | Compras no score | Dia único | Técnico, **com aviso à equipe** |
-| 5 | Conversão | A/B como padrão; renomear D | Técnico |
-| 6 | Churn | `identity_key` | Técnico |
+| # | Decisão | Aplicado |
+|---|---|---|
+| 1 | **Manter A** — bônus pela conquista, uma vez. Comissão não muda. Corrigida a dupla contagem em `novo_ids`/`rep_ids` (6 identidades no ciclo set/26 deixam de inflar a carteira do vendedor). | sim |
+| 2 | Sem decisão. Continua pedido em uma tela e identidade em outra. | não |
+| 3 | **Mediana** no intervalo de recompra. A coluna "atrasado" da lista de clientes passa a usar a mesma regra do score. ~56 clientes mudam de flag. | sim |
+| 4 | **Dia único** no score. 1.231 identidades trocam de faixa. Avisar a equipe comercial: clientes hoje em B podem aparecer em D. | sim |
+| 5 | A/B como conversão de proposta; `get_metrics_orcamentos` alinhado; rótulo D virou **Taxa de faturamento**. | sim |
+| 6 | Churn passa a agrupar por `identity_key`. Estudo de Mercado: 865 → 778. | sim |
 
-Nenhuma dessas mudanças será aplicada sem aprovação. Quando uma for aprovada, o
-procedimento é: alterar a função pura em `crm_npd/metrics/`, rodar o golden master,
-conferir que **apenas** os números daquela regra mudaram, e regravar o baseline
-registrando a decisão no commit.
+O procedimento depois da aplicação: o baseline do golden master foi regravado no
+mesmo commit das mudanças, com esta tabela como justificativa. Qualquer número
+que mudar daqui para frente sem estar nesta lista é regressão.

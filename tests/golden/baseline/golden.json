@@ -39,7 +39,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 17.0,
+    "media_dias_recompra": 12.5,
     "qtd_compras": 121,
     "ticket_medio": 728.426942,
     "ultima_compra": "2026-09-30"
@@ -76,8 +76,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 1400,
-    "media_dias_recompra": 14.6,
+    "dias_fora_media": 1408,
+    "media_dias_recompra": 7.0,
     "qtd_compras": 44,
     "ticket_medio": 13967.518636,
     "ultima_compra": "2022-11-16"
@@ -116,7 +116,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 49.0,
+    "media_dias_recompra": 39.0,
     "qtd_compras": 38,
     "ticket_medio": 776.575789,
     "ultima_compra": "2026-09-15"
@@ -155,8 +155,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 2,
-    "media_dias_recompra": 20.1,
+    "dias_fora_media": 3,
+    "media_dias_recompra": 19.0,
     "qtd_compras": 101,
     "ticket_medio": 858.560495,
     "ultima_compra": "2026-09-09"
@@ -192,8 +192,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 24,
-    "media_dias_recompra": 27.2,
+    "dias_fora_media": 28,
+    "media_dias_recompra": 23.0,
     "qtd_compras": 66,
     "ticket_medio": 1895.69,
     "ultima_compra": "2026-08-11"
@@ -233,7 +233,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -273,7 +273,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -309,8 +309,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 453,
-    "media_dias_recompra": 88.4,
+    "dias_fora_media": 450,
+    "media_dias_recompra": 91.0,
     "qtd_compras": 18,
     "ticket_medio": 518.24,
     "ultima_compra": "2025-04-08"
@@ -347,8 +347,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 684,
-    "media_dias_recompra": 26.5,
+    "dias_fora_media": 697,
+    "media_dias_recompra": 13.0,
     "qtd_compras": 39,
     "ticket_medio": 972.458462,
     "ultima_compra": "2024-10-21"
@@ -388,7 +388,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -423,9 +423,9 @@
     "ultima_compra": "2026-07-01"
    },
    "recompra_tarefa": {
-    "atrasado": false,
-    "dias_fora_media": 0,
-    "media_dias_recompra": 99.8,
+    "atrasado": true,
+    "dias_fora_media": 15,
+    "media_dias_recompra": 77.0,
     "qtd_compras": 17,
     "ticket_medio": 2238.207059,
     "ultima_compra": "2026-07-01"
@@ -462,7 +462,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 44.2,
+    "media_dias_recompra": 42.0,
     "qtd_compras": 39,
     "ticket_medio": 1362.179487,
     "ultima_compra": "2026-09-29"
@@ -501,8 +501,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 509,
-    "media_dias_recompra": 32.3,
+    "dias_fora_media": 510,
+    "media_dias_recompra": 31.5,
     "qtd_compras": 47,
     "ticket_medio": 739.342766,
     "ultima_compra": "2025-04-08"
@@ -539,7 +539,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 17.2,
+    "media_dias_recompra": 14.5,
     "qtd_compras": 97,
     "ticket_medio": 1866.19866,
     "ultima_compra": "2026-09-30"
@@ -579,7 +579,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -618,8 +618,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 285,
-    "media_dias_recompra": 54.0,
+    "dias_fora_media": 298,
+    "media_dias_recompra": 40.5,
     "qtd_compras": 23,
     "ticket_medio": 869.869565,
     "ultima_compra": "2025-10-27"
@@ -655,8 +655,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 159,
-    "media_dias_recompra": 29.8,
+    "dias_fora_media": 161,
+    "media_dias_recompra": 28.0,
     "qtd_compras": 42,
     "ticket_medio": 213.890238,
     "ultima_compra": "2026-03-26"
@@ -693,7 +693,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 27.6,
+    "media_dias_recompra": 26.5,
     "qtd_compras": 51,
     "ticket_medio": 525.068235,
     "ultima_compra": "2026-09-30"
@@ -733,7 +733,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -768,9 +768,9 @@
     "ultima_compra": "2026-09-21"
    },
    "recompra_tarefa": {
-    "atrasado": false,
-    "dias_fora_media": 0,
-    "media_dias_recompra": 11.1,
+    "atrasado": true,
+    "dias_fora_media": 2,
+    "media_dias_recompra": 8.0,
     "qtd_compras": 113,
     "ticket_medio": 260.835398,
     "ultima_compra": "2026-09-21"
@@ -807,8 +807,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 66,
-    "media_dias_recompra": 6.5,
+    "dias_fora_media": 68,
+    "media_dias_recompra": 5.0,
     "qtd_compras": 300,
     "ticket_medio": 1339.592733,
     "ultima_compra": "2026-07-20"
@@ -846,8 +846,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 50,
-    "media_dias_recompra": 16.0,
+    "dias_fora_media": 55,
+    "media_dias_recompra": 11.0,
     "qtd_compras": 66,
     "ticket_medio": 798.015152,
     "ultima_compra": "2026-07-27"
@@ -887,7 +887,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 4.4,
+    "media_dias_recompra": 4.0,
     "qtd_compras": 460,
     "ticket_medio": 942.543848,
     "ultima_compra": "2026-09-30"
@@ -924,7 +924,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 76.9,
+    "media_dias_recompra": 68.5,
     "qtd_compras": 27,
     "ticket_medio": 344.98963,
     "ultima_compra": "2026-09-28"
@@ -963,8 +963,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 41,
-    "media_dias_recompra": 25.1,
+    "dias_fora_media": 46,
+    "media_dias_recompra": 20.0,
     "qtd_compras": 78,
     "ticket_medio": 385.307692,
     "ultima_compra": "2026-07-27"
@@ -1001,8 +1001,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 670,
-    "media_dias_recompra": 68.5,
+    "dias_fora_media": 679,
+    "media_dias_recompra": 59.0,
     "qtd_compras": 20,
     "ticket_medio": 1630.2,
     "ultima_compra": "2024-09-23"
@@ -1040,7 +1040,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 43.1,
+    "media_dias_recompra": 40.0,
     "qtd_compras": 47,
     "ticket_medio": 2713.446809,
     "ultima_compra": "2026-09-23"
@@ -1083,7 +1083,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 51.8,
+    "media_dias_recompra": 43.0,
     "qtd_compras": 40,
     "ticket_medio": 1644.9,
     "ultima_compra": "2026-09-09"
@@ -1123,7 +1123,7 @@
    "recompra_tarefa": {
     "atrasado": false,
     "dias_fora_media": 0,
-    "media_dias_recompra": 56.4,
+    "media_dias_recompra": 53.0,
     "qtd_compras": 36,
     "ticket_medio": 3827.416667,
     "ultima_compra": "2026-09-28"
@@ -1160,8 +1160,8 @@
    },
    "recompra_tarefa": {
     "atrasado": true,
-    "dias_fora_media": 844,
-    "media_dias_recompra": 29.9,
+    "dias_fora_media": 852,
+    "media_dias_recompra": 22.0,
     "qtd_compras": 36,
     "ticket_medio": 655.041111,
     "ultima_compra": "2024-05-10"
@@ -1351,7 +1351,7 @@
  "mercado": {
   "ano_anterior": 2025,
   "ano_atual": 2026,
-  "churn_total": 865,
+  "churn_total": 778,
   "conv_pct": 58.079169,
   "conv_pct_ly": 71.910112,
   "fat_mes_ly_val": 1063783.62,
@@ -14080,8 +14080,8 @@
    "valor_total": 953360.66
   },
   "2026-08": {
-   "convertidos": 83,
-   "taxa_conversao": 23.119777,
+   "convertidos": 87,
+   "taxa_conversao": 24.233983,
    "total": 359,
    "valor_total": 2610891.99
   },
@@ -15807,12 +15807,12 @@
     {
      "aberto_qtd": 0,
      "aberto_valor": 0.0,
-     "carteira_pontos_brutos": 5.1,
+     "carteira_pontos_brutos": 4.8,
      "clientes_novos": 2,
      "clientes_periodo_fim": "2026-08-24",
      "clientes_periodo_inicio": "2026-07-25",
      "clientes_recuperados": 2,
-     "clientes_repeticao": 7,
+     "clientes_repeticao": 6,
      "codigo": "00001",
      "conv_delta_pp": 0.0,
      "conv_pct": 0.0,
@@ -15841,10 +15841,10 @@
      "prev_conv_qtd": 0,
      "prev_fat_valor": 76959.2,
      "prev_orc_qtd": 0,
-     "score": 13.9,
+     "score": 13.7,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 37.8,
+      "carteira": 35.6,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -16776,12 +16776,12 @@
     {
      "aberto_qtd": 0,
      "aberto_valor": 0.0,
-     "carteira_pontos_brutos": 2.6,
+     "carteira_pontos_brutos": 2.3,
      "clientes_novos": 2,
      "clientes_periodo_fim": "2026-08-24",
      "clientes_periodo_inicio": "2026-07-25",
      "clientes_recuperados": 0,
-     "clientes_repeticao": 2,
+     "clientes_repeticao": 1,
      "codigo": "12787",
      "conv_delta_pp": 0.0,
      "conv_pct": 0.0,
@@ -16810,10 +16810,10 @@
      "prev_conv_qtd": 0,
      "prev_fat_valor": 63378.77,
      "prev_orc_qtd": 0,
-     "score": 14.4,
+     "score": 14.2,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 19.3,
+      "carteira": 17.0,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -18883,10 +18883,10 @@
      "prev_conv_qtd": 0,
      "prev_fat_valor": 24329.56,
      "prev_orc_qtd": 0,
-     "score": 13.5,
+     "score": 13.6,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 42.0,
+      "carteira": 42.9,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -18937,7 +18937,7 @@
      "score": 12.3,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 14.0,
+      "carteira": 14.3,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -18988,7 +18988,7 @@
      "score": 5.3,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 7.0,
+      "carteira": 7.1,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -19036,10 +19036,10 @@
      "prev_conv_qtd": 0,
      "prev_fat_valor": 10082.87,
      "prev_orc_qtd": 2,
-     "score": 18.4,
+     "score": 18.5,
      "score_dims": {
       "atividade": 4.3,
-      "carteira": 9.8,
+      "carteira": 10.0,
       "conversao": 21.5,
       "evolucao": 75.0,
       "pipeline": 11.6,
@@ -19090,7 +19090,7 @@
      "score": 4.7,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 4.2,
+      "carteira": 4.3,
       "conversao": 0.0,
       "evolucao": 25.0,
       "pipeline": 0.0,
@@ -19141,7 +19141,7 @@
      "score": 5.2,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 4.2,
+      "carteira": 4.3,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -19308,12 +19308,12 @@
     {
      "aberto_qtd": 2,
      "aberto_valor": 8070.0,
-     "carteira_pontos_brutos": 14.3,
+     "carteira_pontos_brutos": 14.0,
      "clientes_novos": 2,
      "clientes_periodo_fim": "2026-09-24",
      "clientes_periodo_inicio": "2026-08-25",
      "clientes_recuperados": 9,
-     "clientes_repeticao": 26,
+     "clientes_repeticao": 25,
      "codigo": "01720",
      "conv_delta_pp": -26.666667,
      "conv_pct": 33.333333,
@@ -19410,12 +19410,12 @@
     {
      "aberto_qtd": 51,
      "aberto_valor": 346394.03,
-     "carteira_pontos_brutos": 18.9,
+     "carteira_pontos_brutos": 18.6,
      "clientes_novos": 4,
      "clientes_periodo_fim": "2026-09-24",
      "clientes_periodo_inicio": "2026-08-25",
      "clientes_recuperados": 10,
-     "clientes_repeticao": 33,
+     "clientes_repeticao": 32,
      "codigo": "09044",
      "conv_delta_pp": 18.280641,
      "conv_pct": 45.631068,
@@ -19444,10 +19444,10 @@
      "prev_conv_qtd": 32,
      "prev_fat_valor": 153462.91,
      "prev_orc_qtd": 117,
-     "score": 93.8,
+     "score": 93.7,
      "score_dims": {
       "atividade": 100.0,
-      "carteira": 87.9,
+      "carteira": 86.5,
       "conversao": 76.1,
       "evolucao": 50.0,
       "pipeline": 100.0,
@@ -19651,7 +19651,7 @@
      "score": 4.0,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 5.6,
+      "carteira": 5.7,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -19702,7 +19702,7 @@
      "score": 4.6,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 7.0,
+      "carteira": 7.1,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -19869,12 +19869,12 @@
     {
      "aberto_qtd": 0,
      "aberto_valor": 0.0,
-     "carteira_pontos_brutos": 3.7,
+     "carteira_pontos_brutos": 3.4,
      "clientes_novos": 1,
      "clientes_periodo_fim": "2026-09-24",
      "clientes_periodo_inicio": "2026-08-25",
      "clientes_recuperados": 0,
-     "clientes_repeticao": 9,
+     "clientes_repeticao": 8,
      "codigo": "12787",
      "conv_delta_pp": 0.0,
      "conv_pct": 0.0,
@@ -19903,10 +19903,10 @@
      "prev_conv_qtd": 0,
      "prev_fat_valor": 117625.16,
      "prev_orc_qtd": 0,
-     "score": 15.1,
+     "score": 14.9,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 25.9,
+      "carteira": 24.3,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -20008,7 +20008,7 @@
      "score": 8.3,
      "score_dims": {
       "atividade": 0.0,
-      "carteira": 17.5,
+      "carteira": 17.9,
       "conversao": 0.0,
       "evolucao": 50.0,
       "pipeline": 0.0,
@@ -22708,13 +22708,13 @@
    "status": 200
   },
   "/admin/performance-time": {
-   "digest_numeros": "16fd30e781862c5a0f8f37f3fd7d5240",
+   "digest_numeros": "dc0ae036f6d2517b1db39eb2499c4927",
    "mimetype": "text/html",
    "qtd_numeros": 2838,
    "status": 200
   },
   "/admin/performance-time/vendedor/<int:vendor_id>": {
-   "digest_numeros": "9534fc30cec4120a95e230fb655b1384",
+   "digest_numeros": "6847f8e2d57d9a8a0136ad244186bc5a",
    "mimetype": "text/html",
    "qtd_numeros": 38389,
    "status": 200
@@ -22732,13 +22732,13 @@
    "status": 200
   },
   "/cliente/<int:cliente_id>": {
-   "digest_numeros": "07f54610f7eeadd3c7177e59b8ce6235",
+   "digest_numeros": "5bbc6304b1e45a77728e283e396355ca",
    "mimetype": "text/html",
    "qtd_numeros": 18876,
    "status": 200
   },
   "/clientes": {
-   "digest_numeros": "bcf760cfdad1a1f27451daf83873b403",
+   "digest_numeros": "632c7b25a58387fff655fbd9dee691cf",
    "mimetype": "text/html",
    "qtd_numeros": 3616,
    "status": 200
@@ -22768,7 +22768,7 @@
    "status": 200
   },
   "/estudo_mercado": {
-   "digest_numeros": "1a6ea4cba1cfce69fb58426802747ed9",
+   "digest_numeros": "7aa00bfa3a1e6c2f38220eeeb993e2b6",
    "mimetype": "text/html",
    "qtd_numeros": 1339,
    "status": 200
@@ -22871,9 +22871,9 @@
    "status": 200
   },
   "/tarefas": {
-   "digest_numeros": "374dbe85cbc00a770ebc4f723a2ce255",
+   "digest_numeros": "81e830afe2cd5025a9d4b0c1167d3483",
    "mimetype": "text/html",
-   "qtd_numeros": 7093,
+   "qtd_numeros": 7082,
    "status": 200
   },
   "/usuarios": {
@@ -22890,7 +22890,7 @@
    "status": 302
   },
   "/vendedor/<int:vendor_id>": {
-   "digest_numeros": "2ec81567089e7f7dc0f3063c8761a6b2",
+   "digest_numeros": "ba12037017b1b45ba7f16b11b20a7231",
    "mimetype": "text/html",
    "qtd_numeros": 44898,
    "status": 200
@@ -22906,28 +22906,28 @@
   "amostra_60_primeiras": {
    "CLIENTE:1": {
     "atraso_atual": 1,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 389,
-    "score": 64.9,
+    "cor": "primary",
+    "faixa": "A",
+    "intervalo_mediano": 12.5,
+    "label": "Muito forte",
+    "pedidos": 121,
+    "score": 82.4,
     "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "score_recompra": 100.0,
     "score_valor": 12.0,
     "ultima_data": "2026-09-30",
     "valor_total": 88139.66
    },
    "CLIENTE:100": {
     "atraso_atual": 1415,
-    "cor": "primary",
-    "faixa": "A",
-    "intervalo_mediano": 0.0,
-    "label": "Muito forte",
-    "pedidos": 162,
-    "score": 71.5,
+    "cor": "info",
+    "faixa": "B",
+    "intervalo_mediano": 7.0,
+    "label": "Bom",
+    "pedidos": 44,
+    "score": 65.2,
     "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "score_recompra": 5.0,
     "score_valor": 45.0,
     "ultima_data": "2022-11-16",
     "valor_total": 614570.82
@@ -22962,14 +22962,14 @@
    },
    "CLIENTE:1002": {
     "atraso_atual": 1910,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 3,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-09",
     "valor_total": 312.3
@@ -23004,14 +23004,14 @@
    },
    "CLIENTE:1005": {
     "atraso_atual": 1903,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-16",
     "valor_total": 1298.0
@@ -23034,12 +23034,12 @@
     "atraso_atual": 434,
     "cor": "secondary",
     "faixa": "D",
-    "intervalo_mediano": 124.5,
+    "intervalo_mediano": 389.0,
     "label": "Frio",
-    "pedidos": 7,
-    "score": 28.4,
-    "score_frequencia": 45.0,
-    "score_recompra": 5.0,
+    "pedidos": 4,
+    "score": 25.5,
+    "score_frequencia": 8.0,
+    "score_recompra": 75.0,
     "score_valor": 12.0,
     "ultima_data": "2025-07-24",
     "valor_total": 2019.0
@@ -23074,13 +23074,13 @@
    },
    "CLIENTE:101": {
     "atraso_atual": 1967,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 31.5,
-    "label": "Bom",
-    "pedidos": 3,
-    "score": 55.9,
-    "score_frequencia": 95.0,
+    "cor": "warning",
+    "faixa": "C",
+    "intervalo_mediano": 63.0,
+    "label": "Morno",
+    "pedidos": 2,
+    "score": 44.9,
+    "score_frequencia": 75.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2021-05-13",
@@ -23088,28 +23088,28 @@
    },
    "CLIENTE:1010": {
     "atraso_atual": 1907,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-12",
     "valor_total": 124.65
    },
    "CLIENTE:1011": {
     "atraso_atual": 1907,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 8,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-12",
     "valor_total": 657.0
@@ -23214,14 +23214,14 @@
    },
    "CLIENTE:1022": {
     "atraso_atual": 1905,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-14",
     "valor_total": 154.35
@@ -23230,11 +23230,11 @@
     "atraso_atual": 1532,
     "cor": "secondary",
     "faixa": "D",
-    "intervalo_mediano": 186.5,
+    "intervalo_mediano": 373.0,
     "label": "Frio",
-    "pedidos": 3,
-    "score": 14.7,
-    "score_frequencia": 20.0,
+    "pedidos": 2,
+    "score": 8.1,
+    "score_frequencia": 8.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2022-07-22",
@@ -23242,14 +23242,14 @@
    },
    "CLIENTE:1024": {
     "atraso_atual": 1905,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-14",
     "valor_total": 228.15
@@ -23270,13 +23270,13 @@
    },
    "CLIENTE:1028": {
     "atraso_atual": 1420,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 21.5,
-    "label": "Bom",
-    "pedidos": 17,
-    "score": 58.7,
-    "score_frequencia": 100.0,
+    "cor": "warning",
+    "faixa": "C",
+    "intervalo_mediano": 62.0,
+    "label": "Morno",
+    "pedidos": 9,
+    "score": 44.9,
+    "score_frequencia": 75.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2022-11-11",
@@ -23298,14 +23298,14 @@
    },
    "CLIENTE:1030": {
     "atraso_atual": 688,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 14,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": 281.0,
+    "label": "Frio",
+    "pedidos": 4,
+    "score": 8.1,
+    "score_frequencia": 8.0,
+    "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2024-11-12",
     "valor_total": 2315.7
@@ -23314,11 +23314,11 @@
     "atraso_atual": 1868,
     "cor": "info",
     "faixa": "B",
-    "intervalo_mediano": 18.0,
+    "intervalo_mediano": 36.0,
     "label": "Bom",
-    "pedidos": 3,
-    "score": 58.7,
-    "score_frequencia": 100.0,
+    "pedidos": 2,
+    "score": 55.9,
+    "score_frequencia": 95.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2021-08-20",
@@ -23342,26 +23342,26 @@
     "atraso_atual": 1869,
     "cor": "info",
     "faixa": "B",
-    "intervalo_mediano": 0.0,
+    "intervalo_mediano": 21.0,
     "label": "Bom",
-    "pedidos": 5,
-    "score": 64.9,
+    "pedidos": 2,
+    "score": 58.7,
     "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2021-08-19",
     "valor_total": 1046.0
    },
    "CLIENTE:1034": {
     "atraso_atual": 1903,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 3,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-16",
     "valor_total": 373.95
@@ -23466,14 +23466,14 @@
    },
    "CLIENTE:1044": {
     "atraso_atual": 1900,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-19",
     "valor_total": 147.6
@@ -23482,11 +23482,11 @@
     "atraso_atual": 1098,
     "cor": "warning",
     "faixa": "C",
-    "intervalo_mediano": 55.0,
+    "intervalo_mediano": 89.0,
     "label": "Morno",
-    "pedidos": 18,
-    "score": 52.1,
-    "score_frequencia": 88.0,
+    "pedidos": 10,
+    "score": 44.9,
+    "score_frequencia": 75.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2023-09-29",
@@ -23494,13 +23494,13 @@
    },
    "CLIENTE:1046": {
     "atraso_atual": 1393,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 16.0,
-    "label": "Bom",
-    "pedidos": 12,
-    "score": 58.7,
-    "score_frequencia": 100.0,
+    "cor": "warning",
+    "faixa": "C",
+    "intervalo_mediano": 64.0,
+    "label": "Morno",
+    "pedidos": 7,
+    "score": 44.9,
+    "score_frequencia": 75.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2022-12-08",
@@ -23592,70 +23592,70 @@
    },
    "CLIENTE:1059": {
     "atraso_atual": 1883,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-08-05",
     "valor_total": 5189.26
    },
    "CLIENTE:1060": {
     "atraso_atual": 1883,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-08-05",
     "valor_total": 2366.0
    },
    "CLIENTE:1061": {
     "atraso_atual": 1883,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-08-05",
     "valor_total": 1520.0
    },
    "CLIENTE:1062": {
     "atraso_atual": 918,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 59,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "warning",
+    "faixa": "C",
+    "intervalo_mediano": 48.0,
+    "label": "Morno",
+    "pedidos": 20,
+    "score": 52.1,
+    "score_frequencia": 88.0,
+    "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2024-03-27",
     "valor_total": 13915.0
    },
    "CLIENTE:1063": {
     "atraso_atual": 1898,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 3,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-21",
     "valor_total": 990.0
@@ -23664,11 +23664,11 @@
     "atraso_atual": 1456,
     "cor": "secondary",
     "faixa": "D",
-    "intervalo_mediano": 164.5,
+    "intervalo_mediano": 187.0,
     "label": "Frio",
-    "pedidos": 5,
-    "score": 21.2,
-    "score_frequencia": 32.0,
+    "pedidos": 4,
+    "score": 14.7,
+    "score_frequencia": 20.0,
     "score_recompra": 5.0,
     "score_valor": 12.0,
     "ultima_data": "2022-10-06",
@@ -23690,14 +23690,14 @@
    },
    "CLIENTE:1069": {
     "atraso_atual": 1897,
-    "cor": "info",
-    "faixa": "B",
-    "intervalo_mediano": 0.0,
-    "label": "Bom",
-    "pedidos": 2,
-    "score": 64.9,
-    "score_frequencia": 100.0,
-    "score_recompra": 30.0,
+    "cor": "secondary",
+    "faixa": "D",
+    "intervalo_mediano": null,
+    "label": "Frio",
+    "pedidos": 1,
+    "score": 15.7,
+    "score_frequencia": 15.0,
+    "score_recompra": 20.0,
     "score_valor": 12.0,
     "ultima_data": "2021-07-22",
     "valor_total": 144.45
@@ -23746,24 +23746,24 @@
    }
   },
   "distribuicao_faixas": {
-   "A": 42,
-   "A+": 4,
-   "B": 1462,
-   "C": 433,
-   "D": 3214
+   "A": 67,
+   "A+": 9,
+   "B": 353,
+   "C": 562,
+   "D": 4164
   },
   "prioridades": {
    "CLIENTE:1": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
-   },
-   "CLIENTE:100": {
     "cor": "warning",
     "motivo": "Cliente estratégico / muito bom",
     "ordem": 1,
     "prioridade": "ALTA"
+   },
+   "CLIENTE:100": {
+    "cor": "info",
+    "motivo": "Cliente bom com potencial",
+    "ordem": 2,
+    "prioridade": "MÉDIA"
    },
    "CLIENTE:1000": {
     "cor": "secondary",
@@ -23778,10 +23778,10 @@
     "prioridade": "BAIXA"
    },
    "CLIENTE:1002": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
+    "cor": "secondary",
+    "motivo": "Cliente de baixa prioridade comercial",
+    "ordem": 3,
+    "prioridade": "BAIXA"
    },
    "CLIENTE:1003": {
     "cor": "secondary",
@@ -23796,10 +23796,10 @@
     "prioridade": "BAIXA"
    },
    "CLIENTE:1005": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
+    "cor": "secondary",
+    "motivo": "Cliente de baixa prioridade comercial",
+    "ordem": 3,
+    "prioridade": "BAIXA"
    },
    "CLIENTE:1006": {
     "cor": "secondary",
@@ -23826,22 +23826,22 @@
     "prioridade": "BAIXA"
    },
    "CLIENTE:101": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
+    "cor": "secondary",
+    "motivo": "Cliente de baixa prioridade comercial",
+    "ordem": 3,
+    "prioridade": "BAIXA"
    },
    "CLIENTE:1010": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
+    "cor": "secondary",
+    "motivo": "Cliente de baixa prioridade comercial",
+    "ordem": 3,
+    "prioridade": "BAIXA"
    },
    "CLIENTE:1011": {
-    "cor": "info",
-    "motivo": "Cliente bom com potencial",
-    "ordem": 2,
-    "prioridade": "MÉDIA"
+    "cor": "secondary",
+    "motivo": "Cliente de baixa prioridade comercial",
+    "ordem": 3,
+    "prioridade": "BAIXA"
    },
    "CLIENTE:1012": {
     "cor": "secondary",
@@ -23874,7 +23874,7 @@
     "prioridade": "BAIXA"
    }
   },
-  "soma_scores": 172583.8,
+  "soma_scores": 126210.0,
   "total_identidades": 5155
  },
  "vendedores": {
@@ -26631,7 +26631,6 @@
       "recorrentes_nomes": [
        "CATARATAS",
        "DA CRUZ EMBALAGENS",
-       "GUAIBA DISTRIBUIDORA",
        "PEDIDOS 10 - NOVA TRENTO FABIANO",
        "SO ACAI - RIO TAVARES"
       ],
@@ -26639,8 +26638,8 @@
       "recuperados_nomes": [
        "CATARATAS"
       ],
-      "rep_count": 5,
-      "rep_regular_count": 4
+      "rep_count": 4,
+      "rep_regular_count": 3
      }
     },
     "2026-07": {
@@ -27353,7 +27352,6 @@
        "BILLIE",
        "DA CRUZ EMBALAGENS",
        "KLIN PRODUTOS INFANTIS",
-       "LAZER - CENTRO",
        "PEDIDOS 10 - NOVA TRENTO FABIANO",
        "SOL PARAGLIDERS"
       ],
@@ -27362,8 +27360,8 @@
        "BILLIE",
        "DA CRUZ EMBALAGENS"
       ],
-      "rep_count": 7,
-      "rep_regular_count": 5
+      "rep_count": 6,
+      "rep_regular_count": 4
      }
     },
     "2026-09": {
@@ -33649,7 +33647,6 @@
        "KIBS",
        "LEAVES",
        "MERCADO DAS EMBALAGENS",
-       "PARAISO MODA E ARTIGOS DE PRAIA",
        "SERPA EMBALAGENS",
        "SNOOP LANCHES, PETISCOS E PIZZARIA",
        "SUSHI DO GUI",
@@ -33666,8 +33663,8 @@
        "SUSHI DO GUI",
        "VANEG"
       ],
-      "rep_count": 22,
-      "rep_regular_count": 14
+      "rep_count": 21,
+      "rep_regular_count": 13
      }
     },
     "2026-08": {
@@ -36361,7 +36358,6 @@
       "recorrentes_nomes": [
        "3F ROUPAS E ACESSORIOS",
        "BESTBURGUER BELS",
-       "CASA BENJAMIN GASTRONOMIA",
        "CASA DAS EMBALAGENS",
        "CASA DAS EMBALAGENS BOMBINHAS",
        "COMERCIAL BESEN",
@@ -36398,8 +36394,8 @@
        "SERPA EMBALAGENS",
        "SNOOP LANCHES, PETISCOS E PIZZARIA"
       ],
-      "rep_count": 26,
-      "rep_regular_count": 17
+      "rep_count": 25,
+      "rep_regular_count": 16
      }
     },
     "2026-10": {
@@ -44168,7 +44164,6 @@
        "ENTS ENCANTOS",
        "EZEQUIEL IZIDORO GOULART",
        "GRESCHULZ GREMIO ESPORTIVO E CULTURAL SCHULZ",
-       "HB CERVEJARIA",
        "HOT DOG DU PIRU",
        "KYURI SUSHI",
        "LA FRANGUERIA",
@@ -44203,8 +44198,8 @@
        "SERIPLAST",
        "TRATTORIA CARBONE (GRUPO ALMA)"
       ],
-      "rep_count": 33,
-      "rep_regular_count": 23
+      "rep_count": 32,
+      "rep_regular_count": 22
      }
     },
     "2026-10": {
@@ -47646,7 +47641,6 @@
        "FORMULA DA PRAIA",
        "KIKONI",
        "LUOVO",
-       "MANIPULARE .JLLE",
        "MEDICINAL TERAPEUTICA",
        "MILLIGREEN FARMACIA DE MANIPULACAO",
        "NEGAO SUSHI EXPERIENCE",
@@ -47675,8 +47669,8 @@
        "SINERGIA",
        "ZETE MODAS"
       ],
-      "rep_count": 25,
-      "rep_regular_count": 12
+      "rep_count": 24,
+      "rep_regular_count": 11
      }
     },
     "2026-08": {
@@ -52275,7 +52269,6 @@
        "FOFUXINHOS",
        "GEUSA OLIVEIRA DA CRUZ",
        "GRAO MESTRE NATURAIS E ORGANICOS",
-       "HUGO BRAGA",
        "KAWAI SUSHI",
        "LACAROTTE PRESENTES",
        "LIZ ESSENCIAS",
@@ -52317,8 +52310,8 @@
        "TOCA",
        "TRUZZ"
       ],
-      "rep_count": 29,
-      "rep_regular_count": 10
+      "rep_count": 28,
+      "rep_regular_count": 9
      }
     },
     "2026-07": {
@@ -52773,7 +52766,6 @@
        "LANCHONETE NILSEN",
        "LOJA AMIGA DAS UNHAS",
        "MARA SEM GLUTEN",
-       "MARCIA SAORIN",
        "MARCO AURELIO SILVATTI",
        "NICOLAS FELIPE CAUS",
        "OLIVIA",
@@ -52801,8 +52793,8 @@
        "SENHOR RAIZ",
        "WORLD SUPLEMENTOS"
       ],
-      "rep_count": 30,
-      "rep_regular_count": 18
+      "rep_count": 29,
+      "rep_regular_count": 17
      }
     },
     "2026-08": {
@@ -55279,13 +55271,12 @@
       "periodo_fim": "2026-08-24",
       "periodo_inicio": "2026-07-25",
       "recorrentes_nomes": [
-       "FOOD TO SAVE",
-       "OLGA RI- MATRIZ VILA OLIMPIA"
+       "FOOD TO SAVE"
       ],
       "recuperado_count": 0,
       "recuperados_nomes": [],
-      "rep_count": 2,
-      "rep_regular_count": 2
+      "rep_count": 1,
+      "rep_regular_count": 1
      }
     },
     "2026-09": {
@@ -55635,13 +55626,12 @@
        "LANCHONETE DA CIDADE PEDIDO MATRIZ",
        "NEXT DOOR",
        "OLGA RI- MATRIZ VILA OLIMPIA",
-       "PIRAJA",
        "THE KEBABS"
       ],
       "recuperado_count": 0,
       "recuperados_nomes": [],
-      "rep_count": 9,
-      "rep_regular_count": 9
+      "rep_count": 8,
+      "rep_regular_count": 8
      }
     },
     "2026-10": {

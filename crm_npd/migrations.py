@@ -197,3 +197,66 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
         pass
 
     conn.commit()
+
+
+def _garantir_tabela_versoes(conn: sqlite3.Connection) -> None:
+    """Cria o registro de migracoes aplicadas."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            nome TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def _aplicada(conn: sqlite3.Connection, version: int) -> bool:
+    """Indica se a versao ja foi registrada."""
+    row = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?", (int(version),)
+    ).fetchone()
+    return row is not None
+
+
+def _carimbar(conn: sqlite3.Connection, version: int, nome: str) -> None:
+    """Registra uma migracao como aplicada."""
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, nome) VALUES (?, ?)",
+        (int(version), nome),
+    )
+
+
+def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
+    """Aplica as migracoes pendentes em ordem.
+
+    Bases ja existentes (com tabela ``invoices`` e sem registro de versao) sao
+    carimbadas como 1 e 2, sem reexecutar o schema. Bases novas recebem o
+    schema via ``init_db`` do monolito (versao 1) e as colunas aditivas
+    (versao 2).
+
+    Args:
+        conn: Conexao SQLite.
+
+    Returns:
+        Lista das versoes aplicadas nesta chamada.
+    """
+    _garantir_tabela_versoes(conn)
+    tabelas = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "invoices" in tabelas and not _aplicada(conn, 1):
+        _carimbar(conn, 1, "schema_base")
+        _carimbar(conn, 2, "colunas_aditivas")
+        conn.commit()
+        return []
+
+    aplicadas: list[int] = []
+    if not _aplicada(conn, 2):
+        apply_safe_migrations(conn)
+        _carimbar(conn, 2, "colunas_aditivas")
+        aplicadas.append(2)
+        conn.commit()
+    return aplicadas

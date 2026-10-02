@@ -10,6 +10,7 @@ import io
 import os
 import re
 import sqlite3
+from pathlib import Path
 import statistics
 import unicodedata
 import json
@@ -1167,12 +1168,11 @@ def get_identity_sales_stats(conn, customer_ids: List[int], ref: Optional[date] 
         except:
             pass
 
-    pedidos = len(rows)
+    datas = f_recompra.datas_unicas_ordenadas(datas)
+    pedidos = len(datas)
     ultima_data = datas[-1] if datas else None
 
-    intervalos = []
-    for i in range(1, len(datas)):
-        intervalos.append((datas[i] - datas[i - 1]).days)
+    intervalos = f_recompra.intervalos_entre_compras(datas)
 
     intervalo_mediano = None
     if intervalos:
@@ -1299,7 +1299,7 @@ def _build_identity_score_map_global_fast(conn) -> Dict[str, dict]:
     raw: Dict[str, dict] = {}
     valor_max = 0.0
     for ident, item in agg.items():
-        datas = item["datas"]
+        datas = f_recompra.datas_unicas_ordenadas(item["datas"])
         pedidos = len(datas)
         ultima_data = datas[-1] if datas else None
         intervalos = [(datas[i] - datas[i-1]).days for i in range(1, len(datas))]
@@ -2287,345 +2287,9 @@ def format_brl(v: float) -> str:
 # -----------------------------
 # UI template base (Bootstrap 5)
 # -----------------------------
-BASE_HTML = r"""
-<!doctype html>
-<html lang="pt-br">
-<head>
-  <meta charset="utf-8">
-  <title>{{ title }} • {{ app_title }}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#07111f">
+_BASE_HTML_PATH = Path(__file__).resolve().parent.parent / "templates" / "base.html"
+BASE_HTML = _BASE_HTML_PATH.read_text(encoding="utf-8")
 
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-
-  <style>
-    :root{
-      --crm-bg:#e5edf6;
-      --crm-panel:#ffffff;
-      --crm-panel-2:#f8fafc;
-      --crm-sidebar:#07111f;
-      --crm-sidebar-2:#0b1728;
-      --crm-text:#102033;
-      --crm-muted:#718096;
-      --crm-line:#d8e2ee;
-      --crm-primary:#2563eb;
-      --crm-cyan:#06b6d4;
-      --crm-green:#16a34a;
-      --crm-warning:#f59e0b;
-      --crm-danger:#ef4444;
-      --crm-purple:#7c3aed;
-      --crm-radius:16px;
-      --crm-shadow:0 12px 32px rgba(20,36,60,.08);
-      --crm-shadow-sm:0 7px 20px rgba(20,36,60,.09);
-    }
-    *{box-sizing:border-box}
-    html{background:var(--crm-bg)}
-    body{margin:0;background:radial-gradient(circle at 78% 0,rgba(37,99,235,.10),transparent 25%),radial-gradient(circle at 18% 0,rgba(6,182,212,.06),transparent 24%),linear-gradient(180deg,#edf3f9 0,#e4ebf4 46%,#e7edf5 100%);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial;color:var(--crm-text);font-size:14px}
-    a{color:var(--crm-primary)}
-    .layout{display:flex;min-height:100vh;width:100%}
-
-    /* Sidebar */
-    .sidebar{width:250px;background:linear-gradient(180deg,var(--crm-sidebar),var(--crm-sidebar-2));color:#fff;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;z-index:1040;border-right:1px solid rgba(255,255,255,.05);box-shadow:18px 0 45px rgba(5,15,30,.10);transition:.22s ease}
-    .brand{height:72px;padding:0 18px;display:flex;align-items:center;gap:11px;border-bottom:1px solid rgba(255,255,255,.07)}
-    .brand-mark{width:35px;height:35px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--crm-primary),var(--crm-cyan));box-shadow:0 8px 22px rgba(49,108,255,.32);font-weight:900;font-size:15px}
-    .brand-title{font-size:14px;font-weight:800;letter-spacing:.02em;line-height:1.1}
-    .brand-sub{font-size:10px;color:#7990ad;text-transform:uppercase;letter-spacing:.16em;margin-top:4px}
-    .nav{flex:1;padding:14px 10px;display:flex;flex-direction:column;gap:3px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#20324a transparent}
-    .nav-label{font-size:9px;letter-spacing:.17em;color:#526a87;font-weight:800;text-transform:uppercase;padding:13px 12px 6px}
-    .nav a{display:flex;align-items:center;gap:11px;min-height:40px;padding:8px 11px;border-radius:11px;color:#9eb0c7;text-decoration:none;font-weight:650;transition:.15s ease;position:relative}
-    .nav a i{font-size:16px;width:20px;text-align:center;color:#7088a6;transition:.15s ease}
-    .nav a:hover{background:rgba(255,255,255,.055);color:#fff;transform:translateX(1px)}
-    .nav a:hover i{color:#cfe8ff}
-    .nav a.active{background:linear-gradient(90deg,rgba(49,108,255,.24),rgba(24,199,217,.10));color:#fff;box-shadow:inset 3px 0 0 var(--crm-cyan)}
-    .nav a.active i{color:#57d9e7}
-    .nav a.active:after{content:"";width:6px;height:6px;border-radius:50%;background:var(--crm-cyan);box-shadow:0 0 12px var(--crm-cyan);position:absolute;right:12px}
-    .sidebar-footer{padding:13px 16px;border-top:1px solid rgba(255,255,255,.07);color:#657c97;font-size:10px;display:flex;justify-content:space-between;align-items:center}
-    .status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:#22c55e;box-shadow:0 0 10px #22c55e;margin-right:6px}
-
-    /* Main */
-    .main{flex:1;margin-left:250px;display:flex;flex-direction:column;min-height:100vh;min-width:0;transition:.22s ease}
-    .topbar{height:72px;background:linear-gradient(90deg,rgba(255,255,255,.97),rgba(247,251,255,.95));backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--crm-line);position:sticky;top:0;z-index:1020;gap:16px}
-    .topbar-left{display:flex;align-items:center;gap:14px;min-width:0}
-    .mobile-menu{display:none;border:0;background:#eef3f9;width:38px;height:38px;border-radius:11px}
-    .page-title{font-size:16px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .page-kicker{font-size:10px;color:var(--crm-muted);letter-spacing:.09em;text-transform:uppercase;margin-top:1px}
-    .global-search{width:min(420px,34vw);position:relative}
-    .global-search i{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:#91a0b2}
-    .global-search input{height:40px;padding-left:38px;background:#f6f8fb;border:1px solid #e6ebf2;border-radius:12px;font-size:13px}
-    .global-search input:focus{background:#fff;border-color:#b7c9ff;box-shadow:0 0 0 .2rem rgba(49,108,255,.09)}
-    .top-actions{display:flex;align-items:center;gap:8px}
-    .quick-add{height:38px;border-radius:11px;font-weight:700;display:flex;align-items:center;gap:7px}
-    .user-box{display:flex;align-items:center;gap:8px;margin-left:3px}
-    .avatar{width:35px;height:35px;border-radius:11px;background:linear-gradient(135deg,#182b47,#2e4667);display:grid;place-items:center;color:#fff;font-weight:800;box-shadow:var(--crm-shadow-sm)}
-    .user-name{font-size:12px;font-weight:800;line-height:1.1}
-    .user-role{font-size:10px;color:var(--crm-muted);text-transform:uppercase;margin-top:3px}
-    .logout-btn{width:35px;height:35px;border-radius:10px;display:grid;place-items:center;color:#6f8095;text-decoration:none;border:1px solid var(--crm-line);background:#fff}
-    .logout-btn:hover{color:var(--crm-danger);border-color:#fecaca;background:#fff7f7}
-.content{padding:24px;max-width:1780px;width:100%;margin:0 auto;position:relative}
-    .content:before{content:"";position:absolute;inset:0 auto auto 0;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle,rgba(49,108,255,.05),transparent 68%);filter:blur(8px);pointer-events:none}
-
-    /* CRM surface */
-    .cardx,.kpi{background:var(--crm-panel);border-radius:var(--crm-radius)!important;border:1px solid var(--crm-line)!important;box-shadow:var(--crm-shadow-sm)!important}
-    .icon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--crm-primary),var(--crm-cyan));color:#fff;font-weight:850;box-shadow:0 6px 16px rgba(49,108,255,.18);flex:0 0 auto}
-    .cardx{transition:box-shadow .16s ease,border-color .16s ease,transform .16s ease}
-    .cardx.crm-hover:hover{transform:translateY(-2px);box-shadow:var(--crm-shadow)!important;border-color:#d8e1ec!important}
-    .kpi{position:relative;overflow:hidden}
-    .kpi:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,var(--crm-primary),var(--crm-cyan))}
-    .muted,.text-muted{color:var(--crm-muted)!important}
-    .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;background:#eef4ff;color:#3461c9;border:1px solid #dbe7ff;font-weight:750;font-size:11px}
-    .chip-success{background:#ecfdf5;color:#087a55;border-color:#c9f5e1}
-    .chip-warning{background:#fff8e8;color:#946200;border-color:#fbe6af}
-    .chip-danger{background:#fff1f2;color:#b42333;border-color:#ffd6db}
-    .metric-label{text-transform:uppercase;letter-spacing:.08em;color:var(--crm-muted);font-weight:800;font-size:10px}
-    .metric-value{font-size:1.65rem;font-weight:850;letter-spacing:-.035em;color:#14243a}
-    .section-title{font-size:15px;font-weight:850;letter-spacing:-.01em}
-    .section-sub{font-size:12px;color:var(--crm-muted)}
-    .tech-panel{background:linear-gradient(135deg,#0b1728,#132744 60%,#12384b);color:#fff;border-radius:18px;box-shadow:0 16px 38px rgba(8,24,48,.18);border:1px solid rgba(255,255,255,.05);overflow:hidden;position:relative}
-    .tech-panel:after{content:"";position:absolute;width:320px;height:320px;border-radius:50%;right:-150px;top:-200px;background:radial-gradient(circle,rgba(24,199,217,.22),transparent 66%)}
-    .tech-grid{background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:22px 22px}
-    .btn{border-radius:10px;font-weight:700;font-size:13px}
-    .btn-primary{background:var(--crm-primary);border-color:var(--crm-primary);box-shadow:0 4px 13px rgba(49,108,255,.20)}
-    .btn-primary:hover{background:#285ee2;border-color:#285ee2}
-    .form-control,.form-select{border-radius:10px;border-color:#dfe6ef;font-size:13px;min-height:39px}
-    .form-control:focus,.form-select:focus{border-color:#9cb5ff;box-shadow:0 0 0 .2rem rgba(49,108,255,.08)}
-    .form-label{font-size:11px;font-weight:750;color:#65758a}
-    .table{--bs-table-bg:transparent;color:#2d3d52}
-    .table thead th{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:#8492a5;font-weight:850;border-bottom-color:#e8edf3;padding-top:10px;padding-bottom:10px;white-space:nowrap}
-    .table tbody td{border-bottom-color:#eef2f6;padding-top:11px;padding-bottom:11px;vertical-align:middle}
-    .table-hover>tbody>tr:hover>*{--bs-table-bg-state:#f7f9fc}
-    .progress{background:#edf1f6;border-radius:999px}
-    .progress-bar{border-radius:999px}
-    .chart-img{width:100%;border-radius:14px;border:1px solid var(--crm-line);background:linear-gradient(180deg,#fbfdff,#f8fbff);box-shadow:inset 0 1px 0 rgba(255,255,255,.9)}
-    .chart-frame{background:linear-gradient(180deg,#fbfdff,#f4f8ff);border:1px solid #e8eef6;border-radius:16px;padding:10px;display:flex;align-items:center;justify-content:center;min-height:320px}
-    .chart-frame.chart-sm{min-height:280px}
-    .chart-frame.chart-lg{min-height:360px}
-    .chart-caption{font-size:12px;color:var(--crm-muted)}
-    .campaign-chart-wrap{width:100%;overflow:hidden;border:1px solid #e4ebf4;border-radius:16px;background:linear-gradient(180deg,#fbfdff,#f6f9fd);padding:12px 14px;display:flex;justify-content:center;align-items:center}
-    .campaign-chart-img{display:block;width:min(100%,1180px)!important;max-width:1180px!important;min-width:0!important;height:auto!important;margin:0 auto;border:0!important;box-shadow:none!important;background:transparent!important}
-    .hero-kpi{display:flex;flex-direction:column;gap:2px}
-    .hero-kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#91a4bd;font-weight:800}
-    .hero-kpi-value{font-size:1.55rem;font-weight:850;letter-spacing:-.035em;color:#fff}
-    .hero-kpi-sub{font-size:12px;color:#d7e8ff}
-    .metric-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-    .metric-pill{background:linear-gradient(180deg,#ffffff,#f9fbff);border:1px solid #e5edf8;border-radius:16px;padding:16px;box-shadow:var(--crm-shadow-sm)}
-    .metric-pill .num{font-size:1.6rem;font-weight:850;letter-spacing:-.03em}
-    .metric-pill .desc{font-size:12px;color:var(--crm-muted)}
-    .ticker-wrap{margin:-24px -24px 18px -24px;background:linear-gradient(90deg,#128a53,#15b86a,#0ea85b);border-bottom:1px solid rgba(255,255,255,.12);box-shadow:0 12px 28px rgba(16,185,129,.22);overflow:hidden}
-    .ticker-inner{display:flex;align-items:center;gap:26px;min-height:42px;padding:0 16px;color:#fff;font-weight:800;white-space:nowrap}
-    .ticker-badge{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:999px;background:rgba(255,255,255,.18);font-size:12px;flex:0 0 auto}
-    .ticker-track{display:flex;align-items:center;gap:48px;will-change:transform;animation:crmTicker 28s linear infinite}
-    .ticker-item{display:flex;align-items:center;gap:10px;font-size:14px;letter-spacing:.01em;text-shadow:0 1px 2px rgba(0,0,0,.12)}
-    .ticker-item strong{font-weight:900}
-    @keyframes crmTicker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-
-    .alert{border-radius:14px;border-width:1px;box-shadow:none!important}
-    .footer-note{font-size:11px;color:var(--crm-muted)}
-
-    /* V4.4 design system */
-    .content{max-width:1720px;padding:28px 30px 40px}
-    .cardx,.kpi{border-radius:19px!important;border:1px solid #d3dfec!important;box-shadow:0 12px 30px rgba(18,38,67,.105)!important}
-    .cardx{background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%)}
-    .cardx:hover{border-color:#d5e1ef!important}
-    .page-hero{background:linear-gradient(125deg,#081827 0%,#102b48 58%,#0e4655 100%);border:1px solid rgba(255,255,255,.06);border-radius:22px;padding:24px 26px;color:#fff;box-shadow:0 18px 46px rgba(7,24,46,.20);position:relative;overflow:hidden}
-    .page-hero:after{content:"";position:absolute;width:380px;height:380px;border-radius:50%;right:-160px;top:-240px;background:radial-gradient(circle,rgba(39,211,225,.28),transparent 65%);pointer-events:none}
-    .page-hero .hero-title{font-size:1.7rem;font-weight:900;letter-spacing:-.035em}
-    .page-hero .hero-sub{color:#b9cbe0;font-size:12px}
-    .stat-card{position:relative;overflow:hidden;padding:18px 20px;border-radius:18px;background:linear-gradient(180deg,#fff,#fbfdff);border:1px solid #e3ebf5;box-shadow:0 8px 22px rgba(20,42,75,.055)}
-    .stat-card:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:linear-gradient(180deg,#316cff,#18c7d9)}
-    .stat-card .stat-label{font-size:10px;letter-spacing:.095em;text-transform:uppercase;color:#7a8ba0;font-weight:850}
-    .stat-card .stat-value{font-size:1.65rem;font-weight:900;letter-spacing:-.04em;color:#11253d;margin-top:4px}
-    .stat-card .stat-sub{font-size:11.5px;color:#7a8ba0;margin-top:3px}
-    .viz-card{background:linear-gradient(180deg,#ffffff,#fbfdff);border:1px solid #e2eaf4;border-radius:20px;box-shadow:0 8px 28px rgba(20,42,75,.06);padding:20px;height:100%;overflow:hidden}
-    .viz-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
-    .viz-title{font-size:15px;font-weight:900;letter-spacing:-.012em;color:#13273e}
-    .viz-sub{font-size:11.5px;color:#7b8ca1;margin-top:2px}
-    .viz-body{background:linear-gradient(180deg,#fbfdff,#f7faff);border:1px solid #e8eef7;border-radius:16px;padding:10px;min-height:280px;display:flex;align-items:center;justify-content:center}
-    .viz-body img{display:block;width:100%;height:auto;border:0!important;border-radius:12px;box-shadow:none!important;background:transparent!important}
-    .mini-status-list{display:flex;flex-direction:column;gap:8px}
-    .mini-status-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 12px;border:1px solid #e7edf5;border-radius:13px;background:#fff;transition:.15s ease}
-    .mini-status-row:hover{transform:translateX(2px);border-color:#cddbf0;background:#fafdff}
-    .mini-status-name{font-size:11px;font-weight:800;color:#33475e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .mini-status-meta{font-size:10px;color:#8998aa;margin-top:2px}
-    .mini-status-value{text-align:right;font-weight:900;color:#172b43}
-    .mini-status-value small{display:block;font-size:9px;color:#7f8fa2;font-weight:700}
-    .section-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:28px 0 14px}
-    .section-heading h2{font-size:1.05rem;font-weight:900;letter-spacing:-.02em;margin:0;color:#10243c}
-    .section-heading p{font-size:11.5px;color:#718096;margin:2px 0 0}
-    .channel-card{height:100%;position:relative;overflow:hidden;border-radius:20px;padding:22px 20px 20px;background:#fff;border:1px solid #dde7f2;box-shadow:0 10px 28px rgba(21,42,72,.075)}
-    .channel-card:before{content:"";position:absolute;left:0;right:0;top:0;height:6px;pointer-events:none}
-    .channel-card:after{content:"";position:absolute;width:160px;height:160px;border-radius:50%;right:-70px;top:-85px;opacity:.10;pointer-events:none}
-    .channel-card.internal:before{background:linear-gradient(90deg,#2563eb,#38bdf8)}.channel-card.internal:after{background:#2563eb}
-    .channel-card.external:before{background:linear-gradient(90deg,#16a34a,#34d399)}.channel-card.external:after{background:#16a34a}
-    .channel-card.site:before{background:linear-gradient(90deg,#7c3aed,#a855f7)}.channel-card.site:after{background:#7c3aed}
-    .channel-tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:900;letter-spacing:.08em}
-    .channel-tag.internal{background:#eaf1ff;color:#1d4ed8}.channel-tag.external{background:#eaf8ef;color:#15803d}.channel-tag.site{background:#f1eaff;color:#6d28d9}
-    .channel-main{font-size:1.72rem;font-weight:900;letter-spacing:-.04em;margin-top:12px;color:#10233a}
-    .channel-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid #e9eef5}
-    .channel-meta .box{text-align:center;min-width:0}.channel-meta .label{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:#8190a4;font-weight:800}.channel-meta .value{font-size:12px;font-weight:850;color:#20364f;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .channel-status{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-    .channel-status span{font-size:10px;font-weight:800;border-radius:999px;padding:4px 8px;background:#f3f6fa;color:#506176;border:1px solid #e3e9f1}
-    .channel-status .pending{background:#fff7e8;color:#9a6500;border-color:#f7dda1}
-    .table-responsive{border-radius:14px}
-    .table thead th{background:#f7f9fc;color:#718197;border-bottom:1px solid #e3eaf3;position:sticky;top:0;z-index:1}
-    .table tbody tr{transition:background .12s ease}
-    .table tbody tr:hover{background:#f8fbff}
-    .badge{font-weight:750;letter-spacing:.01em}
-    .form-control,.form-select{background:#fbfcfe;border-color:#dfe7f1}
-    .form-control:hover,.form-select:hover{border-color:#cbd8e8}
-    .topbar{box-shadow:0 3px 16px rgba(16,33,56,.045)}
-    .sidebar{box-shadow:18px 0 46px rgba(4,17,35,.14)}
-    .chart-img{display:block!important;width:auto!important;max-width:100%!important;height:auto!important;max-height:340px!important;margin:0 auto!important;border:0!important;box-shadow:none!important;background:transparent!important}
-    .chart-frame{min-height:0!important;height:auto!important;padding:10px!important}
-    .chart-frame.chart-sm{min-height:0!important}
-    .chart-frame.chart-lg{min-height:0!important}
-    .viz-body{min-height:0!important;height:auto!important}
-    .viz-body img{display:block!important;width:auto!important;max-width:100%!important;height:auto!important;max-height:340px!important;margin:0 auto!important}
-    @media(max-width:900px){.content{padding:16px}.page-hero{padding:20px}.viz-card{padding:15px}.viz-body{min-height:220px}}
-
-    /* V4.4.2 contrast pass — light surfaces must always use dark readable text */
-    .tech-panel{
-      background:linear-gradient(135deg,#d8eaff 0%,#e8efff 56%,#d9f0f3 100%)!important;
-      color:#11263e!important;
-      border:1px solid #c3d7ea!important;
-      box-shadow:0 14px 34px rgba(28,63,103,.14)!important;
-    }
-    .tech-panel:after{background:radial-gradient(circle,rgba(37,99,235,.13),transparent 67%)!important}
-    .tech-panel .display-6,.tech-panel .h1,.tech-panel .h2,.tech-panel .h3,.tech-panel .h4,.tech-panel .h5,.tech-panel .h6,
-    .tech-panel .hero-kpi-value{color:#10243c!important;text-shadow:none!important}
-    .tech-panel .hero-kpi-label{color:#516f91!important}
-    .tech-panel .hero-kpi-sub,.tech-panel .text-white-50{color:#5c738d!important}
-    .tech-panel .text-uppercase.small.fw-bold{color:#1678c4!important}
-    .tech-panel [style*="color:#a9b9cd"],.tech-panel [style*="color: #a9b9cd"]{color:#5f7690!important}
-    .tech-panel [style*="color:#8da2bb"],.tech-panel [style*="color: #8da2bb"]{color:#647c96!important}
-    .tech-panel [style*="color:#63dce8"],.tech-panel [style*="color: #63dce8"]{color:#0a7db7!important}
-    .tech-panel .rounded-3[style*="background:rgba(255,255,255,.06)"]{background:rgba(255,255,255,.58)!important;border:1px solid rgba(112,142,177,.20)}
-    .tech-panel .chip{box-shadow:0 2px 8px rgba(22,56,92,.06)}
-    .content:after{content:"";position:fixed;inset:72px 0 0 250px;pointer-events:none;z-index:-1;background:linear-gradient(180deg,rgba(19,53,91,.018),rgba(19,53,91,.035))}
-    .stat-card,.metric-pill,.viz-card,.channel-card{border-color:#d4e0ed!important;box-shadow:0 10px 26px rgba(20,42,75,.085)!important}
-    .table-responsive{background:#fff;border:1px solid #dce5ef}
-    .form-control,.form-select{background:#fff;border-color:#d5e0eb}
-    @media(max-width:900px){.content:after{inset:72px 0 0 0}}
-
-    /* V4.4.4 seller analytics: charts stay inside their cards */
-    .vendor-dashboard .viz-card{min-width:0}
-    .vendor-dashboard .viz-body{padding:12px;overflow:hidden;min-height:250px!important}
-    .vendor-dashboard .vendor-chart-wide img{width:100%!important;max-width:100%!important;max-height:310px!important;object-fit:contain}
-    .vendor-dashboard .vendor-chart-rank img{width:100%!important;max-width:100%!important;max-height:380px!important;object-fit:contain}
-    .vendor-dashboard .cardx{min-width:0}
-    @media(max-width:1200px){.vendor-dashboard .viz-body{min-height:220px!important}}
-
-    /* Pipeline */
-    .pipeline-wrap{overflow-x:auto;padding-bottom:8px}
-    .pipeline-board{display:grid;grid-template-columns:repeat(5,minmax(250px,1fr));gap:12px;min-width:1320px;align-items:start}
-    .pipeline-col{background:#eef2f7;border:1px solid #e3e9f1;border-radius:15px;padding:10px;min-height:240px}
-    .pipeline-col.drag-over{outline:2px dashed var(--crm-primary);outline-offset:-4px;background:#eef4ff}
-    .pipeline-head{display:flex;align-items:center;justify-content:space-between;padding:5px 4px 10px;gap:8px}
-    .pipeline-name{font-size:11px;text-transform:uppercase;letter-spacing:.075em;font-weight:850;color:#53657a}
-    .pipeline-count{font-size:10px;font-weight:800;background:#fff;border:1px solid #dae2ec;border-radius:999px;padding:2px 7px;color:#6c7e92}
-    .deal-card{background:#fff;border:1px solid #e1e7ef;border-radius:13px;padding:12px;margin-bottom:9px;box-shadow:0 3px 10px rgba(25,45,75,.05);cursor:grab;transition:.15s ease}
-    .deal-card:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(25,45,75,.10);border-color:#cfd9e7}
-    .deal-card.dragging{opacity:.5}
-    .deal-company{font-size:10px;color:#8a98a9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .deal-name{font-size:13px;font-weight:850;color:#1a2b42;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .deal-value{font-size:13px;font-weight:850;color:#274ea9}
-    .deal-meta{font-size:10px;color:#7b899a}
-    .temp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px}
-    .temp-QUENTE{background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.35)}
-    .temp-MORNO{background:#f59e0b}
-    .temp-FRIO{background:#38bdf8}
-    .next-overdue{color:#c12b3a!important;font-weight:800}
-    .next-today{color:#9a6500!important;font-weight:800}
-    .stale-badge{font-size:9px;background:#fff0f1;color:#b42333;border:1px solid #ffd0d5;border-radius:999px;padding:2px 6px}
-
-    /* Timeline */
-    .timeline{position:relative;padding-left:20px}
-    .timeline:before{content:"";position:absolute;left:6px;top:8px;bottom:4px;width:1px;background:#dfe6ef}
-    .timeline-item{position:relative;padding:0 0 18px 10px}
-    .timeline-item:before{content:"";position:absolute;left:-18px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--crm-primary);box-shadow:0 0 0 4px #edf3ff}
-
-    @media(max-width:1200px){.metric-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media(max-width:1100px){.global-search{display:none}.content{padding:18px}.ticker-wrap{margin:-18px -18px 18px -18px}}
-    @media(max-width:900px){
-      .sidebar{transform:translateX(-100%);width:260px}.main{margin-left:0}.mobile-menu{display:grid;place-items:center}.sidebar-open .sidebar{transform:translateX(0)}.sidebar-open:after{content:"";position:fixed;inset:0;background:rgba(3,12,25,.46);z-index:1030}.user-name,.user-role{display:none}.topbar{padding:0 14px}.content{padding:14px}.quick-add span{display:none}.quick-add{width:38px;justify-content:center;padding:0}.page-kicker{display:none}.ticker-wrap{margin:-14px -14px 16px -14px}.metric-strip{grid-template-columns:1fr}.chart-frame{min-height:250px}
-    }
-  </style>
-</head>
-<body>
-<div class="layout">
-  <aside class="sidebar" id="crmSidebar">
-    <div class="brand">
-      <div class="brand-mark">N</div>
-      <div><div class="brand-title">NPD CRM</div><div class="brand-sub">Sales Intelligence</div></div>
-    </div>
-    <nav class="nav">
-      {% if nav_items %}<div class="nav-label">Workspace</div>{% endif %}
-      {% for item in nav_items %}
-        <a class="{% if item.endpoint==active %}active{% endif %}" href="{{ url_for(item.endpoint) }}">
-          <i class="bi {{ item.icon or 'bi-grid' }}"></i><span>{{ item.label }}</span>
-        </a>
-      {% endfor %}
-    </nav>
-    <div class="sidebar-footer"><span><span class="status-dot"></span>Sistema online</span><span>v4.5.1</span></div>
-  </aside>
-
-  <main class="main">
-    <header class="topbar">
-      <div class="topbar-left">
-        <button class="mobile-menu" type="button" onclick="document.body.classList.toggle('sidebar-open')"><i class="bi bi-list"></i></button>
-        <div><div class="page-title">{{ title }}</div><div class="page-kicker">NPD • inteligência comercial</div></div>
-      </div>
-
-      {% if user %}
-      <form class="global-search" method="get" action="{{ url_for('global_search') }}">
-        <i class="bi bi-search"></i><input class="form-control" name="q" placeholder="Buscar cliente, oportunidade, vendedor ou pedido…" autocomplete="off">
-      </form>
-      <div class="top-actions">
-        {% if user['role'] in ['admin', 'gestor'] %}
-        <a class="btn btn-primary quick-add" href="{{ url_for('importar_csv') }}"><i class="bi bi-arrow-repeat"></i><span>Atualizar Sisplan</span></a>
-        {% else %}
-        <a class="btn btn-primary quick-add" href="{{ url_for('ia_assistente') }}"><i class="bi bi-stars"></i><span>Perguntar à IA</span></a>
-        {% endif %}
-        <div class="user-box">
-          <div class="avatar">{{ (user['nome'] or 'U')[:1]|upper }}</div>
-          <div><div class="user-name">{{ user['nome'] }}</div><div class="user-role">{{ user['role'] }}</div></div>
-          <a class="logout-btn" href="{{ url_for('logout') }}" title="Sair"><i class="bi bi-box-arrow-right"></i></a>
-        </div>
-      </div>
-      {% endif %}
-    </header>
-
-    <section class="content">
-      {% if ticker_messages %}
-      <div class="ticker-wrap">
-        <div class="ticker-inner">
-          <div class="ticker-track">
-            {% for _ in range(2) %}{% for msg in ticker_messages %}
-            <div class="ticker-item"><span class="ticker-badge">★</span><span>{{ msg }}</span></div>
-            {% endfor %}{% endfor %}
-          </div>
-        </div>
-      </div>
-      {% endif %}
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}{% for cat, msg in messages %}
-          <div class="alert alert-{{ 'warning' if cat=='warning' else ('danger' if cat=='danger' else ('success' if cat=='success' else 'info')) }} mb-3">{{ msg }}</div>
-        {% endfor %}{% endif %}
-      {% endwith %}
-      {{ body|safe }}
-    </section>
-  </main>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-document.addEventListener('click', function(e){
-  if(document.body.classList.contains('sidebar-open') && !e.target.closest('#crmSidebar') && !e.target.closest('.mobile-menu')) document.body.classList.remove('sidebar-open');
-});
-</script>
-</body>
-</html>
-"""
 
 
 def render_page(title: str, body_html: str, active: str) -> str:
@@ -5749,14 +5413,16 @@ def _market_snapshot(conn, ref_date: date | None = None) -> dict:
     projecao_mes = (float(fat_mes['valor'] or 0) / dias_passados) * mes_fim.day if dias_passados else 0.0
     churn_count = conn.execute("""
         WITH base_ly AS (
-            SELECT DISTINCT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave
-            FROM invoices
-            WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+            SELECT DISTINCT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave
+            FROM invoices i
+            LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+            WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
         ),
         base_cy AS (
-            SELECT DISTINCT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave
-            FROM invoices
-            WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+            SELECT DISTINCT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave
+            FROM invoices i
+            LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+            WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
         )
         SELECT COUNT(*) AS qtd
         FROM base_ly ly
@@ -6181,18 +5847,20 @@ def _answer_data_question(conn, question: str, user: dict | None = None) -> str 
     if 'top perdas' in q or 'maiores perdas' in q or 'clientes perdidos' in q:
         rows = conn.execute("""
             WITH base_ly AS (
-                SELECT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave,
-                       COALESCE(NULLIF(TRIM(rede_nome), ''), NULLIF(TRIM(cliente_nome_ref), ''), 'Cliente sem nome') AS cliente,
-                       COALESCE(SUM(COALESCE(valor,0)),0) AS valor_ly
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
-                GROUP BY 1,2
+                SELECT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave,
+                       MAX(COALESCE(NULLIF(TRIM(cir.identity_nome), ''), NULLIF(TRIM(i.rede_nome), ''), NULLIF(TRIM(i.cliente_nome_ref), ''), 'Cliente sem nome')) AS cliente,
+                       COALESCE(SUM(COALESCE(i.valor,0)),0) AS valor_ly
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
+                GROUP BY 1
             ),
             base_cy AS (
-                SELECT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave,
-                       COALESCE(SUM(COALESCE(valor,0)),0) AS valor_cy
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+                SELECT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave,
+                       COALESCE(SUM(COALESCE(i.valor,0)),0) AS valor_cy
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
                 GROUP BY 1
             )
             SELECT ly.cliente, ly.valor_ly, COALESCE(cy.valor_cy,0) AS valor_cy, (ly.valor_ly - COALESCE(cy.valor_cy,0)) AS perda
@@ -7125,18 +6793,20 @@ def estudo_mercado():
         """, (ytd_ly_ini.isoformat(), ytd_ly_fim.isoformat())).fetchone()
         churn_rows = conn.execute("""
             WITH base_ly AS (
-                SELECT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave,
-                       COALESCE(NULLIF(TRIM(rede_nome), ''), NULLIF(TRIM(cliente_nome_ref), ''), 'Cliente sem nome') AS cliente,
-                       COALESCE(SUM(COALESCE(valor,0)),0) AS valor_ly
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
-                GROUP BY 1,2
+                SELECT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave,
+                       MAX(COALESCE(NULLIF(TRIM(cir.identity_nome), ''), NULLIF(TRIM(i.rede_nome), ''), NULLIF(TRIM(i.cliente_nome_ref), ''), 'Cliente sem nome')) AS cliente,
+                       COALESCE(SUM(COALESCE(i.valor,0)),0) AS valor_ly
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
+                GROUP BY 1
             ),
             base_cy AS (
-                SELECT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave,
-                       COALESCE(SUM(COALESCE(valor,0)),0) AS valor_cy
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+                SELECT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave,
+                       COALESCE(SUM(COALESCE(i.valor,0)),0) AS valor_cy
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
                 GROUP BY 1
             )
             SELECT ly.cliente, ly.valor_ly, COALESCE(cy.valor_cy, 0) AS valor_cy,
@@ -7149,14 +6819,16 @@ def estudo_mercado():
         """, (f'{ano_anterior}-01-01', f'{ano_anterior}-12-31', f'{ano_atual}-01-01', ref_date.isoformat())).fetchall()
         churn_count = conn.execute("""
             WITH base_ly AS (
-                SELECT DISTINCT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+                SELECT DISTINCT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
             ),
             base_cy AS (
-                SELECT DISTINCT COALESCE(NULLIF(TRIM(rede_key), ''), 'CID:' || COALESCE(cliente_id, 0), 'N:' || UPPER(TRIM(COALESCE(cliente_nome_ref,'')))) AS chave
-                FROM invoices
-                WHERE date(data_emissao) BETWEEN date(?) AND date(?)
+                SELECT DISTINCT COALESCE(NULLIF(TRIM(cir.identity_key), ''), 'CLIENTE:' || i.cliente_id) AS chave
+                FROM invoices i
+                LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
+                WHERE date(i.data_emissao) BETWEEN date(?) AND date(?)
             )
             SELECT COUNT(*) AS qtd
             FROM base_ly ly
@@ -11824,7 +11496,7 @@ def site_analytics():
         fat_qtd = len(fat_rows)
         ticket_ped = (pedidos_val / pedidos_qtd) if pedidos_qtd else 0.0
         ticket_fat = (fat_val / fat_qtd) if fat_qtd else 0.0
-        conv_qtd = (fat_qtd / pedidos_qtd * 100.0) if pedidos_qtd else 0.0
+        conv_qtd = f_funil.taxa_faturamento_pedidos(fat_qtd, pedidos_qtd)
         conv_val = (fat_val / pedidos_val * 100.0) if pedidos_val else 0.0
         receb_ratio = (liq_total / fat_val * 100.0) if fat_val else 0.0
         gap_qtd = max(0, pedidos_qtd - fat_qtd)
@@ -11913,7 +11585,7 @@ def site_analytics():
     <div class="row g-3 mb-4">
       <div class="col-12 col-md-3"><div class="cardx p-3 h-100"><div class="small text-muted fw-bold">TICKET PEDIDO</div><div class="h4 fw-bold mb-0">{{ format_brl(ticket_ped) }}</div></div></div>
       <div class="col-12 col-md-3"><div class="cardx p-3 h-100"><div class="small text-muted fw-bold">TICKET FATURADO</div><div class="h4 fw-bold mb-0">{{ format_brl(ticket_fat) }}</div></div></div>
-      <div class="col-12 col-md-3"><div class="cardx p-3 h-100"><div class="small text-muted fw-bold">CONVERSÃO QTD</div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(conv_qtd) }}%</div></div></div>
+      <div class="col-12 col-md-3"><div class="cardx p-3 h-100"><div class="small text-muted fw-bold">TAXA DE FATURAMENTO</div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(conv_qtd) }}%</div><div class="small text-muted">notas / pedidos do ciclo</div></div></div>
       <div class="col-12 col-md-3"><div class="cardx p-3 h-100"><div class="small text-muted fw-bold">CONVERSÃO VALOR</div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(conv_val) }}%</div></div></div>
     </div>
 
@@ -17163,57 +16835,8 @@ def _sum_pedidos_periodo(conn: sqlite3.Connection, d0: date, d1: date, vendor_id
     return float(row["total"] or 0)
 
 def get_metrics_orcamentos(conn, dt_inicio, dt_fim, vendor_id=None, vendor_nome=None):
-    query = """
-        SELECT
-            numero,
-            pedido_id,
-            valor_total,
-            status,
-            vendedor_id,
-            vendedor_nome
-        FROM orcamentos
-        WHERE date(data_inicio) >= date(?) AND date(data_inicio) <= date(?)
-    """
-    params = [dt_inicio, dt_fim]
-
-    filtros = []
-
-    if vendor_id:
-        v_str = str(vendor_id).strip()
-        v_norm = v_str.lstrip("0")
-        if v_norm:
-            filtros.append("(TRIM(COALESCE(vendedor_id,'')) = ? OR TRIM(COALESCE(vendedor_id,'')) = ?)")
-            params.extend([v_str, v_norm])
-        else:
-            filtros.append("(TRIM(COALESCE(vendedor_id,'')) = ?)")
-            params.append(v_str)
-
-    if vendor_nome:
-        filtros.append("UPPER(TRIM(COALESCE(vendedor_nome,''))) = UPPER(?)")
-        params.append(str(vendor_nome).strip())
-
-    if filtros:
-        query += " AND (" + " OR ".join(filtros) + ")"
-
-    rows = conn.execute(query, params).fetchall()
-
-    total_count = len(rows)
-
-    convertidos = [
-        r for r in rows
-        if r["pedido_id"] and str(r["pedido_id"]).strip() not in ["", "0", "None"]
-    ]
-    total_convertidos = len(convertidos)
-
-    valor_total = sum(float(r["valor_total"] or 0) for r in rows)
-    taxa_conversao = (total_convertidos / total_count * 100) if total_count > 0 else 0
-
-    return {
-        "total": total_count,
-        "convertidos": total_convertidos,
-        "valor_total": valor_total,
-        "taxa_conversao": taxa_conversao
-    }
+    from crm_npd.repositories.sqlite import orcamentos as repo_orc
+    return repo_orc.metricas(conn, dt_inicio, dt_fim, vendor_id=vendor_id, vendor_nome=vendor_nome)
 
 def meta_empresa_calc(conn: sqlite3.Connection, meses: int = 3, fator: float = 1.0) -> float:
     totals = []

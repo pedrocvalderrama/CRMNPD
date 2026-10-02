@@ -143,6 +143,44 @@ def esta_parado(etapa: EtapaFunil, dias_aberto: int) -> bool:
     return etapa.e_acionavel and int(dias_aberto or 0) >= SLA_DIAS_PARADO
 
 
+def orcamento_convertido(pedido_id: str | None, desc_status: str | None = None) -> bool:
+    """Decide se um orcamento converteu, com a regra unica do Estudo de Mercado.
+
+    Convertido quando ha pedido vinculado (qualquer texto nao vazio, inclusive
+    lixo historico como ``0`` ou ``None``) OU o status e ``PEDIDO APROVADO``.
+    Essa e a regra A/B aprovada na reconciliacao: as duas telas que ja
+    coincidiam passam a ser a unica implementacao.
+
+    Args:
+        pedido_id: Identificador do pedido gerado, se houver.
+        desc_status: Descricao do status no relatorio 104.
+
+    Returns:
+        True quando o orcamento conta como convertido.
+    """
+    if str(pedido_id or "").strip():
+        return True
+    return normalizar_texto(desc_status) == "PEDIDO APROVADO"
+
+
+def taxa_faturamento_pedidos(notas: int, pedidos: int) -> float:
+    """Relacao operacional pedido -> nota fiscal.
+
+    Nao e taxa de conversao de proposta. O rotulo antigo ``CONVERSAO QTD``
+    media isso e gerava comparacao falsa com a conversao do funil.
+
+    Args:
+        notas: Quantidade de notas fiscais no periodo.
+        pedidos: Quantidade de pedidos no periodo.
+
+    Returns:
+        Percentual de 0 a 100, ou zero se nao houver pedidos.
+    """
+    if pedidos <= 0:
+        return 0.0
+    return notas / pedidos * 100.0
+
+
 def taxa_conversao(ganhos: int, fechados: int) -> float:
     """Percentual de ganho sobre os orcamentos com desfecho conhecido.
 

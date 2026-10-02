@@ -245,7 +245,7 @@ def build_identity_score_map_fast(legacy, conn, user=None, customer_ids_scope=No
     id_map = _allowed_customer_identity_map(legacy, conn, user=user, customer_ids_scope=customer_ids_scope)
     identities = set(id_map.values())
     raw: dict[str, dict[str, Any]] = {
-        ik: {"valor_total": 0.0, "pedidos": 0, "datas": []} for ik in identities
+        ik: {"valor_total": 0.0, "datas": []} for ik in identities
     }
 
     for r in conn.execute("""
@@ -260,8 +260,7 @@ def build_identity_score_map_fast(legacy, conn, user=None, customer_ids_scope=No
         ik = id_map.get(cid)
         if not ik:
             continue
-        st = raw.setdefault(ik, {"valor_total": 0.0, "pedidos": 0, "datas": []})
-        st["pedidos"] += 1
+        st = raw.setdefault(ik, {"valor_total": 0.0, "datas": []})
         st["valor_total"] += float(r["valor"] or 0)
         d = legacy.try_parse_date(r["data_emissao"])
         if d:
@@ -275,48 +274,19 @@ def build_identity_score_map_fast(legacy, conn, user=None, customer_ids_scope=No
     result: dict[str, dict[str, Any]] = {}
 
     for ik, st in raw.items():
-        datas = st["datas"]
-        intervalos = [(datas[i] - datas[i-1]).days for i in range(1, len(datas))] if len(datas) >= 2 else []
+        datas = f_recompra.datas_unicas_ordenadas(st["datas"])
+        intervalos = f_recompra.intervalos_entre_compras(datas)
         intervalo_mediano = float(median(intervalos)) if intervalos else None
         ultima_data = datas[-1] if datas else None
         atraso_atual = (ref - ultima_data).days if ultima_data else None
         stats = {
             "valor_total": float(st["valor_total"] or 0),
-            "pedidos": int(st["pedidos"] or 0),
+            "pedidos": len(datas),
             "ultima_data": ultima_data,
             "intervalo_mediano": intervalo_mediano,
             "atraso_atual": atraso_atual,
         }
-        pedidos = stats["pedidos"]
-        freq = legacy.calc_frequency_score(intervalo_mediano, pedidos)
-        rep = legacy.calc_repurchase_score(stats)
-        val = legacy.calc_value_score(stats["valor_total"], valor_max)
-        final = round((freq * 0.55) + (rep * 0.25) + (val * 0.20), 1)
-        if pedidos <= 1:
-            final = min(final, 25.0)
-        elif intervalo_mediano is not None:
-            if intervalo_mediano > 240:
-                final = min(final, 39.0)
-            elif intervalo_mediano > 180:
-                final = min(final, 54.0)
-            elif intervalo_mediano > 120:
-                final = min(final, 69.0)
-        final = round(max(0.0, min(100.0, final)), 1)
-        faixa = legacy.score_faixa(final)
-        result[ik] = {
-            "score": final,
-            "score_frequencia": round(freq, 1),
-            "score_recompra": round(rep, 1),
-            "score_valor": round(val, 1),
-            "faixa": faixa["faixa"],
-            "label": faixa["label"],
-            "cor": faixa["cor"],
-            "valor_total": stats["valor_total"],
-            "pedidos": pedidos,
-            "intervalo_mediano": intervalo_mediano,
-            "atraso_atual": atraso_atual,
-            "ultima_data": ultima_data,
-        }
+        result[ik] = legacy.montar_score_identidade(stats, valor_max)
 
     _score_cache.set(key, result, ttl_seconds=max(30, CACHE_TTL_SECONDS), version=version)
     return result
@@ -405,7 +375,6 @@ def _build_repurchase_map(conn) -> tuple[dict[str, dict[str, Any]], dict[int, st
     orders = _movement_map(conn, "orders", id_to_identity)
     identities = set(id_to_identity.values()) | set(inv.keys()) | set(orders.keys())
     result: dict[str, dict[str, Any]] = {}
-    now = datetime.now()
     for ik in identities:
         source = inv.get(ik)
         if not source or int(source.get("rows", 0)) < 2:
@@ -420,13 +389,13 @@ def _build_repurchase_map(conn) -> tuple[dict[str, dict[str, Any]], dict[int, st
         dias_fora = None
         atrasado = False
         if qtd >= 2:
-            intervals = [(dates[i] - dates[i-1]).days for i in range(1, qtd) if (dates[i] - dates[i-1]).days >= 0]
-            if intervals:
-                media = round(sum(intervals) / len(intervals), 1)
-                dias_desde = (now - ultima).days if ultima else 0
+            intervalos = f_recompra.intervalos_entre_compras([d.date() for d in dates])
+            if intervalos:
+                media = float(median(intervalos))
+                dias_desde = (date.today() - ultima.date()).days if ultima else 0
                 calc = int(round(dias_desde - media))
                 dias_fora = max(0, calc)
-                atrasado = calc > 0
+                atrasado = f_recompra.esta_atrasado(dias_desde, media)
         result[ik] = {
             "ticket_medio": ticket,
             "dias_fora_media": dias_fora,
@@ -643,13 +612,6 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
             except Exception:
                 is_recuperado = False
 
-        if is_novo:
-            bucket["novo_ids"].add(ik)
-        else:
-            bucket["rep_ids"].add(ik)
-            if is_recuperado:
-                bucket["recuperado_ids"].add(ik)
-
         ent = bucket["entity_map"].setdefault(ik, {
             "identity_key": ik,
             "cliente_id": int(r["cliente_id"] or 0),
@@ -668,9 +630,16 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
 
     out: dict[int, dict[str, Any]] = {}
     for vid, bucket in raw.items():
-        novos = bucket["novo_ids"]
-        reps = bucket["rep_ids"]
-        recups = bucket["recuperado_ids"]
+        novos: set[str] = set()
+        reps: set[str] = set()
+        recups: set[str] = set()
+        for ik, ent in bucket["entity_map"].items():
+            if ent.get("is_novo"):
+                novos.add(ik)
+                continue
+            reps.add(ik)
+            if ent.get("is_recuperado"):
+                recups.add(ik)
         out[vid] = {
             "novo_count": len(novos),
             "rep_count": len(reps),
