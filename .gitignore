@@ -39,6 +39,9 @@ tests/golden/output/
 *.csv
 !tests/**/*.csv
 
+# Cliente Firebird local (zip + dll). Nao versionar binario.
+vendor/
+
 # Artefatos locais
 *.log
 .DS_Store

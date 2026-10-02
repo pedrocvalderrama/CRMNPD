@@ -51,6 +51,14 @@ Ficam só no `.env` (`SISPLAN_*`). O manual
 `MANUAL_ACESSO_BANCO_SISPLAN.md` descreve host, porta e a **regra de ouro**:
 nenhuma conexão com `14215F.FDB` pode emitir outra coisa além de `SELECT`.
 
+Nesta máquina a cópia `14215F.FDB` na raiz do projeto abre em modo **Embedded**
+(`SISPLAN_HOST=local`), sem o servidor da fábrica. O cliente fica em
+`vendor/firebird/fbclient.dll` (não versionado). Prova de leitura:
+
+```
+.venv\Scripts\python.exe scripts\probe_firebird_local.py
+```
+
 ## Atualizar dependências
 
 ```bat

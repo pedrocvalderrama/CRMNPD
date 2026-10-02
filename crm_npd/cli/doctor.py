@@ -70,11 +70,18 @@ def main() -> int:
         tem_fdb = True
     except ImportError:
         tem_fdb = False
-    dll = os.environ.get("SISPLAN_FBCLIENT", r"C:\dev\auto_sisplan\fbclient_x64.dll")
+    dll_padrao = PROJECT_ROOT / "vendor" / "firebird" / "fbclient.dll"
+    dll = Path(os.environ.get("SISPLAN_FBCLIENT") or dll_padrao)
+    fdb_local = PROJECT_ROOT / "14215F.FDB"
     senha = os.environ.get("SISPLAN_PASSWORD", "")
-    _ok("fdb instalado", tem_fdb, "opcional ate o cutover")
-    _ok("fbclient.dll", Path(dll).exists(), dll)
-    _ok("SISPLAN_PASSWORD", bool(senha), "obrigatorio so para sync Firebird")
+    _ok("fdb instalado", tem_fdb)
+    _ok("fbclient.dll", dll.exists(), str(dll))
+    _ok("copia local 14215F.FDB", fdb_local.exists(), f"{fdb_local.stat().st_size / 1_000_000:.0f} MB" if fdb_local.exists() else "")
+    if senha:
+        _ok("SISPLAN_PASSWORD", True, "definida")
+    else:
+        _ok("SISPLAN_PASSWORD", False, "preencha no .env para abrir o Firebird")
+        falhas += 0  # nao impede o CRM no modo CSV/SQLite
 
     print()
     print("Pronto." if falhas == 0 else f"{falhas} ponto(s) exigem acao.")

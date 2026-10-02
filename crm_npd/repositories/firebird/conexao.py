@@ -2,6 +2,13 @@
 
 Nao ha caminho de escrita neste modulo. A transacao e aberta READ ONLY e
 toda SQL e rejeitada se nao comecar com SELECT.
+
+Dois modos de DSN:
+
+- **Embedded / arquivo local**: quando ``SISPLAN_HOST`` e ``local``, ``embedded``
+  ou vazio e o arquivo ``.FDB`` existe nesta maquina. E o modo da copia
+  ``14215F.FDB`` na raiz do projeto.
+- **Rede**: ``host/porta:caminho`` contra o servidor do Sisplan.
 """
 
 from __future__ import annotations
@@ -9,11 +16,16 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+FDB_LOCAL = PROJECT_ROOT / "14215F.FDB"
+FBCLIENT_LOCAL = PROJECT_ROOT / "vendor" / "firebird" / "fbclient.dll"
 
 _PROIBIDO = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXECUTE|GRANT|REVOKE|MERGE)\b",
@@ -25,15 +37,39 @@ class FirebirdSomenteLeituraError(RuntimeError):
     """Levantada quando uma SQL tenta escrever no ERP."""
 
 
+def _caminho_banco() -> str:
+    """Resolve o caminho do ``.FDB``.
+
+    Prefere ``SISPLAN_DATABASE``. Se nao houver, usa a copia na raiz do projeto.
+    """
+    informado = os.environ.get("SISPLAN_DATABASE", "").strip()
+    if informado:
+        return informado
+    if FDB_LOCAL.exists():
+        return str(FDB_LOCAL)
+    return r"C:\Sisplan\Base\14215F.FDB"
+
+
+def _host() -> str:
+    """Host do Firebird, ou modo arquivo local."""
+    if "SISPLAN_HOST" in os.environ:
+        return os.environ.get("SISPLAN_HOST", "").strip()
+    if FDB_LOCAL.exists():
+        return "local"
+    return "192.168.100.168"
+
+
 def _dsn() -> str:
-    """Monta o DSN a partir das variaveis de ambiente.
+    """Monta o DSN.
 
     Returns:
-        DSN no formato host/porta:caminho.
+        Caminho do arquivo (embedded) ou ``host/porta:caminho``.
     """
-    host = os.environ.get("SISPLAN_HOST", "192.168.100.168")
+    caminho = _caminho_banco()
+    host = _host()
+    if host.lower() in ("", "local", "embedded", "file"):
+        return caminho
     porta = os.environ.get("SISPLAN_PORT", "3051")
-    caminho = os.environ.get("SISPLAN_DATABASE", r"C:\Sisplan\Base\14215F.FDB")
     return f"{host}/{porta}:{caminho}"
 
 
@@ -64,6 +100,24 @@ def _validar_select(sql: str) -> str:
     return sql
 
 
+def _preparar_cliente() -> str | None:
+    """Localiza a DLL e aponta o Firebird para o kit Embedded do projeto.
+
+    Returns:
+        Caminho da ``fbclient.dll``, ou None se nao houver.
+    """
+    dll = os.environ.get("SISPLAN_FBCLIENT", "").strip()
+    if not dll or not Path(dll).exists():
+        dll = str(FBCLIENT_LOCAL) if FBCLIENT_LOCAL.exists() else ""
+    if not dll:
+        return None
+    raiz = str(Path(dll).resolve().parent)
+    os.environ.setdefault("FIREBIRD", raiz)
+    os.environ.setdefault("FIREBIRD_LOCK", str(PROJECT_ROOT / "vendor" / "fb_lock"))
+    (PROJECT_ROOT / "vendor" / "fb_lock").mkdir(parents=True, exist_ok=True)
+    return dll
+
+
 @contextmanager
 def conectar_somente_leitura() -> Iterator[Any]:
     """Abre conexao Firebird em transacao READ ONLY / READ COMMITTED.
@@ -81,8 +135,8 @@ def conectar_somente_leitura() -> Iterator[Any]:
             "O pacote fdb nao esta instalado. Rode ATUALIZAR_DEPENDENCIAS.bat."
         ) from exc
 
-    dll = os.environ.get("SISPLAN_FBCLIENT", r"C:\dev\auto_sisplan\fbclient_x64.dll")
-    if os.path.exists(dll):
+    dll = _preparar_cliente()
+    if dll:
         fdb.load_api(dll)
 
     senha = os.environ.get("SISPLAN_PASSWORD", "")
@@ -91,12 +145,24 @@ def conectar_somente_leitura() -> Iterator[Any]:
             "SISPLAN_PASSWORD nao configurada. Copie .env.example para .env e preencha."
         )
 
-    conn = fdb.connect(
-        dsn=_dsn(),
-        user=os.environ.get("SISPLAN_USER", "SYSDBA"),
-        password=senha,
-        charset="UTF8",
-    )
+    charset = os.environ.get("SISPLAN_CHARSET", "WIN1252")
+    ultimo_erro: Exception | None = None
+    conn = None
+    for tentativa in (charset, "WIN1252", "NONE", "UTF8"):
+        try:
+            conn = fdb.connect(
+                dsn=_dsn(),
+                user=os.environ.get("SISPLAN_USER", "SYSDBA"),
+                password=senha,
+                charset=tentativa,
+            )
+            break
+        except Exception as exc:  # charset errado e o erro mais comum
+            ultimo_erro = exc
+            conn = None
+    if conn is None:
+        raise RuntimeError(f"Falha ao abrir o Firebird em {_dsn()}: {ultimo_erro}") from ultimo_erro
+
     try:
         try:
             tpb = fdb.TPB()
@@ -134,10 +200,10 @@ def executar_select(sql: str, params: Sequence[Any] | None = None) -> list[tuple
 
 
 def disponivel() -> bool:
-    """Indica se o cliente e as credenciais minimas estao presentes.
+    """Indica se o cliente, a senha e o arquivo/servidor estao presentes.
 
     Returns:
-        True quando ha senha configurada e o modulo fdb importa.
+        True quando da para tentar uma conexao.
     """
     if not os.environ.get("SISPLAN_PASSWORD"):
         return False
@@ -145,4 +211,10 @@ def disponivel() -> bool:
         import fdb  # noqa: F401
     except ImportError:
         return False
+    dll = _preparar_cliente()
+    if not dll:
+        return False
+    host = _host().lower()
+    if host in ("", "local", "embedded", "file"):
+        return Path(_caminho_banco()).exists()
     return True
