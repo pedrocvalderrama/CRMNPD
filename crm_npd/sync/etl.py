@@ -442,6 +442,15 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
     return len(inserts)
 
 
+def _rotulo_status_os(codigo, descricao) -> str | None:
+    """Junta codigo e descricao do STATUS_OS: '19 - PEDIDO APROVADO'."""
+    cod = _txt(codigo)
+    desc = _txt(descricao)
+    if cod and desc:
+        return f"{cod} - {desc}"
+    return desc or cod or None
+
+
 def _gravar_orcamentos(conn, m, rows: list[dict], agora: str) -> int:
     inserts = []
     vistos = set()
@@ -467,7 +476,8 @@ def _gravar_orcamentos(conn, m, rows: list[dict], agora: str) -> int:
             agora, numero, cliente or None, _txt(row.get("PEDIDO")) or None,
             _txt(row.get("COD_VEN")) or None, vendedor or None, data_inicio,
             _data(row.get("DT_VALIDADE")), _txt(row.get("STATUS")) or None,
-            _txt(row.get("STATUS_OS")) or None, _txt(row.get("TIPO_CONTATO")) or None,
+            _rotulo_status_os(row.get("STATUS_OS"), row.get("DESC_STATUS")),
+            _txt(row.get("TIPO_CONTATO")) or None,
             valor_total, _txt(row.get("UF")) or None,
             (_txt(row.get("DESC_MOTIVO")) or _txt(row.get("MOTIVO"))) or None,
             _txt(row.get("MEDIDA")) or None, cliente or None, vendedor or None, dedupe,

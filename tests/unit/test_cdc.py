@@ -22,6 +22,7 @@ from crm_npd.sync.cdc import (
     extrair_chave_documento,
     snapshot_desatualizado,
 )
+from crm_npd.sync.etl import _rotulo_status_os
 
 
 def test_chave_pedido_numero_e_ped_num() -> None:
@@ -130,3 +131,18 @@ def test_troca_de_alvo_ou_csv_pede_carga_completa() -> None:
         modo="0",
         hoje=hoje,
     )
+
+
+def test_rotulo_status_os_junta_codigo_e_descricao() -> None:
+    assert _rotulo_status_os("40", "MANUTENCAO DE CARTEIRA") == "40 - MANUTENCAO DE CARTEIRA"
+    assert _rotulo_status_os("19", "PEDIDO APROVADO") == "19 - PEDIDO APROVADO"
+    assert _rotulo_status_os("09", None) == "09"
+    assert _rotulo_status_os("", "PEDIDO APROVADO") == "PEDIDO APROVADO"
+
+
+def test_orcamentos_leem_descricao_do_status_os() -> None:
+    sql = CRM_ORCAMENTOS.upper()
+    assert "O.STATUS_OS" in sql
+    assert "ST.DESCRICAO" in sql
+    assert "DESC_STATUS" in sql
+    assert "TIPO_MOTIVO_001 ST" in sql
