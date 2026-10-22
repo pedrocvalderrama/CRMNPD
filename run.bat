@@ -18,5 +18,7 @@ if not exist ".venv\Scripts\python.exe" (
   )
 )
 
+echo Se a base for de outro dia ou de outro PC, a primeira subida recarrega o Sisplan.
+echo Isso pode levar alguns minutos; o ouvinte CDC entra depois.
 .venv\Scripts\python.exe app.py
 pause

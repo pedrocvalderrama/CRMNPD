@@ -37,6 +37,11 @@ A divergência 4 é de longe a maior e é a que eu recomendo tratar primeiro.
 
 ## 1. Critério de "cliente NOVO"
 
+**Atualização 2026-10-22:** a regra vigente não é mais A nem B. Cliente novo vem do
+**pedido no Sisplan** (`MOTIVO 10 — PEDIDO PRIMEIRA COMPRA`). Todas as notas daquele
+pedido recebem o bônus; `05 - JIT IMEDIATO` anula. O texto abaixo permanece como
+histórico da divergência A vs B.
+
 **Onde divergem**
 
 - **A — data + documento:** `compute_vendor_commission` (comissão) e

@@ -5,7 +5,7 @@ comum de numero que "nao bate" entre telas:
 
 ciclo de faturamento (financeiro)
     Vai do dia seguinte ao fechamento do mes anterior ate o dia de fechamento do
-    mes de referencia. Com fechamento no dia 24, abril vai de 25/03 a 24/04. O dia
+    mes de referencia. Com fechamento no dia 25, abril vai de 26/03 a 25/04. O dia
     de fechamento e configuravel por mes, em ``ciclos_faturamento``. Usado para
     faturamento, comissao e mix Novo/Recorrente.
 
@@ -25,7 +25,7 @@ from datetime import date, timedelta
 from crm_npd.domain.valores import Periodo
 
 #: Dia de fechamento do ciclo de faturamento quando nao ha configuracao do mes.
-DIA_FECHAMENTO_PADRAO = 24
+DIA_FECHAMENTO_PADRAO = 25
 
 
 def dia_valido_no_mes(ano: int, mes: int, dia: int) -> date:
@@ -75,10 +75,10 @@ def ciclo_faturamento(
         Periodo do ciclo, comecando no dia seguinte ao fechamento anterior.
 
     Examples:
-        Com fechamento no dia 24, abril de 2026 vai de 25/03 a 24/04:
+        Com fechamento no dia 25, abril de 2026 vai de 26/03 a 25/04:
 
-        >>> ciclo_faturamento(date(2026, 4, 10), 24)
-        Periodo(inicio=datetime.date(2026, 3, 25), fim=datetime.date(2026, 4, 24))
+        >>> ciclo_faturamento(date(2026, 4, 10), 25)
+        Periodo(inicio=datetime.date(2026, 3, 26), fim=datetime.date(2026, 4, 25))
     """
     dia = normalizar_dia_fechamento(dia_fechamento)
     fim = dia_valido_no_mes(referencia.year, referencia.month, dia)

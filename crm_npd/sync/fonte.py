@@ -1,7 +1,7 @@
 """Seletor da fonte primaria de dados do ERP.
 
-O cutover so acontece quando ``reconciliar_controle_setembro`` devolve ok.
-Ate la, ``CRM_NPD_FONTE`` permanece ``sqlite`` e o CSV continua no lugar.
+A fonte comercial e o Firebird (FDB). O SQLite so guarda o espelho e o que
+o CRM cria (tarefas, metas, usuarios, identidades).
 """
 
 from __future__ import annotations
@@ -12,17 +12,17 @@ FONTES_VALIDAS = ("sqlite", "firebird")
 
 
 def fonte_primaria() -> str:
-    """Devolve a fonte configurada, default sqlite.
+    """Devolve a fonte configurada, default firebird.
 
     Returns:
         ``sqlite`` ou ``firebird``.
     """
-    valor = (os.environ.get("CRM_NPD_FONTE") or "sqlite").strip().lower()
+    valor = (os.environ.get("CRM_NPD_FONTE") or "firebird").strip().lower()
     if valor not in FONTES_VALIDAS:
-        return "sqlite"
+        return "firebird"
     return valor
 
 
 def usando_firebird() -> bool:
-    """Indica se o sync do ERP ja e a fonte primaria."""
+    """Indica se o Sisplan/FDB e a fonte primaria."""
     return fonte_primaria() == "firebird"

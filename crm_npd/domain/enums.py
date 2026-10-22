@@ -151,8 +151,8 @@ class TipoVendedor(StrEnum):
 class StatusManualCliente(StrEnum):
     """Override manual de status, gravado em ``customer_status_overrides``.
 
-    Existe porque o ERP nao conhece o conceito comercial de cliente novo usado
-    pelo CRM, e a gestao precisa corrigir casos pontuais.
+    Existe para o gestor corrigir o flag do Sisplan (MOTIVO 10) em casos
+    pontuais: forcar NOVO ou RECOMPRA. JIT IMEDIATO ainda anula o bonus.
     """
 
     NOVO = "NOVO"

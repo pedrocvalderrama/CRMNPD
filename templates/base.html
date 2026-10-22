@@ -42,8 +42,22 @@
     .brand-mark{width:35px;height:35px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--crm-primary),var(--crm-cyan));box-shadow:0 8px 22px rgba(49,108,255,.32);font-weight:900;font-size:15px}
     .brand-title{font-size:14px;font-weight:800;letter-spacing:.02em;line-height:1.1}
     .brand-sub{font-size:10px;color:#7990ad;text-transform:uppercase;letter-spacing:.16em;margin-top:4px}
-    .nav{flex:1;padding:14px 10px;display:flex;flex-direction:column;gap:3px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#20324a transparent}
+    .nav{flex:1;padding:14px 10px;display:flex;flex-direction:column;flex-wrap:nowrap!important;align-content:stretch;gap:3px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#20324a transparent}
+    .nav>*,.nav-group{flex:0 0 auto;min-width:0;width:100%}
+    .nav-group summary span,.nav a span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .nav-label{font-size:9px;letter-spacing:.17em;color:#526a87;font-weight:800;text-transform:uppercase;padding:13px 12px 6px}
+    .nav-group{border:1px solid transparent;border-radius:12px;overflow:hidden}
+    .nav-group[open]{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.045);margin-bottom:3px}
+    .nav-group summary{list-style:none;display:flex;align-items:center;gap:10px;min-height:42px;padding:9px 11px;border-radius:11px;color:#9eb0c7;font-weight:780;cursor:pointer;user-select:none;transition:.15s ease}
+    .nav-group summary::-webkit-details-marker{display:none}
+    .nav-group summary:hover{background:rgba(255,255,255,.055);color:#fff}
+    .nav-group summary>i:first-child{font-size:16px;width:20px;text-align:center;color:#7088a6}
+    .nav-group summary .nav-chevron{margin-left:auto;width:auto;font-size:11px;color:#5d7592;transition:transform .18s ease}
+    .nav-group[open] summary .nav-chevron{transform:rotate(180deg);color:#8fb8e8}
+    .nav-group.group-active>summary{color:#fff;background:linear-gradient(90deg,rgba(49,108,255,.12),rgba(24,199,217,.04))}
+    .nav-submenu{display:flex;flex-direction:column;gap:2px;padding:0 6px 7px 18px}
+    .nav-submenu a{min-height:36px!important;padding:7px 9px!important;font-size:12px}
+    .nav-submenu a i{font-size:14px!important;width:18px!important}
     .nav a{display:flex;align-items:center;gap:11px;min-height:40px;padding:8px 11px;border-radius:11px;color:#9eb0c7;text-decoration:none;font-weight:650;transition:.15s ease;position:relative}
     .nav a i{font-size:16px;width:20px;text-align:center;color:#7088a6;transition:.15s ease}
     .nav a:hover{background:rgba(255,255,255,.055);color:#fff;transform:translateX(1px)}
@@ -270,14 +284,31 @@
       <div><div class="brand-title">NPD CRM</div><div class="brand-sub">Sales Intelligence</div></div>
     </div>
     <nav class="nav">
-      {% if nav_items %}<div class="nav-label">Workspace</div>{% endif %}
-      {% for item in nav_items %}
-        <a class="{% if item.endpoint==active %}active{% endif %}" href="{{ url_for(item.endpoint) }}">
-          <i class="bi {{ item.icon or 'bi-grid' }}"></i><span>{{ item.label }}</span>
-        </a>
-      {% endfor %}
+      {% set menu_groups = nav_groups|default([]) %}
+      {% if menu_groups %}
+        <div class="nav-label">Navegação</div>
+        {% for group in menu_groups %}
+          <details class="nav-group {% if group.active %}group-active{% endif %}" {% if group.active %}open{% endif %}>
+            <summary><i class="bi {{ group.icon or 'bi-folder2-open' }}"></i><span>{{ group.label }}</span><i class="bi bi-chevron-down nav-chevron"></i></summary>
+            <div class="nav-submenu">
+              {% for item in group["items"] %}
+                <a class="{% if item.endpoint==active %}active{% endif %}" href="{{ url_for(item.endpoint) }}">
+                  <i class="bi {{ item.icon or 'bi-grid' }}"></i><span>{{ item.label }}</span>
+                </a>
+              {% endfor %}
+            </div>
+          </details>
+        {% endfor %}
+      {% else %}
+        {% if nav_items %}<div class="nav-label">Workspace</div>{% endif %}
+        {% for item in nav_items %}
+          <a class="{% if item.endpoint==active %}active{% endif %}" href="{{ url_for(item.endpoint) }}">
+            <i class="bi {{ item.icon or 'bi-grid' }}"></i><span>{{ item.label }}</span>
+          </a>
+        {% endfor %}
+      {% endif %}
     </nav>
-    <div class="sidebar-footer"><span><span class="status-dot"></span>Sistema online</span><span>v4.5.1</span></div>
+    <div class="sidebar-footer"><span><span class="status-dot"></span>Sistema online</span><span>v5.1.2</span></div>
   </aside>
 
   <main class="main">

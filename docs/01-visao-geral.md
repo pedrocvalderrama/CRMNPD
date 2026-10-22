@@ -7,7 +7,7 @@ comissão, score, funil e tarefas de recompra.
 ```
 Sisplan (Firebird 14215F.FDB)     somente SELECT
         │
-        │  sync/  ou  CSV (fallback)
+        │  sync/ (caminho do FDB no .env)
         ▼
 SQLite crm_npd.db                 banco do CRM + espelho
         │
@@ -33,11 +33,13 @@ A regra é testada em `tests/unit/test_arquitetura.py`.
 
 ## Fontes de dados
 
-- **Primária hoje:** SQLite local, alimentado pela importação CSV dos relatórios
-  721 (pedidos), 731 (faturamento), 104 (orçamentos) e 733 (liquidez).
-- **Em paralelo:** `crm_npd/sync/` lê o Firebird e grava tabelas-espelho
-  `erp_*`. Só vira fonte primária depois que `sync.reconcile` casar
-  centavo a centavo com o controle (set/2026 = R$ 997.044,89 em 518 linhas).
+- **Primária:** o Firebird do Sisplan (`14215F.FDB`), só SELECT.
+  Na fábrica o CRM abre `192.168.100.168:3051` → `C:\Sisplan\Base\14215F.FDB`
+  (ver `MANUAL_ACESSO_BANCO_SISPLAN.md`). Desenvolvimento local pode usar
+  `SISPLAN_HOST=local` e a cópia do FDB na pasta `base\`.
+- **Espelho:** o sync (carga completa) e o ouvinte CDC (`LOG` /
+  `LOG_ALTERACAO`) gravam pedidos, faturamento, orçamentos e liquidez no
+  SQLite do CRM. CSV não entra mais.
 - **O CRM grava** tarefas, identidades, metas, usuários e overrides. Isso nunca
   volta para o Sisplan.
 
@@ -52,8 +54,8 @@ Matriz e filiais da mesma rede compartilham histórico, score e comissão de
 
 ## Ciclo de faturamento
 
-Não é o mês-calendário. Com fechamento no dia 24 (configurável em
-`ciclos_faturamento`), setembro/2026 vai de **25/08 a 24/09**. Funções em
+Não é o mês-calendário. Com fechamento no dia 25 (configurável em
+`ciclos_faturamento`), setembro/2026 vai de **26/08 a 25/09**. Funções em
 `crm_npd.metrics.periodos`.
 
 ## O que ainda está no monolito

@@ -12,6 +12,7 @@ from statistics import median
 from typing import Any, Optional
 
 from ..config import DB_PATH, CACHE_TTL_SECONDS
+from ..metrics import comissao as f_comissao
 from ..metrics import recompra as f_recompra
 from .cache import TTLCache
 
@@ -26,6 +27,24 @@ _first_invoice_doc_cache = TTLCache()
 _jit_orders_cache = TTLCache()
 _performance_context_cache = TTLCache()
 _performance_annual_cache = TTLCache()
+
+
+def limpar_caches_comerciais() -> None:
+    """Descarta caches de tela depois de um sync/CDC, para o numero novo aparecer ja."""
+    for cache in (
+        _customer_cache,
+        _score_cache,
+        _repurchase_cache,
+        _identity_name_cache,
+        _chart_cache,
+        _vendor_period_mix_cache,
+        _invoice_history_cache,
+        _first_invoice_doc_cache,
+        _jit_orders_cache,
+        _performance_context_cache,
+        _performance_annual_cache,
+    ):
+        cache.clear()
 
 
 _GENERIC_CUSTOMER_NAMES = {
@@ -520,20 +539,19 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
     """Fonte CANÔNICA e em lote de NOVO / RECORRENTE / RECUPERADO.
 
     Usa FATURAMENTO/INVOICES e a mesma regra do Extrato de Comissão:
-    identidade comercial atual, primeiro documento histórico, override manual e
-    bloqueio de bônus NOVO para JIT. A Visão do Vendedor e a Performance leem
-    exatamente este mesmo serviço; nenhuma tela recalcula por pedidos em paralelo.
+    pedido marcado no Sisplan como primeira compra (MOTIVO 10), override
+    manual e bloqueio de bônus NOVO para JIT IMEDIATO. A Visão do Vendedor
+    e a Performance leem exatamente este mesmo serviço.
 
-    A contagem é por identidade única em cada classificação. Uma identidade que
-    estreia como NOVO e volta a comprar no mesmo ciclo pode aparecer também em
-    RECORRENTE, igual ao extrato financeiro do vendedor.
+    A contagem é por identidade. Se qualquer nota do ciclo pertencer a um
+    pedido novo (e não for JIT IMEDIATO), a identidade entra como NOVO.
     """
     if not isinstance(d0, date):
         d0 = date.fromisoformat(str(d0)[:10])
     if not isinstance(d1, date):
         d1 = date.fromisoformat(str(d1)[:10])
     version = _db_version()
-    key = ("vendor_period_mix_invoice_canonical", d0.isoformat(), d1.isoformat())
+    key = ("vendor_period_mix_sisplan_novo_v2", d0.isoformat(), d1.isoformat())
     cached = _vendor_period_mix_cache.get(key, version=version)
     if cached is not None:
         return copy.deepcopy(cached)
@@ -543,12 +561,23 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
             i.id, i.numero, i.pedido, date(i.data_emissao) AS data_emissao,
             CAST(i.vendor_id AS INTEGER) AS vendor_id,
             CAST(i.cliente_id AS INTEGER) AS cliente_id,
-            COALESCE(i.is_jit,0) AS is_jit,
+            COALESCE(i.tipo_item_ref,'') AS tipo_item_ref,
+            COALESCE(i.valor,0) AS valor,
             COALESCE(NULLIF(TRIM(cir.identity_key),''), 'CLIENTE:' || i.cliente_id) AS identity_key,
-            COALESCE(NULLIF(TRIM(cir.identity_nome),''), NULLIF(TRIM(c.fantasia),''), NULLIF(TRIM(c.nome),''), 'Cliente') AS identity_nome
+            COALESCE(NULLIF(TRIM(cir.identity_nome),''), NULLIF(TRIM(c.fantasia),''), NULLIF(TRIM(c.nome),''), 'Cliente') AS identity_nome,
+            COALESCE(o.motivo_pedido,'') AS motivo_pedido,
+            COALESCE(o.desc_motivo_pedido,'') AS desc_motivo_pedido,
+            COALESCE(o.condicao_entrega,'') AS condicao_entrega
         FROM invoices i
         LEFT JOIN customers c ON c.id=i.cliente_id
         LEFT JOIN customer_identity_rules cir ON cir.customer_id=i.cliente_id
+        LEFT JOIN (
+            SELECT TRIM(COALESCE(pedido,'')) AS pedido, MIN(id) AS id
+            FROM orders
+            WHERE TRIM(COALESCE(pedido,'')) <> ''
+            GROUP BY TRIM(COALESCE(pedido,''))
+        ) o1 ON TRIM(COALESCE(i.pedido,'')) = o1.pedido
+        LEFT JOIN orders o ON o.id = o1.id
         WHERE i.vendor_id IS NOT NULL
           AND i.cliente_id IS NOT NULL
           AND i.data_emissao IS NOT NULL
@@ -556,10 +585,7 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
         ORDER BY date(i.data_emissao), i.id
     """, (d0.isoformat(), d1.isoformat())).fetchall()
 
-    # Primeiro documento/histórico são cacheados por versão do banco e
-    # reaproveitados em todos os meses do score anual.
     first_by_identity = _first_invoice_doc_map_fast(conn)
-
     history_by_identity, _first_dates = _invoice_identity_history_fast(conn)
 
     try:
@@ -568,13 +594,12 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
     except Exception:
         overrides = {}
 
-    # Mesmo conceito de invoice_tem_qualquer_jit(), cacheado em lote.
-    jit_orders = _jit_orders_fast(conn)
-
     raw: dict[int, dict[str, Any]] = {}
     for r in cycle_rows:
         vid = int(r["vendor_id"] or 0)
         if vid <= 0:
+            continue
+        if f_comissao.invoice_eh_devolucao(tipo_item_ref=r["tipo_item_ref"], valor=float(r["valor"] or 0)):
             continue
         bucket = raw.setdefault(vid, {
             "novo_ids": set(), "rep_ids": set(), "recuperado_ids": set(),
@@ -585,26 +610,19 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
             continue
         ds = (r["data_emissao"] or "").strip()
         first = first_by_identity.get(ik)
-        current_doc = str(r["numero"] or r["pedido"] or f"ID:{r['id']}").strip()
-        is_novo = False
-        if first:
-            first_date = (first["data_emissao"] or "").strip()
-            first_doc = str(first["numero"] or first["pedido"] or f"ID:{first['id']}").strip()
-            is_novo = bool(first_date and d0.isoformat() <= first_date <= d1.isoformat() and current_doc == first_doc)
-
-        manual = overrides.get(ik, "")
-        if manual == "NOVO":
-            is_novo = True
-        elif manual == "RECOMPRA":
-            is_novo = False
-
         pedido = (r["pedido"] or "").strip()
-        is_jit = bool(int(r["is_jit"] or 0)) or bool(pedido and pedido in jit_orders)
-        if is_jit:
-            is_novo = False
+        is_jit_imediato = f_comissao.condicao_jit_imediato(r["condicao_entrega"])
+        sisplan_novo = f_comissao.pedido_sisplan_cliente_novo(
+            r["motivo_pedido"], r["desc_motivo_pedido"]
+        )
+        is_novo = f_comissao.classificar_cliente_novo(
+            pedido_sisplan_novo=sisplan_novo,
+            is_jit_imediato=is_jit_imediato,
+            status_manual=f_comissao.status_manual_de_texto(overrides.get(ik, "")),
+        )
 
         is_recuperado = False
-        if not is_novo and not is_jit and ds:
+        if not is_novo and not is_jit_imediato and ds:
             try:
                 data_mov = date.fromisoformat(ds[:10])
                 hist = [d for d in history_by_identity.get(ik, []) if d < data_mov]
@@ -616,7 +634,7 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
             "identity_key": ik,
             "cliente_id": int(r["cliente_id"] or 0),
             "cliente": (r["identity_nome"] or "Cliente").strip(),
-            "is_jit": bool(is_jit),
+            "is_jit": bool(is_jit_imediato),
             "pedido_ref": pedido,
             "data_ref": ds,
             "is_novo": False,
@@ -625,7 +643,7 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
         })
         ent["is_novo"] = bool(ent["is_novo"] or is_novo)
         ent["is_recuperado"] = bool(ent["is_recuperado"] or is_recuperado)
-        if not is_jit:
+        if not is_jit_imediato:
             ent["is_jit"] = False
 
     out: dict[int, dict[str, Any]] = {}

@@ -1,5 +1,8 @@
 # Dicionário de fórmulas
 
+Manual completo (o que acontece + onde está no código):
+`docs/06-manual-regras-e-formulas.md`.
+
 Toda fórmula mora em `crm_npd/metrics/` como função pura, tipada, com docstring
 Google. Os testes estão em `tests/unit/test_*.py`. O golden master
 (`tests/golden/`) trava os números na base real.
@@ -10,13 +13,14 @@ Decisões de unificação: `docs/RECONCILIACAO_FORMULAS.md`.
 
 | Canal | Base | Alíquota | Bônus |
 |---|---|---|---|
-| Interno | Faturamento (731) | 1% por linha | +1% na **primeira** nota do cliente novo; +1% sobre o excedente acima de R$ 100.000 no ciclo |
+| Interno | Faturamento (NF saída + DEMO, sem frete/clichê) | 1% por linha (1,75% se bater a meta de faturamento do ciclo 26→25) | Pedido Sisplan MOTIVO 10: todas as notas a 2%. JIT IMEDIATO anula. +1% uma vez sobre o excedente de R$ 100 mil **enquanto não bater a meta**. Meta de setembro = fat 26/08–25/09 (mesmo número da comissão). |
 | Externo | Liquidez paga (733) | 7% | nenhum |
 | Site | — | 0 | não gera comissão |
 
-Cliente novo (critério A, aprovado): a linha tem de ser o primeiro documento
-histórico da identidade **e** essa data cair no ciclo. JIT nunca recebe o bônus
-de novo, mesmo com override manual.
+Cliente novo: o Sisplan marca no **pedido** (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA).
+Todas as notas daquele pedido recebem +1% e entram nos relatórios como pedido
+novo. JIT IMEDIATO (05) anula o bônus, mesmo com override. Gestor/admin pode
+forçar NOVO ou RECOMPRA em `customer_status_overrides`.
 
 ## Score do cliente — `metrics/score_cliente.py`
 
@@ -78,7 +82,7 @@ SLA de parado: 14 dias em etapa acionável (CONTATO, NEGOCIACAO, APROVACAO).
 
 ## Períodos e percentuais
 
-- `ciclo_faturamento(referencia, dia=24)` → 25 do mês anterior até o dia 24.
+- `ciclo_faturamento(referencia, dia=25)` → 26 do mês anterior até o dia 25.
 - Divisão por zero: `percentual` devolve 0; `variacao_percentual` devolve 100%
   quando a base é zero e o atual não é; `variacao_percentual_ou_nulo` devolve
   `None` (usado no score, para não pontuar o máximo por falta de base).

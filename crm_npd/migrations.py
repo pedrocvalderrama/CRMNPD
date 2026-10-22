@@ -40,6 +40,10 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "orders", "motivo_pedido TEXT")
     ensure_column(conn, "orders", "desc_motivo_pedido TEXT")
     ensure_column(conn, "orders", "pedido_cancelado INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "orders", "entrega_pedido TEXT")
+    ensure_column(conn, "orders", "produto_codigo_ref TEXT")
+    ensure_column(conn, "orders", "produto_ref TEXT")
+    ensure_column(conn, "orders", "observacao_ref TEXT")
 
     # Campos do relatório 104 usados na visão detalhada do orçamento.
     # São aditivos: não alteram a lógica existente de pedidos, ciclo, metas ou faturamento.
@@ -62,6 +66,11 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "import_identity_pending", "acao_sugerida TEXT")
     ensure_column(conn, "import_identity_pending", "review_notes TEXT")
 
+    ensure_column(conn, "vendors", "performance_ativo INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "vendors", "inativado_em TEXT")
+    ensure_column(conn, "vendors", "inativado_motivo TEXT")
+    ensure_column(conn, "vendors", "reativado_em TEXT")
+
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_tasks_vendor_status ON tasks(vendor_id, status)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_tasks_cliente_id ON tasks(cliente_id)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_tasks_identity_key ON tasks(identity_key)")
@@ -79,6 +88,7 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_pending_status_import ON import_identity_pending(status, import_id)")
 
     # Índices extras para acelerar telas pesadas: tarefas, diagnóstico, vendedor e buscas por cliente/pedido.
+    _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_entrega_pedido ON orders(entrega_pedido)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_pedido ON orders(pedido)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_data ON orders(data_emissao)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_cancelado ON orders(pedido_cancelado)")
@@ -251,12 +261,16 @@ def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
         _carimbar(conn, 1, "schema_base")
         _carimbar(conn, 2, "colunas_aditivas")
         conn.commit()
-        return []
 
     aplicadas: list[int] = []
     if not _aplicada(conn, 2):
         apply_safe_migrations(conn)
         _carimbar(conn, 2, "colunas_aditivas")
         aplicadas.append(2)
+        conn.commit()
+    if not _aplicada(conn, 3):
+        apply_safe_migrations(conn)
+        _carimbar(conn, 3, "relatorios_entrega_vendedores")
+        aplicadas.append(3)
         conn.commit()
     return aplicadas

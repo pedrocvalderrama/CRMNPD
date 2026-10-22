@@ -39,6 +39,15 @@ tests/golden/output/
 *.csv
 !tests/**/*.csv
 
+# Planilhas e dumps locais (comissao, FDB copiado)
+base/
+*.xlsx
+*.xls
+~$*
+
+# Copia de outro CRM, nao e o codigo deste repo
+CRM OUTRO/
+
 # Cliente Firebird local (zip + dll). Nao versionar binario.
 vendor/
 

@@ -52,6 +52,13 @@ def test_ciclo_faturamento_doctest() -> None:
     assert periodo.fim == date(2026, 4, 24)
 
 
+def test_ciclo_faturamento_padrao_26_para_25() -> None:
+    periodo = per.ciclo_faturamento(date(2026, 4, 10))
+    assert periodo.inicio == date(2026, 3, 26)
+    assert periodo.fim == date(2026, 4, 25)
+    assert per.DIA_FECHAMENTO_PADRAO == 25
+
+
 def test_ciclo_fevereiro_e_virada_de_ano() -> None:
     fev = per.ciclo_faturamento(date(2026, 2, 10), 31)
     assert fev.fim.month == 2

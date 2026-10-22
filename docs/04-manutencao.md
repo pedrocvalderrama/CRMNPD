@@ -40,16 +40,36 @@ função até a extração da Fase 3 terminar.
 
 ## Sync Firebird
 
+Carga completa (primeira vez no servidor, base de ontem, ou se o ouvinte
+ficou parado muito tempo). O `run.bat` já faz isso sozinho se o snapshot
+não for de hoje. Na mão:
+
 ```bat
-.venv\Scripts\python.exe -c "from crm_npd.sync.etl import sincronizar_periodo; ..."
+ATUALIZAR_BASE_SISPLAN.bat
 ```
 
-Só funciona com `SISPLAN_PASSWORD` no `.env`, `fbclient_x64.dll` e o servidor
-`192.168.100.168:3051` alcançável. Enquanto isso não existir nesta máquina, o
-CSV continua sendo a fonte.
+Ou o botão **Ler FDB agora** em Atualizar Sisplan. Substitui pedidos,
+faturamento, orçamentos e liquidez. A conexão padrão é a da fábrica
+(`192.168.100.168:3051` / `C:\Sisplan\Base\14215F.FDB`).
 
-O cutover (`CRM_NPD_FONTE=firebird`) só depois de
-`reconciliar_controle_setembro` devolver `ok: true`.
+## Ouvinte CDC (tempo quase real)
+
+`MANUAL_CDC_LOGS_SISPLAN.md`. A cada 5 segundos o CRM faz SELECT em
+`LOG_ALTERACAO` e `LOG` (`ID > cursor`). Se o log for de pedido, nota ou
+orçamento, regrava só aquelas chaves no SQLite. Cold start grava o
+`MAX(ID)` atual e **não** reprocessa o histórico — a carga completa é o
+`sync_sisplan`.
+
+```bat
+OUVINTE_SISPLAN.bat
+```
+
+Com `SISPLAN_CDC_AUTO=1` no `.env`, o Flask já sobe a thread. Não rode o
+`.bat` ao mesmo tempo, senão dois processos avançam o mesmo cursor.
+
+O cursor fica em `settings` (`cdc_last_log_alteracao_id`,
+`cdc_last_log_id`). Se o gravar no CRM falhar, o cursor não anda e o
+próximo ciclo tenta de novo.
 
 ## Extração do monolito
 

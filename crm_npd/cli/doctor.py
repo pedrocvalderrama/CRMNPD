@@ -30,6 +30,10 @@ def _ok(rotulo: str, ok: bool, detalhe: str = "") -> bool:
 
 def main() -> int:
     """Roda as checagens e devolve codigo de saida."""
+    from crm_npd.settings import aplicar_env
+
+    aplicar_env()
+
     print("CRM NPD — diagnostico do ambiente")
     falhas = 0
 
@@ -65,23 +69,56 @@ def main() -> int:
     if not _ok("CRM_NPD_SECRET definido", bool(secret) and secret != "crm_npd_secret_key_change_me"):
         falhas += 1
 
+    from crm_npd.repositories.firebird.conexao import (
+        _dll_cliente,
+        _modo_local,
+        descricao_conexao,
+        executar_select,
+    )
+
     try:
         import fdb  # noqa: F401
-        tem_fdb = True
     except ImportError:
-        tem_fdb = False
-    dll_padrao = PROJECT_ROOT / "vendor" / "firebird" / "fbclient.dll"
-    dll = Path(os.environ.get("SISPLAN_FBCLIENT") or dll_padrao)
-    fdb_local = PROJECT_ROOT / "14215F.FDB"
+        fdb = None
     senha = os.environ.get("SISPLAN_PASSWORD", "")
-    _ok("fdb instalado", tem_fdb)
-    _ok("fbclient.dll", dll.exists(), str(dll))
-    _ok("copia local 14215F.FDB", fdb_local.exists(), f"{fdb_local.stat().st_size / 1_000_000:.0f} MB" if fdb_local.exists() else "")
-    if senha:
-        _ok("SISPLAN_PASSWORD", True, "definida")
+    dll = _dll_cliente()
+    _ok("fdb instalado", fdb is not None)
+    if dll is not None:
+        _ok("fbclient.dll", True, str(dll))
+    elif not _modo_local():
+        _ok("fbclient.dll", True, "cliente do sistema (Firebird instalado)")
     else:
-        _ok("SISPLAN_PASSWORD", False, "preencha no .env para abrir o Firebird")
-        falhas += 0  # nao impede o CRM no modo CSV/SQLite
+        if not _ok("fbclient.dll", False, "coloque vendor/firebird/fbclient.dll junto do projeto"):
+            falhas += 1
+    _ok("SISPLAN_PASSWORD", bool(senha), "definida" if senha else "preencha no .env")
+    _ok("alvo Sisplan", True, descricao_conexao())
+
+    if fdb is None:
+        falhas += 1
+    if not senha:
+        falhas += 1
+
+    if fdb is not None and senha:
+        try:
+            linhas = executar_select("SELECT 1 FROM RDB$DATABASE")
+            _ok("SELECT 1 no Sisplan", linhas == [(1,)] or (linhas and linhas[0][0] == 1), descricao_conexao())
+        except Exception as exc:
+            _ok("SELECT 1 no Sisplan", False, str(exc)[:200])
+            falhas += 1
+        else:
+            from crm_npd.repositories.firebird.consultas import sql_cdc_max_log, sql_cdc_max_log_alteracao
+
+            try:
+                alt = executar_select(sql_cdc_max_log_alteracao())
+                log = executar_select(sql_cdc_max_log())
+                _ok(
+                    "logs CDC (LOG / LOG_ALTERACAO)",
+                    True,
+                    f"ALT={alt[0][0] if alt else 0} LOG={log[0][0] if log else 0}",
+                )
+            except Exception as exc:
+                _ok("logs CDC (LOG / LOG_ALTERACAO)", False, str(exc)[:200])
+                falhas += 1
 
     print()
     print("Pronto." if falhas == 0 else f"{falhas} ponto(s) exigem acao.")

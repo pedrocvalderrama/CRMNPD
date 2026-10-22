@@ -1,6 +1,6 @@
 
 # CRM NPD Embalagens - Single-file Flask + SQLite
-# Foco: Importação CSV (Pedidos + Faturamento), Dashboard (período fechado 25->24), Vendedores com Comissão e Gráficos
+# Foco: Importação CSV (Pedidos + Faturamento), Dashboard (ciclo 26->25), Vendedores com Comissão e Gráficos
 
 from __future__ import annotations
 
@@ -856,11 +856,18 @@ def ensure_admin_seed() -> None:
             # --- BLOCO 1: ATUALIZAÇÃO DE BANCO E DATAS ---
 
 def ensure_vendors_schema(conn):
-    """Garante que a coluna 'tipo' exista na tabela vendors."""
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(vendors)")]
+    """Garante colunas de equipe e ciclo de vida na tabela vendors."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(vendors)").fetchall()}
     if "tipo" not in cols:
-        # Padrão 'Externo' para todos, você muda depois manualmente
         conn.execute("ALTER TABLE vendors ADD COLUMN tipo TEXT DEFAULT 'Externo'")
+    if "performance_ativo" not in cols:
+        conn.execute("ALTER TABLE vendors ADD COLUMN performance_ativo INTEGER NOT NULL DEFAULT 0")
+    if "inativado_em" not in cols:
+        conn.execute("ALTER TABLE vendors ADD COLUMN inativado_em TEXT")
+    if "inativado_motivo" not in cols:
+        conn.execute("ALTER TABLE vendors ADD COLUMN inativado_motivo TEXT")
+    if "reativado_em" not in cols:
+        conn.execute("ALTER TABLE vendors ADD COLUMN reativado_em TEXT")
     conn.commit()
 
 def periodo_mes_calendario(ref: Optional[date] = None) -> Tuple[date, date]:
@@ -1918,7 +1925,7 @@ def periodo_ciclo_faturamento_manual(ref: Optional[date] = None) -> Tuple[date, 
     """Ciclo de faturamento do mês de referência com fechamento editável por mês.
 
     Ex.: Abril com fechamento 25 => 26/03 a 25/04.
-    Sem configuração manual, mantém o padrão antigo: 25/mês anterior a 24/mês atual.
+    Sem configuração manual, o padrão é 26/mês anterior a 25/mês atual.
 
     A leitura do dia de fechamento continua aqui porque depende do banco; o
     cálculo das datas em si está em crm_npd.metrics.periodos.ciclo_faturamento,
@@ -1944,7 +1951,7 @@ def ultimo_periodo_fechado(ref: Optional[date] = None) -> Tuple[date, date]:
     """Retorna o ciclo de faturamento fechado para o mês de referência.
 
     Usa a mesma regra global configurada em Configurar Metas:
-    se não houver fechamento manual, mantém o padrão antigo 25/mês anterior até 24/mês atual.
+    se não houver fechamento manual, usa 26/mês anterior até 25/mês atual.
     """
     return periodo_ciclo_faturamento_manual(ref or date.today())
 
@@ -2302,55 +2309,87 @@ def render_page(title: str, body_html: str, active: str) -> str:
         except Exception:
             ticker_messages = []
     
-    # Menu padrão (Para Admin e Gestor)
-    nav = [
-        {"label": "Dashboard", "endpoint": "dashboard", "icon": "bi-speedometer2"},
-        {"label": "Oportunidades", "endpoint": "leads", "icon": "bi-lightning-charge"},
-        {"label": "Funil", "endpoint": "funil", "icon": "bi-kanban"},
-        {"label": "Clientes", "endpoint": "clientes", "icon": "bi-buildings"},
-        {"label": "Tarefas", "endpoint": "tarefas", "icon": "bi-check2-square"},
-        {"label": "Vendedores", "endpoint": "vendedores", "icon": "bi-people"},
-        {"label": "Orçamentos", "endpoint": "orcamentos_detalhe", "icon": "bi-file-earmark-text"},
-        {"label": "Mercado", "endpoint": "estudo_mercado", "icon": "bi-graph-up-arrow"},
-        {"label": "Diagnóstico", "endpoint": "diagnostico", "icon": "bi-activity"},
-        {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
-        {"label": "Site", "endpoint": "site_analytics", "icon": "bi-globe2"},
-        {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
-        {"label": "Atualizar Sisplan", "endpoint": "importar_csv", "icon": "bi-arrow-repeat"},
-        {"label": "Importações", "endpoint": "importacoes", "icon": "bi-database-check"},
-        {"label": "Usuários", "endpoint": "usuarios", "icon": "bi-shield-lock"},
-        {"label": "Metas", "endpoint": "settings", "icon": "bi-bullseye"},
+    nav_groups = [
+        {
+            "label": "Visão geral", "icon": "bi-grid-1x2",
+            "items": [
+                {"label": "Dashboard", "endpoint": "dashboard", "icon": "bi-speedometer2"},
+                {"label": "A Faturar", "endpoint": "a_faturar", "icon": "bi-receipt-cutoff"},
+                {"label": "Análise Histórica", "endpoint": "analise_historica", "icon": "bi-calendar3-range"},
+                {"label": "Relatórios", "endpoint": "relatorios", "icon": "bi-file-earmark-spreadsheet"},
+            ],
+        },
+        {
+            "label": "Comercial", "icon": "bi-briefcase",
+            "items": [
+                {"label": "Oportunidades", "endpoint": "leads", "icon": "bi-lightning-charge"},
+                {"label": "Funil", "endpoint": "funil", "icon": "bi-kanban"},
+                {"label": "Clientes", "endpoint": "clientes", "icon": "bi-buildings"},
+                {"label": "Tarefas", "endpoint": "tarefas", "icon": "bi-check2-square"},
+                {"label": "Orçamentos", "endpoint": "orcamentos_detalhe", "icon": "bi-file-earmark-text"},
+            ],
+        },
+        {
+            "label": "Equipe", "icon": "bi-people",
+            "items": [
+                {"label": "Vendedores", "endpoint": "vendedores", "icon": "bi-person-lines-fill"},
+            ],
+        },
+        {
+            "label": "Inteligência", "icon": "bi-graph-up-arrow",
+            "items": [
+                {"label": "Mercado", "endpoint": "estudo_mercado", "icon": "bi-graph-up-arrow"},
+                {"label": "Diagnóstico", "endpoint": "diagnostico", "icon": "bi-activity"},
+                {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
+                {"label": "Site", "endpoint": "site_analytics", "icon": "bi-globe2"},
+                {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
+            ],
+        },
+        {
+            "label": "Sistema", "icon": "bi-gear",
+            "items": [
+                {"label": "Atualizar Sisplan", "endpoint": "importar_csv", "icon": "bi-arrow-repeat"},
+                {"label": "Importações", "endpoint": "importacoes", "icon": "bi-database-check"},
+                {"label": "Usuários", "endpoint": "usuarios", "icon": "bi-shield-lock"},
+                {"label": "Metas", "endpoint": "settings", "icon": "bi-bullseye"},
+            ],
+        },
     ]
 
-    # Painel comparativo do time é exclusivo do administrador.
     if user and user["role"] == "admin":
-        nav.insert(6, {"label": "Performance", "endpoint": "performance_time", "icon": "bi-bar-chart-line"})
+        nav_groups[2]["items"].append({"label": "Performance", "endpoint": "performance_time", "icon": "bi-bar-chart-line"})
 
-    # Se for Vendedor (user), simplifica o menu
-    # CORREÇÃO: Verifica se NÃO é admin E NEM gestor
     if user and user["role"] not in ["admin", "gestor"]:
-        # Descobre o ID dele para gerar o link correto
-        vendor_id = -1
-        with conectar() as conn:
-            vendor_id = get_user_vendor_id(conn, user)
-        
-        # Menu restrito
-        nav = [
-            {"label": "Minha Visão", "endpoint": "home", "icon": "bi-speedometer2"},
-            {"label": "Oportunidades", "endpoint": "leads", "icon": "bi-lightning-charge"},
-            {"label": "Funil", "endpoint": "funil", "icon": "bi-kanban"},
-            {"label": "Tarefas", "endpoint": "tarefas", "icon": "bi-check2-square"},
-            {"label": "Clientes", "endpoint": "clientes", "icon": "bi-buildings"},
-            {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
-            {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
+        nav_groups = [
+            {
+                "label": "Minha rotina", "icon": "bi-person-workspace",
+                "items": [
+                    {"label": "Minha Visão", "endpoint": "home", "icon": "bi-speedometer2"},
+                    {"label": "Oportunidades", "endpoint": "leads", "icon": "bi-lightning-charge"},
+                    {"label": "Funil", "endpoint": "funil", "icon": "bi-kanban"},
+                    {"label": "Tarefas", "endpoint": "tarefas", "icon": "bi-check2-square"},
+                    {"label": "Clientes", "endpoint": "clientes", "icon": "bi-buildings"},
+                ],
+            },
+            {
+                "label": "Ferramentas", "icon": "bi-tools",
+                "items": [
+                    {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
+                    {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
+                ],
+            },
         ]
+
+    for group in nav_groups:
+        group["active"] = any(item.get("endpoint") == active for item in group.get("items", []))
 
     return render_template_string(
         BASE_HTML,
         title=title,
         body=body_html,
         app_title=APP_TITLE,
-        nav_items=nav,
+        nav_items=[],
+        nav_groups=nav_groups,
         active=active,
         user=user,
         ticker_messages=ticker_messages
@@ -2383,11 +2422,7 @@ def force_site_vendor_types(conn: sqlite3.Connection) -> None:
                 "UPDATE vendors SET tipo='Site' WHERE UPPER(TRIM(COALESCE(nome,''))) = ?",
                 (nome,)
             )
-        # ANFARMA entra no resultado validado do Excel como equipe interna,
-        # mas somente a linha comercial real de R$ 400,00 deve contar em pedidos.
-        conn.execute(
-            "UPDATE vendors SET tipo='Interno' WHERE UPPER(TRIM(COALESCE(nome,''))) = 'ASSOCIACAO NACIONAL DE FARMACEUTICOS MAGISTRAIS ANFARMA' OR UPPER(TRIM(COALESCE(codigo,'')))='05975' AND UPPER(TRIM(COALESCE(nome,''))) LIKE '%ASSOCIACAO NACIONAL%'"
-        )
+        # Interno/Externo fica na tela de Vendedores; nao forcar ANFARMA no boot.
         conn.commit()
     except Exception:
         pass
@@ -2509,29 +2544,19 @@ def sql_excluir_jit_picado(alias: str = "o") -> str:
 
 
 def sql_pedidos_realizados_excel_cond(alias: str = "o", join_alias: str = "v") -> str:
-    """Filtro oficial de PEDIDOS/REALIZADO validado contra o Excel de maio/2026.
+    """Pedidos realizados = MANUAL_REGRAS_PEDIDOS_SISPLAN.
 
-    Regra fechada com a conferência:
-      - soma VALOR_ITEM por linha válida (não MAX(valor) por pedido);
-      - conta 03 - IMEDIATA;
-      - conta 98 - JIT matriz;
-      - exclui 05 - JIT IMEDIATO, exceto motivo 17 - VAREJO;
-      - ignora linhas sem MEDIDA;
-      - para ANFARMA/05975, ignora medida 18X30X10 (sobram os R$ 400,00 do Excel).
+    98-JIT e CLICHES ja saem na extração. 05-JIT IMEDIATO entra.
+    join_alias permanece na assinatura: chamadas antigas passam o alias do vendor.
     """
     a = alias
-    j = join_alias
+    _ = join_alias
     cond_ns = f"UPPER(REPLACE(TRIM(COALESCE({a}.condicao_entrega,'')),' ',''))"
-    motivo = f"UPPER(TRIM(COALESCE({a}.motivo_pedido,'')))"
-    medida = f"UPPER(TRIM(COALESCE({a}.medida_ref,'')))"
-    vendor_nome = f"UPPER(TRIM(COALESCE({j}.nome,'')))" if j else "''"
-    vendor_codigo = f"UPPER(TRIM(COALESCE({j}.codigo,'')))" if j else "''"
+    grupo = f"UPPER(COALESCE({a}.grupo_ref,''))"
     return (
-        f"NOT {sql_pedido_cancelado_cond(a)} "
-        f"AND TRIM(COALESCE({a}.medida_ref,'')) <> '' "
-        f"AND UPPER(COALESCE({a}.cliente_nome_ref,'')) NOT LIKE '%GENERAL LYY%' "
-        f"AND NOT ({cond_ns} LIKE '05%JIT%IMEDIATO%' AND {motivo} NOT LIKE '17%VAREJO%') "
-        f"AND NOT (({vendor_codigo} = '05975' OR {vendor_nome} LIKE '%ANFARMA%') AND {medida} = '18X30X10')"
+        f"TRIM(COALESCE({a}.pedido,'')) <> '' "
+        f"AND {cond_ns} NOT LIKE '%98%JIT%' "
+        f"AND {grupo} NOT LIKE '%CLICHES%'"
     )
 
 
@@ -2629,6 +2654,48 @@ def invoice_tem_qualquer_jit(conn, invoice_row: sqlite3.Row) -> bool:
         except Exception:
             pass
     return False
+
+
+def _info_pedido_comissao(conn, pedido: str, cliente_id: int = 0, vendor_id: int = 0) -> dict:
+    """Cabecalho do pedido usado na comissao: motivo Sisplan e condicao de entrega."""
+    pedido = (pedido or "").strip()
+    if not pedido:
+        return {"motivo_pedido": "", "desc_motivo_pedido": "", "condicao_entrega": ""}
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(motivo_pedido,'') AS motivo_pedido,
+            COALESCE(desc_motivo_pedido,'') AS desc_motivo_pedido,
+            COALESCE(condicao_entrega,'') AS condicao_entrega
+        FROM orders
+        WHERE TRIM(COALESCE(pedido,'')) = TRIM(?)
+        ORDER BY
+          CASE WHEN COALESCE(cliente_id,0)=? THEN 0 ELSE 1 END,
+          CASE WHEN COALESCE(vendor_id,0)=? THEN 0 ELSE 1 END,
+          id ASC
+        LIMIT 1
+        """,
+        (pedido, int(cliente_id or 0), int(vendor_id or 0)),
+    ).fetchone()
+    if not row:
+        return {"motivo_pedido": "", "desc_motivo_pedido": "", "condicao_entrega": ""}
+    return {
+        "motivo_pedido": row["motivo_pedido"] or "",
+        "desc_motivo_pedido": row["desc_motivo_pedido"] or "",
+        "condicao_entrega": row["condicao_entrega"] or "",
+    }
+
+
+def invoice_tem_jit_imediato(conn, invoice_row: sqlite3.Row) -> bool:
+    """True se a nota veio de pedido 05 - JIT IMEDIATO.
+
+    So este JIT anula o bonus de cliente novo. 98-JIT e outros nao.
+    """
+    pedido = norm((invoice_row["pedido"] if "pedido" in invoice_row.keys() else "") or "")
+    cliente_id = int((invoice_row["cliente_id"] if "cliente_id" in invoice_row.keys() else 0) or 0)
+    vendor_id = int((invoice_row["vendor_id"] if "vendor_id" in invoice_row.keys() else 0) or 0)
+    info = _info_pedido_comissao(conn, pedido, cliente_id, vendor_id)
+    return f_comissao.condicao_jit_imediato(info["condicao_entrega"])
 
 
 def site_liquidez_total_mes(conn, site_vendor_id: Optional[int], d0: date, d1: date) -> float:
@@ -2965,6 +3032,8 @@ def line_chart(labels: List[str], series: List[Tuple[str, List[float]]], title: 
 # Upserts
 # -----------------------------
 def upsert_vendor(conn: sqlite3.Connection, raw_vendor: str, cache: Optional[dict] = None) -> Optional[int]:
+    from crm_npd.sync.etl import carteira_do_responsavel
+    raw_vendor = carteira_do_responsavel(raw_vendor) or raw_vendor
     raw_vendor = norm(raw_vendor)
     if not raw_vendor:
         return None
@@ -2976,24 +3045,55 @@ def upsert_vendor(conn: sqlite3.Connection, raw_vendor: str, cache: Optional[dic
         vid = cache.get("vendors_by_code_name", {}).get((codigo_key, nome))
         if vid:
             return int(vid)
+        if codigo_key:
+            vid = cache.get("vendors_by_code", {}).get(codigo_key)
+            if vid:
+                return int(vid)
         vid = cache.get("vendors_by_name", {}).get(nome)
         if vid:
             return int(vid)
+        alt_nome = nome.lstrip(". ").strip()
+        if alt_nome and alt_nome != nome:
+            vid = cache.get("vendors_by_name", {}).get(alt_nome)
+            if vid:
+                return int(vid)
 
     row = conn.execute("SELECT id FROM vendors WHERE codigo IS ? AND nome=?", (codigo, nome)).fetchone()
     if row:
         vid = int(row["id"])
+    elif codigo_key:
+        row = conn.execute(
+            "SELECT id FROM vendors WHERE TRIM(COALESCE(codigo,''))=?",
+            (codigo_key,),
+        ).fetchone()
+        vid = int(row["id"]) if row else None
     else:
-        row = conn.execute("SELECT id FROM vendors WHERE nome=?", (nome,)).fetchone()
+        vid = None
+    if not vid:
+        nomes = [nome]
+        alt = nome.lstrip(". ").strip()
+        if alt and alt not in nomes:
+            nomes.append(alt)
+        row = None
+        for candidato in nomes:
+            row = conn.execute("SELECT id FROM vendors WHERE nome=?", (candidato,)).fetchone()
+            if row:
+                break
         if row:
             vid = int(row["id"])
         else:
             conn.execute("INSERT INTO vendors(codigo,nome,ativo,created_at) VALUES(?,?,?,?)", (codigo, nome, 1, now_iso()))
             vid = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    if codigo_key:
+        atual = conn.execute("SELECT codigo FROM vendors WHERE id=?", (vid,)).fetchone()
+        if atual and not str(atual["codigo"] or "").strip():
+            conn.execute("UPDATE vendors SET codigo=? WHERE id=?", (codigo_key, vid))
 
     if cache is not None:
         cache.setdefault("vendors_by_code_name", {})[(codigo_key, nome)] = vid
         cache.setdefault("vendors_by_name", {})[nome] = vid
+        if codigo_key:
+            cache.setdefault("vendors_by_code", {})[codigo_key] = vid
     return vid
 
 
@@ -3448,6 +3548,7 @@ def build_import_entity_cache(conn: sqlite3.Connection) -> dict:
         "customers_by_code": {},
         "customers_by_name": {},
         "vendors_by_name": {},
+        "vendors_by_code": {},
         "vendors_by_code_name": {},
     }
     for r in conn.execute("SELECT id, COALESCE(codigo,'') codigo, COALESCE(nome,'') nome, COALESCE(fantasia,'') fantasia FROM customers ORDER BY id").fetchall():
@@ -3463,6 +3564,8 @@ def build_import_entity_cache(conn: sqlite3.Connection) -> dict:
         item = {"id": int(r["id"]), "codigo": (r["codigo"] or "").strip(), "nome": (r["nome"] or "").strip()}
         if item["nome"]:
             cache["vendors_by_name"].setdefault(item["nome"], item["id"])
+        if item["codigo"]:
+            cache["vendors_by_code"].setdefault(item["codigo"], item["id"])
         cache["vendors_by_code_name"].setdefault((item["codigo"], item["nome"]), item["id"])
     return cache
 
@@ -4007,6 +4110,7 @@ def buscar_contexto_pedido_para_faturamento(conn, pedido: str, cliente_nome: str
             o.pedido,
             o.cliente_id,
             o.vendor_id,
+            COALESCE(o.vendor_nome_ref, '') AS vendor_nome_ref,
             CASE WHEN UPPER(REPLACE(TRIM(COALESCE(o.condicao_entrega,'')),' ','')) LIKE '98%JIT%' THEN 1 ELSE 0 END AS is_jit,
             COALESCE(o.rede_nome, '') AS rede_nome,
             COALESCE(o.rede_key, '') AS rede_key,
@@ -4045,6 +4149,7 @@ def build_order_context_cache(conn: sqlite3.Connection) -> Dict[str, dict]:
             o.pedido,
             o.cliente_id,
             o.vendor_id,
+            COALESCE(o.vendor_nome_ref, '') AS vendor_nome_ref,
             CASE WHEN UPPER(REPLACE(TRIM(COALESCE(o.condicao_entrega,'')),' ','')) LIKE '98%JIT%' THEN 1 ELSE 0 END AS is_jit,
             COALESCE(o.rede_nome, '') AS rede_nome,
             COALESCE(o.rede_key, '') AS rede_key,
@@ -4803,7 +4908,11 @@ def import_faturamento_csv(file_bytes: bytes, filename: str) -> Tuple[int, int, 
 
             cliente_upsert = build_customer_upsert_value(customer_codigo, raw_cliente)
             cliente_id = upsert_customer(conn, cliente_upsert, fantasia_cliente, codigo_hint=customer_codigo, cache=entity_cache)
-            vendor_id = upsert_vendor(conn, raw_vendor, cache=entity_cache)
+            if contexto_pedido.get("vendor_id"):
+                vendor_id = int(contexto_pedido["vendor_id"])
+                raw_vendor = (contexto_pedido.get("vendor_nome_ref") or raw_vendor or "").strip() or raw_vendor
+            else:
+                vendor_id = upsert_vendor(conn, raw_vendor, cache=entity_cache)
 
             # 2) JÁ EXISTIA NO BANCO — cache evita SELECT por linha.
             if dedupe_key in existing_dedupe:
@@ -5153,7 +5262,7 @@ CRM_RULES_LOCAL = {
     "responsavel": "Para comissão, carteira e atribuição comercial o CRM deve usar RESPONSAVEL/NOME_RESPONSAVEL. REPRESENTANTE só deve ser usado em exceções específicas do canal SITE.",
     "jit": "Pedido JIT/matriz pode contar para meta/pedidos conforme a tela, mas não deve inflar faturamento/comissão de filial. Filial IMEDIATA conta para faturamento/comissão quando aplicável.",
     "carteira": "Transferências manuais de carteira, tarefas, matriz/filial e classificação devem ser persistidas e reaplicadas após excluir/importar CSV novamente.",
-    "novo_recompra": "Cliente novo/recompra deve ser determinado pelo histórico real, preferencialmente primeira nota fiscal, com possibilidade de override manual auditado.",
+    "novo_recompra": "Cliente novo vem do pedido no Sisplan (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA). JIT IMEDIATO anula. Gestor/admin pode forçar NOVO ou RECOMPRA.",
     "seguranca": "Vendedor só pode consultar sua própria carteira/desempenho. Gestor e admin podem consultar visão ampliada. Comissão de outro vendedor não deve aparecer para usuário comum.",
 }
 
@@ -6035,7 +6144,7 @@ REGRAS IMPORTANTES
 - A atribuição comercial usa RESPONSÁVEL/NOME_RESPONSÁVEL como regra principal. REPRESENTANTE só é usado em exceções do canal SITE.
 - Pedidos JIT/matriz precisam ser tratados para não duplicar meta, faturamento ou comissão. Filial IMEDIATA pode contar conforme a regra comercial já implementada.
 - Transferências manuais de carteira, tarefas e vínculos de matriz/filial devem persistir mesmo após nova importação.
-- Cliente novo/recompra é determinado pelo histórico real, preferencialmente primeira nota, com overrides auditados quando aplicável.
+- Cliente novo vem do pedido no Sisplan (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA). JIT IMEDIATO anula. Overrides auditados quando aplicável.
 - Vendedor comum só pode consultar a própria carteira/desempenho. Gestor/admin podem consultar visão ampliada.
 - Pedidos, faturamento, orçamento e liquidez são dados do Sisplan; não crie números ou fatos que não estejam no contexto fornecido.
 - Oportunidades e Funil NÃO são uma base paralela: são leituras do relatório ORÇAMENTO do Sisplan. Nunca instrua o vendedor a cadastrar lead manualmente.
@@ -6994,7 +7103,7 @@ def login():
       </div>
     </div>
     """
-    return render_template_string(BASE_HTML, title="Login", body=body, app_title=APP_TITLE, nav_items=[], active="", user=None)
+    return render_template_string(BASE_HTML, title="Login", body=body, app_title=APP_TITLE, nav_items=[], nav_groups=[], active="", user=None)
 
 
 @app.route("/logout")
@@ -7103,18 +7212,8 @@ def dashboard():
         fat_qtd = qtd_fat_int + qtd_fat_ext
 
         # --- B. PEDIDOS (Mês 1-31) ---
-        # Cálculo antigo removido: agora tudo usa a base oficial validada contra o Excel.
-
-        # CORREÇÃO 15/05/2026 - REALIZADO COMERCIAL IGUAL AO EXCEL
-        # O Excel usa SOMA de VALOR_ITEM por linha válida, não MAX(valor) agrupado por pedido.
-        # Regras conferidas com o arquivo PEDIDOS de maio/2026:
-        # - conta 03 - IMEDIATA normal;
-        # - conta 98 - JIT matriz;
-        # - não conta 05 - JIT IMEDIATO, exceto quando o motivo é 17 - VAREJO;
-        # - não conta linhas sem MEDIDA, pois são valores auxiliares/frete/clichê sem formato;
-        # - não conta filiais JIT identificadas como GENERAL LYY;
-        # - não conta itens 18x30x10 da ANFARMA que não entraram no resultado validado do Excel.
-        rows_ped_excel = conn.execute("""
+        # Soma VALOR_ITEM por linha. Carteira = RESPONSAVEL. Inclui 05-JIT IMEDIATO.
+        rows_ped_excel = conn.execute(f"""
             SELECT
                 CASE
                     WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
@@ -7125,20 +7224,7 @@ def dashboard():
             FROM orders o
             LEFT JOIN vendors v ON v.id = o.vendor_id
             WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
-              AND NOT (COALESCE(o.pedido_cancelado,0)=1
-                   OR UPPER(TRIM(COALESCE(o.situacao_pedido,'') || ' ' || COALESCE(o.motivo_pedido,'') || ' ' || COALESCE(o.desc_motivo_pedido,''))) LIKE '%CANCELADO%'
-                   OR UPPER(TRIM(COALESCE(o.situacao_pedido,'') || ' ' || COALESCE(o.motivo_pedido,'') || ' ' || COALESCE(o.desc_motivo_pedido,''))) LIKE '%CANCELADA%'
-                   OR UPPER(TRIM(COALESCE(o.situacao_pedido,'') || ' ' || COALESCE(o.motivo_pedido,'') || ' ' || COALESCE(o.desc_motivo_pedido,''))) LIKE '%CANCELAMENTO%')
-              AND TRIM(COALESCE(o.medida_ref,'')) <> ''
-              AND NOT (
-                    UPPER(REPLACE(TRIM(COALESCE(o.condicao_entrega,'')),' ','')) LIKE '05%JIT%IMEDIATO%'
-                    AND UPPER(TRIM(COALESCE(o.motivo_pedido,''))) NOT LIKE '17%VAREJO%'
-              )
-              AND UPPER(COALESCE(o.cliente_nome_ref,'')) NOT LIKE '%GENERAL LYY%'
-              AND NOT (
-                    (UPPER(TRIM(COALESCE(v.codigo,''))) = '05975' OR UPPER(COALESCE(v.nome,'')) LIKE '%ANFARMA%')
-                    AND UPPER(TRIM(COALESCE(o.medida_ref,''))) = '18X30X10'
-              )
+              AND {sql_pedidos_realizados_excel_cond('o','v')}
             GROUP BY tipo
         """, (d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
 
@@ -7317,16 +7403,20 @@ def dashboard():
             "Status da Carteira"
         ) if (fat_qtd + gap_qtd) > 0 else None
 
-        # 4. Top Vendedores - MESMA BASE OFICIAL DO DASHBOARD (PEDIDOS / VALOR_ITEM)
+        # 4. Top carteiras (RESPONSAVEL do pedido)
         top = conn.execute(f"""
             SELECT
-                COALESCE(NULLIF(v.nome,''), '-') AS nome,
+                TRIM(
+                    CASE
+                        WHEN TRIM(COALESCE(v.codigo,'')) <> ''
+                        THEN TRIM(v.codigo) || ' - ' || COALESCE(NULLIF(v.nome,''), '-')
+                        ELSE COALESCE(NULLIF(v.nome,''), '-')
+                    END
+                ) AS nome,
                 COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)),0) AS t
             FROM orders o
             LEFT JOIN vendors v ON v.id=o.vendor_id
             WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
-              AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
-              AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
               AND {sql_pedidos_realizados_excel_cond('o','v')}
             GROUP BY v.id
             ORDER BY t DESC
@@ -7522,14 +7612,16 @@ def dashboard():
         </div>
       </div>
       <div class="col-12 col-md-4">
+        <a href="{{ url_for('dashboard_pedidos_detalhe', data_ref=mes_ref, periodo='mes') }}" class="text-decoration-none text-dark d-block h-100">
         <div class="kpi p-4 h-100 bg-white shadow-sm border rounded">
             <div class="d-flex justify-content-between align-items-start mb-2">
                 <div class="text-uppercase text-muted small fw-bold">Total Realizado (Pedidos)</div>
                 <div class="icon" style="background:#0d6efd; color:white; width:32px; height:32px; border-radius:8px; display:grid; place-items:center;">📝</div>
             </div>
             <div class="h3 fw-bold text-primary mb-0">{{ format_brl(ped_total) }}</div>
-            <div class="small text-muted mt-2">Vendas validadas do período comercial</div>
+            <div class="small text-muted mt-2">Vendas validadas do período comercial · clique para detalhar</div>
         </div>
+        </a>
       </div>
       <div class="col-12 col-md-4">
         <div class="kpi p-4 h-100 bg-white shadow-sm border rounded">
@@ -7955,6 +8047,7 @@ def orcamentos_detalhe():
           <input type="month" name="data_ref" class="form-control fw-bold" value="{{ data_ref }}" onchange="this.form.submit()" style="width:160px">
           <button class="btn btn-primary">Aplicar</button>
           <a href="{{ url_for('dashboard') }}" class="btn btn-outline-light">Dashboard</a>
+          <a class="btn btn-success" href="{{ url_for('relatorios_exportar', relatorio='orcamentos', data_ref=data_ref, periodo='mes') }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
         </form>
       </div>
     </div>
@@ -8462,312 +8555,86 @@ def importar_csv():
         flash("Acesso negado.", "warning")
         return redirect(url_for("home"))
 
+    from crm_npd.repositories.firebird.conexao import descricao_conexao, disponivel
+    from crm_npd.settings import aplicar_env
+    aplicar_env()
+    fonte = descricao_conexao()
+
     if request.method == "POST":
-        modo = (request.form.get("modo") or "pacote").strip().lower()
-
-        # Modo recomendado: seleciona os 4 CSVs de uma vez e o CRM identifica cada um.
-        if modo == "pacote":
-            arquivos = [f for f in request.files.getlist("arquivos") if f and f.filename]
-            if not arquivos:
-                flash("Selecione os arquivos exportados do Sisplan.", "warning")
-                return redirect(url_for("importar_csv"))
-
-            detectados = []
-            tipos_vistos = set()
-            erros = []
-            for f in arquivos:
-                data = f.read()
-                tipo = detectar_tipo_csv_sisplan(f.filename, data)
-                if not tipo:
-                    erros.append(f"{f.filename}: não consegui identificar o tipo.")
-                    continue
-                if tipo in tipos_vistos:
-                    erros.append(f"{f.filename}: já existe outro arquivo detectado como {tipo} neste pacote.")
-                    continue
-                tipos_vistos.add(tipo)
-                detectados.append((tipo, f.filename, data))
-
-            if erros:
-                flash("Pacote não importado. " + " | ".join(erros), "danger")
-                return redirect(url_for("importar_csv"))
-
-            # Os quatro relatórios juntos são a fotografia oficial do Sisplan.
-            # Para os números baterem com os CSVs, substituímos SOMENTE os fatos
-            # importados, evitando acúmulo de registros de snapshots anteriores.
-            obrigatorios = {"PEDIDOS", "FATURAMENTO", "ORCAMENTO", "LIQUIDEZ"}
-            pacote_completo = tipos_vistos == obrigatorios
-            reconstruir = pacote_completo
-            backup_path = None
-
-            # Se os quatro arquivos forem exatamente iguais ao último snapshot
-            # sincronizado, não há motivo para apagar/recriar mais de 120 mil linhas.
-            # Hash é da própria matéria-prima; portanto não altera nenhuma regra
-            # comercial e torna reimportações acidentais praticamente instantâneas.
-            snapshot_hashes = {
-                tipo: hashlib.sha256(data).hexdigest()
-                for tipo, _filename, data in detectados
-            }
-            if pacote_completo:
-                try:
-                    with conectar() as conn:
-                        iguais = all(
-                            get_setting(conn, f"sisplan_snapshot_sha256_{tipo.lower()}", "") == snapshot_hashes.get(tipo, "")
-                            for tipo in obrigatorios
-                        )
-                    if iguais:
-                        flash("Os 4 relatórios são idênticos ao último snapshot já sincronizado. Nenhum dado precisou ser reimportado.", "success")
-                        return redirect(url_for("importacoes"))
-                except Exception:
-                    # Falha ao consultar o hash nunca bloqueia uma atualização real.
-                    pass
-
-            if reconstruir:
-                try:
-                    backup_path = _backup_sqlite_before_rebuild("antes_sync_4_csv")
-                    _purge_sisplan_fact_tables_for_rebuild()
-                except Exception as e:
-                    flash(f"Sincronização cancelada antes de alterar os dados: {e}", "danger")
-                    return redirect(url_for("importacoes"))
-
-            # Ordem estável para que cadastros e histórico fiquem consistentes.
-            ordem = {"PEDIDOS": 0, "FATURAMENTO": 1, "ORCAMENTO": 2, "LIQUIDEZ": 3}
-            detectados.sort(key=lambda x: ordem.get(x[0], 99))
-
-            resultados = []
-            nome_stats = {}
-            tarefa_stats = {}
-            validacao_snapshot = {}
-            try:
-                for tipo, filename, data in detectados:
-                    import_id, linhas, registros = _executar_importacao_sisplan(tipo, data, filename)
-                    resultados.append((tipo, filename, linhas, registros, import_id))
-
-                # Pacote completo = fotografia oficial. Antes de liberar a base,
-                # prova mês a mês que linhas e valores ficaram idênticos aos CSVs.
-                if reconstruir:
-                    validacao_mensal = _validar_meses_snapshot_contra_csv(detectados)
-                    if not validacao_mensal.get("ok"):
-                        primeiros = validacao_mensal.get("erros", [])[:4]
-                        raise ValueError("Validação mensal CSV x banco falhou: " + str(primeiros))
-
-                # Reprocessa matrizes/redes apenas uma vez no final do pacote.
-                # Isso substitui o trabalho manual de clicar em "Reprocessar redes" após cada ciclo.
-                if resultados:
-                    try:
-                        with conectar() as conn:
-                            nome_stats = repair_generic_customer_names(conn)
-                            sync_identity_rules_from_jit_history(conn)
-                            tarefa_stats = refresh_repurchase_tasks_after_sisplan(conn, actor_name=(user.get("nome") or "Sistema"))
-                            conn.commit()
-                        validacao_snapshot = _validar_snapshot_sisplan_pos_importacao()
-                    except Exception as e:
-                        nome_stats = {}
-                        tarefa_stats = {}
-                        flash(f"Os CSVs foram importados, mas o reprocessamento automático de nomes/redes apresentou aviso: {e}", "warning")
-
-                nomes = ", ".join(r[0] for r in resultados)
-                total_linhas = sum(int(r[2] or 0) for r in resultados)
-                total_registros = sum(int(r[3] or 0) for r in resultados)
-                faltantes = [t for t in ["PEDIDOS", "FATURAMENTO", "ORCAMENTO", "LIQUIDEZ"] if t not in tipos_vistos]
-                msg = f"Pacote Sisplan concluído: {nomes}. {total_linhas} linhas lidas | {total_registros} registros processados."
-                if nome_stats:
-                    corrigidos = int(nome_stats.get("resolved", 0) or 0)
-                    pendentes_nome = int(nome_stats.get("unresolved", 0) or 0)
-                    if corrigidos:
-                        msg += f" {corrigidos} cadastro(s) com nome genérico foram recuperados automaticamente."
-                    if pendentes_nome:
-                        msg += f" {pendentes_nome} cadastro(s) ainda ficaram identificados por código/ID por falta de nome confiável nos relatórios."
-                if tarefa_stats:
-                    canceladas = int(tarefa_stats.get("cancelled", 0) or 0)
-                    if canceladas:
-                        msg += f" {canceladas} tarefa(s) antiga(s) de cliente genérico foram encerradas e as tarefas de recompra foram recalculadas."
-                if validacao_snapshot:
-                    if validacao_snapshot.get("ok"):
-                        msg += " Validação pós-importação OK: dedupe, chaves estrangeiras e SQLite íntegros."
-                    else:
-                        msg += " ATENÇÃO: a validação pós-importação encontrou inconsistência; consulte Diagnóstico antes de usar os indicadores."
-
-                # Só grava o fingerprint depois de TODAS as validações passarem.
-                # Assim, uma importação restaurada por erro nunca fica marcada como concluída.
-                if pacote_completo and validacao_snapshot.get("ok", False):
-                    with conectar() as conn:
-                        for tipo, sha in snapshot_hashes.items():
-                            set_setting(conn, f"sisplan_snapshot_sha256_{tipo.lower()}", sha)
-                        set_setting(conn, "sisplan_snapshot_synced_at", now_iso())
-                        conn.commit()
-
-                if faltantes:
-                    msg += " Arquivos não enviados: " + ", ".join(faltantes) + "."
-                # Backup era apenas a rede de segurança da transação. Depois de
-                # validar tudo, remove-o para não acumular centenas de MB.
-                if backup_path and os.path.exists(backup_path):
-                    try:
-                        os.remove(backup_path)
-                    except Exception:
-                        pass
-                flash(msg, "success")
-                return redirect(url_for("importacoes"))
-            except Exception as e:
-                restaurado = False
-                erro_restore = ""
-                if reconstruir and backup_path:
-                    try:
-                        _restore_sqlite_backup(backup_path)
-                        restaurado = True
-                    except Exception as restore_exc:
-                        erro_restore = str(restore_exc)
-
-                if restaurado:
-                    if backup_path and os.path.exists(backup_path):
-                        try:
-                            os.remove(backup_path)
-                        except Exception:
-                            pass
-                    flash(f"Erro na importação do pacote: {e}. O backup anterior foi restaurado; a base ficou como estava antes da tentativa.", "danger")
-                elif erro_restore:
-                    flash(f"Erro na importação do pacote: {e}. Também houve falha ao restaurar o backup: {erro_restore}. Backup preservado em {backup_path}.", "danger")
-                else:
-                    flash(f"Erro na importação do pacote: {e}", "danger")
-                return redirect(url_for("importacoes"))
-
-        # Compatibilidade: importação avulsa continua disponível para correções pontuais.
-        tipo = (request.form.get("tipo") or "").strip().upper()
-        f = request.files.get("arquivo")
-        if not f or not f.filename:
-            flash("Selecione um arquivo CSV.", "warning")
+        if not disponivel():
+            flash("Firebird indisponivel. Confira SISPLAN_HOST, SISPLAN_DATABASE e SISPLAN_PASSWORD no .env.", "danger")
             return redirect(url_for("importar_csv"))
-        data = f.read()
-        if not tipo:
-            tipo = detectar_tipo_csv_sisplan(f.filename, data)
         try:
-            import_id, linhas, registros = _executar_importacao_sisplan(tipo, data, f.filename)
-            try:
-                with conectar() as conn:
-                    repair_generic_customer_names(conn)
-                    sync_identity_rules_from_jit_history(conn)
-                    refresh_repurchase_tasks_after_sisplan(conn, actor_name=(user.get("nome") or "Sistema"))
-                    conn.commit()
-            except Exception:
-                pass
-            flash(f"{tipo} importado: {linhas} linhas | {registros} registros. Nomes/identidades reprocessados.", "success")
+            from crm_npd.sync.etl import sincronizar_crm
+            with conectar() as conn:
+                lidas = sincronizar_crm(conn)
+            flash(
+                "Sisplan lido do FDB. Pedidos {pedidos} | Faturamento {faturamento} | Orcamentos {orcamentos} | Liquidez {liquidez}.".format(**lidas),
+                "success",
+            )
             return redirect(url_for("importacoes"))
         except Exception as e:
-            flash(f"Erro na importação: {e}", "danger")
-            return redirect(url_for("importacoes"))
+            flash(f"Falha ao ler o FDB: {e}", "danger")
+            return redirect(url_for("importar_csv"))
 
-    body = render_template_string(r"""
-    <style>
-      .sisplan-drop{border:1px dashed #9fb4d0;border-radius:18px;background:linear-gradient(135deg,#f8fbff 0%,#eef5ff 100%);padding:28px;transition:.18s ease}
-      .sisplan-drop:hover{border-color:#2f6df6;box-shadow:0 10px 30px rgba(47,109,246,.08)}
-      .sisplan-step{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #edf1f6}
-      .sisplan-step:last-child{border-bottom:0}.sisplan-step i{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:#eaf2ff;color:#2f6df6}
-      .type-pill{font-size:.72rem;font-weight:800;letter-spacing:.04em;border-radius:999px;padding:.32rem .58rem;background:#eef4ff;color:#244f9c}
-    </style>
+    with conectar() as conn:
+        origem = get_setting(conn, "sisplan_origem", "")
+        synced = get_setting(conn, "sisplan_snapshot_synced_at", "")
+        n_ped = int(conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] or 0)
+        n_fat = int(conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] or 0)
+        n_orc = int(conn.execute("SELECT COUNT(*) FROM orcamentos").fetchone()[0] or 0)
+        n_liq = int(conn.execute("SELECT COUNT(*) FROM liquidez").fetchone()[0] or 0)
+
+    body = render_template_string("""
     <div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-4">
       <div>
         <div class="h3 mb-1">Atualizar dados do Sisplan</div>
-        <div class="muted">Agora você pode selecionar os quatro relatórios de uma vez. O CRM identifica cada CSV pela assinatura interna validada dos quatro relatórios reais do Sisplan — cabeçalhos + conteúdo — e nunca pelo nome do arquivo.</div>
+        <div class="muted">Conecta no Sisplan da fabrica em modo somente leitura (MANUAL_ACESSO_BANCO_SISPLAN.md).</div>
       </div>
-      <a class="btn btn-outline-secondary" href="{{ url_for('importacoes') }}"><i class="bi bi-clock-history me-1"></i> Histórico de importações</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('importacoes') }}"><i class="bi bi-clock-history me-1"></i> Historico</a>
     </div>
-
     <div class="row g-3">
       <div class="col-12 col-xl-8">
         <div class="cardx p-4">
-          <div class="d-flex align-items-center gap-3 mb-3">
-            <div style="width:44px;height:44px;border-radius:13px;background:#122849;color:#62ddff;display:grid;place-items:center;font-size:1.15rem"><i class="bi bi-arrow-repeat"></i></div>
-            <div><div class="h5 mb-0">Importação inteligente</div><div class="small text-secondary">Recomendado para a atualização diária/semanal. Com os 4 relatórios juntos, o CRM sincroniza os números com a fotografia atual do Sisplan e evita acúmulo de registros antigos.</div></div>
+          <div class="h5 mb-2">Fonte atual</div>
+          <div class="small text-secondary mb-1">Conexao</div>
+          <div class="fw-bold mb-3" style="word-break:break-all">{{ fonte }}</div>
+          <div class="small text-secondary mb-1">Ultima leitura</div>
+          <div class="mb-3">{{ synced or 'ainda nao sincronizado' }}{% if origem %} &middot; origem {{ origem }}{% endif %}</div>
+          <div class="d-flex flex-wrap gap-3 small mb-4">
+            <span>Pedidos <b>{{ n_ped }}</b></span>
+            <span>Faturamento <b>{{ n_fat }}</b></span>
+            <span>Orcamentos <b>{{ n_orc }}</b></span>
+            <span>Liquidez <b>{{ n_liq }}</b></span>
           </div>
-          <form method="post" enctype="multipart/form-data" id="sisplanPackageForm">
-            <input type="hidden" name="modo" value="pacote">
-            <label class="sisplan-drop d-block text-center" for="arquivosSisplan" style="cursor:pointer">
-              <div class="mb-2" style="font-size:2rem;color:#2f6df6"><i class="bi bi-cloud-arrow-up"></i></div>
-              <div class="fw-bold">Selecione os CSVs exportados do Sisplan</div>
-              <div class="text-secondary small mt-1">Pode marcar PEDIDOS + FATURAMENTO + ORÇAMENTO + LIQUIDEZ de uma vez.</div>
-              <input id="arquivosSisplan" class="form-control mt-3" type="file" name="arquivos" accept=".csv,text/csv" multiple required>
-            </label>
-            <div class="d-flex flex-wrap gap-2 mt-3">
-              <span class="type-pill">PEDIDOS</span><span class="type-pill">FATURAMENTO</span><span class="type-pill">ORÇAMENTO</span><span class="type-pill">LIQUIDEZ</span>
-            </div>
-            <div class="d-flex justify-content-end mt-4">
-              <button class="btn btn-primary px-4"><i class="bi bi-lightning-charge-fill me-1"></i> Atualizar CRM</button>
-            </div>
+          <form method="post" id="sisplanFdbForm">
+            <button class="btn btn-primary px-4" {% if not ok %}disabled{% endif %}><i class="bi bi-arrow-repeat me-1"></i> Ler FDB agora</button>
           </form>
-        </div>
-
-        <div class="cardx p-4 mt-3">
-          <div class="fw-bold mb-1">Importação avulsa</div>
-          <div class="small text-secondary mb-3">Use somente quando precisar corrigir ou atualizar um único relatório.</div>
-          <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
-            <input type="hidden" name="modo" value="avulso">
-            <div class="col-md-4"><label class="form-label">Tipo</label><select class="form-select" name="tipo"><option value="">Detectar automaticamente</option><option>PEDIDOS</option><option>FATURAMENTO</option><option value="ORCAMENTO">ORÇAMENTO</option><option>LIQUIDEZ</option></select></div>
-            <div class="col-md-6"><label class="form-label">Arquivo CSV</label><input class="form-control" type="file" name="arquivo" accept=".csv,text/csv"></div>
-            <div class="col-md-2"><button class="btn btn-outline-primary w-100">Importar</button></div>
-          </form>
+          {% if not ok %}<div class="alert alert-warning mt-3 mb-0">Firebird indisponivel. Confira host, porta, caminho do FDB, DLL e senha no .env.</div>{% endif %}
         </div>
       </div>
-
       <div class="col-12 col-xl-4">
         <div class="cardx p-4 h-100">
-          <div class="h6 mb-3">O que o CRM faz automaticamente</div>
-          <div class="sisplan-step"><i class="bi bi-1-circle"></i><div><b>Reconhece pela estrutura</b><div class="small text-secondary">Valida a assinatura das colunas e o conteúdo dos 4 relatórios reais do Sisplan.</div></div></div>
-          <div class="sisplan-step"><i class="bi bi-2-circle"></i><div><b>Importa na ordem correta</b><div class="small text-secondary">Pedidos, faturamento, orçamentos e liquidez.</div></div></div>
-          <div class="sisplan-step"><i class="bi bi-3-circle"></i><div><b>Corrige nomes + atualiza redes</b><div class="small text-secondary">Cruza código/pedido entre os quatro relatórios e depois reprocessa matrizes/filiais.</div></div></div>
-          <div class="sisplan-step"><i class="bi bi-4-circle"></i><div><b>Mantém auditoria</b><div class="small text-secondary">Cada arquivo continua aparecendo separadamente em Importações.</div></div></div>
-          <div class="alert alert-light border mt-3 mb-0 small">Você não precisa mais escolher manualmente o tipo quatro vezes. Basta exportar os relatórios e selecionar todos juntos.</div>
+          <div class="h6 mb-3">O que acontece</div>
+          <p class="small text-secondary">O CRM abre o FDB em modo somente leitura, substitui pedidos, faturamento, orcamentos e liquidez, e recalcula redes e tarefas. CSV nao entra mais.</p>
+          <p class="small text-secondary mb-0">Padrao da fabrica: <code>192.168.100.168:3051</code> em <code>C:\\Sisplan\\Base\\14215F.FDB</code>. Nada alem de SELECT.</p>
         </div>
       </div>
     </div>
-
-    <div id="sisplanProcessing" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(6,18,35,.72);backdrop-filter:blur(5px);align-items:center;justify-content:center;padding:24px">
-      <div style="width:min(520px,94vw);background:#fff;border-radius:20px;box-shadow:0 24px 70px rgba(0,0,0,.28);padding:28px">
+    <div id="sisplanProcessing" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(6,18,35,.72);align-items:center;justify-content:center;padding:24px">
+      <div style="width:min(520px,94vw);background:#fff;border-radius:20px;padding:28px">
         <div class="d-flex align-items-center gap-3">
-          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
-          <div>
-            <div class="h5 mb-1">Atualizando o CRM</div>
-            <div class="text-secondary small" id="sisplanProcessingText">Lendo e validando os relatórios do Sisplan...</div>
-          </div>
-        </div>
-        <div class="progress mt-4" style="height:7px;overflow:hidden">
-          <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:100%"></div>
-        </div>
-        <div class="d-flex justify-content-between mt-3 small text-secondary">
-          <span>Não feche esta janela durante a atualização.</span>
-          <span id="sisplanElapsed">0s</span>
+          <div class="spinner-border text-primary" role="status"></div>
+          <div><div class="h5 mb-1">Lendo o Sisplan</div><div class="text-secondary small">Consultando o FDB. Pode levar alguns minutos na primeira vez.</div></div>
         </div>
       </div>
     </div>
     <script>
-      (() => {
-        const form = document.getElementById('sisplanPackageForm');
-        const overlay = document.getElementById('sisplanProcessing');
-        const label = document.getElementById('sisplanProcessingText');
-        const elapsed = document.getElementById('sisplanElapsed');
-        if (!form || !overlay) return;
-        form.addEventListener('submit', () => {
-          const btn = form.querySelector('button[type="submit"], button:not([type])');
-          if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processando...'; }
-          overlay.style.display = 'flex';
-          const started = Date.now();
-          const stages = [
-            [0, 'Lendo e validando os relatórios do Sisplan...'],
-            [4, 'Atualizando pedidos, faturamento, orçamentos e liquidez...'],
-            [14, 'Conferindo nomes de clientes e vínculos comerciais...'],
-            [24, 'Atualizando redes, matrizes e tarefas automáticas...']
-          ];
-          const tick = () => {
-            const sec = Math.floor((Date.now() - started) / 1000);
-            elapsed.textContent = sec + 's';
-            let txt = stages[0][1];
-            for (const st of stages) if (sec >= st[0]) txt = st[1];
-            label.textContent = txt;
-          };
-          tick();
-          setInterval(tick, 1000);
-        });
-      })();
+      const form = document.getElementById('sisplanFdbForm');
+      const overlay = document.getElementById('sisplanProcessing');
+      if (form && overlay) form.addEventListener('submit', () => { overlay.style.display = 'flex'; });
     </script>
-    """)
+    """, fonte=fonte, synced=synced, origem=origem, n_ped=n_ped, n_fat=n_fat, n_orc=n_orc, n_liq=n_liq, ok=disponivel())
     return render_page("Atualizar Sisplan", body, "importar_csv")
 
 
@@ -10634,7 +10501,9 @@ def summarize_team_entities_in_period(conn, d0: date, d1: date, team_tipo: Optio
             o.data_emissao,
             o.cliente_id,
             COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0) AS valor,
-            CASE WHEN UPPER(REPLACE(TRIM(COALESCE(o.condicao_entrega,'')),' ','')) LIKE '98%JIT%' THEN 1 ELSE 0 END AS is_jit,
+            COALESCE(o.motivo_pedido,'') AS motivo_pedido,
+            COALESCE(o.desc_motivo_pedido,'') AS desc_motivo_pedido,
+            COALESCE(o.condicao_entrega,'') AS condicao_entrega,
             COALESCE(c.fantasia, c.nome, o.cliente_nome_ref, '—') AS cliente
         FROM orders o
         LEFT JOIN customers c ON c.id = o.cliente_id
@@ -10661,7 +10530,10 @@ def summarize_team_entities_in_period(conn, d0: date, d1: date, team_tipo: Optio
         info = get_customer_identity_row(conn, customer_id)
         identity_key = info.get("identity_key") or f"CLIENTE:{customer_id}"
         identity_nome = info.get("identity_nome") or (r["cliente"] or "—")
-        is_jit_linha = int(r["is_jit"] or 0) == 1
+        is_jit_linha = f_comissao.condicao_jit_imediato(r["condicao_entrega"])
+        sisplan_novo_linha = f_comissao.pedido_sisplan_cliente_novo(
+            r["motivo_pedido"], r["desc_motivo_pedido"]
+        )
 
         if identity_key not in entidades:
             entidades[identity_key] = {
@@ -10688,48 +10560,34 @@ def summarize_team_entities_in_period(conn, d0: date, d1: date, team_tipo: Optio
                 "identity_key": identity_key,
                 "identity_nome": identity_nome,
                 "is_jit": is_jit_linha,
+                "sisplan_novo": sisplan_novo_linha,
             }
         else:
-            # Se alguma linha do pedido não for JIT, o pedido não deve ser tratado como JIT puro.
             if not is_jit_linha:
                 pedidos_unicos[pedido_ref]["is_jit"] = False
-
-    # Descobre NOVO/REPETIÇÃO por identidade uma única vez e aplica aos pedidos dessa identidade.
-    status_por_identidade = {}
-
-    for ident, item in entidades.items():
-        primeiro = conn.execute("""
-            SELECT i.id, i.numero, i.pedido, i.data_emissao
-            FROM invoices i
-            LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
-            WHERE COALESCE(cir.identity_key, 'CLIENTE:' || i.cliente_id) = ?
-              AND i.data_emissao IS NOT NULL
-            ORDER BY date(i.data_emissao) ASC, i.id ASC
-            LIMIT 1
-        """, (ident,)).fetchone()
-
-        is_novo = False
-        if not item["is_jit"] and primeiro:
-            primeira_data = (primeiro["data_emissao"] or "").strip()
-            if primeira_data and d0.isoformat() <= primeira_data <= d1.isoformat():
-                is_novo = True
-
-        is_novo = apply_manual_customer_status(conn, ident, item.get("nome") or ident, is_novo)
-        if item.get("is_jit"):
-            is_novo = False
-        item["is_novo"] = is_novo
-        status_por_identidade[ident] = is_novo
+            if sisplan_novo_linha:
+                pedidos_unicos[pedido_ref]["sisplan_novo"] = True
 
     novo_count = 0
     rep_count = 0
 
+    for ident, item in entidades.items():
+        item["is_novo"] = False
+
     for pedido_ref, ped in pedidos_unicos.items():
         ident = ped.get("identity_key")
-        is_novo = bool(status_por_identidade.get(ident, False))
-        if ped.get("is_jit"):
-            is_novo = False
+        status_manual = f_comissao.status_manual_de_texto(
+            get_manual_customer_status(conn, ident)
+        )
+        is_novo = f_comissao.classificar_cliente_novo(
+            pedido_sisplan_novo=bool(ped.get("sisplan_novo")),
+            is_jit_imediato=bool(ped.get("is_jit")),
+            status_manual=status_manual,
+        )
         if is_novo:
             novo_count += 1
+            if ident in entidades:
+                entidades[ident]["is_novo"] = True
         else:
             rep_count += 1
 
@@ -10809,8 +10667,8 @@ def summarize_vendor_entities_in_period(conn, vendor_id: int, d0: date, d1: date
     """
     Unifica a leitura comercial em cima da mesma identidade usada na comissão:
     GRUPO > REDE > CLIENTE.
-    Usa pedidos do mês como origem do movimento comercial e invoices como
-    histórico para decidir se é novo ou recorrente.
+    Pedido novo = MOTIVO 10 no Sisplan (PEDIDO PRIMEIRA COMPRA), salvo
+    override manual. JIT IMEDIATO anula o bônus/classificação de novo.
     """
     rows = conn.execute(f"""
         SELECT
@@ -10818,7 +10676,9 @@ def summarize_vendor_entities_in_period(conn, vendor_id: int, d0: date, d1: date
             o.pedido,
             o.data_emissao,
             o.cliente_id,
-            CASE WHEN UPPER(REPLACE(TRIM(COALESCE(o.condicao_entrega,'')),' ','')) LIKE '98%JIT%' THEN 1 ELSE 0 END AS is_jit,
+            COALESCE(o.motivo_pedido,'') AS motivo_pedido,
+            COALESCE(o.desc_motivo_pedido,'') AS desc_motivo_pedido,
+            COALESCE(o.condicao_entrega,'') AS condicao_entrega,
             COALESCE(c.fantasia, c.nome, '—') AS cliente
         FROM orders o
         LEFT JOIN customers c ON c.id = o.cliente_id
@@ -10834,20 +10694,26 @@ def summarize_vendor_entities_in_period(conn, vendor_id: int, d0: date, d1: date
     for r in rows:
         customer_id = r["cliente_id"]
         identity_key = get_customer_identity_key(conn, customer_id)
+        is_jit_imediato = f_comissao.condicao_jit_imediato(r["condicao_entrega"])
+        sisplan_novo = f_comissao.pedido_sisplan_cliente_novo(
+            r["motivo_pedido"], r["desc_motivo_pedido"]
+        )
 
         if identity_key not in entities:
             entities[identity_key] = {
                 "identity_key": identity_key,
                 "cliente_id": customer_id,
                 "cliente": (get_customer_identity_row(conn, customer_id).get("identity_nome") or r["cliente"] or "-"),
-                "is_jit": int(r["is_jit"] or 0) == 1,
+                "is_jit": is_jit_imediato,
+                "sisplan_novo": bool(sisplan_novo and not is_jit_imediato),
                 "pedido_ref": r["pedido"] or "",
                 "data_ref": r["data_emissao"] or "",
             }
         else:
-            # se alguma ocorrência não for JIT, prevalece não-JIT
-            if int(r["is_jit"] or 0) == 0:
+            if not is_jit_imediato:
                 entities[identity_key]["is_jit"] = False
+            if sisplan_novo and not is_jit_imediato:
+                entities[identity_key]["sisplan_novo"] = True
 
     novo_count = 0
     rep_count = 0
@@ -10855,22 +10721,13 @@ def summarize_vendor_entities_in_period(conn, vendor_id: int, d0: date, d1: date
 
     for ident, item in entities.items():
         primeiro = get_first_invoice_for_identity(conn, None, ident)
-
-        is_novo = False
-        if not item["is_jit"] and primeiro:
-            primeira_data = (primeiro["data_emissao"] or "").strip()
-
-            # Fonte oficial, igual à Visão do Vendedor:
-            # se o primeiro faturamento histórico daquela identidade caiu dentro do mês
-            # comercial atual, contamos como novo; caso contrário, recorrente.
-            if primeira_data and d0.isoformat() <= primeira_data <= d1.isoformat():
-                is_novo = True
-
-        is_novo = apply_manual_customer_status(conn, ident, item.get("cliente") or ident, is_novo)
-
-        # Regra final: JIT nunca entra como NOVO para KPI/comissão, mesmo se for primeiro faturamento.
-        if item.get("is_jit"):
-            is_novo = False
+        is_novo = f_comissao.classificar_cliente_novo(
+            pedido_sisplan_novo=bool(item.get("sisplan_novo")),
+            is_jit_imediato=bool(item.get("is_jit")),
+            status_manual=f_comissao.status_manual_de_texto(
+                get_manual_customer_status(conn, ident)
+            ),
+        )
 
         # RECUPERADO é uma subdivisão da recorrência, usando a MESMA base histórica
         # que o CRM já usa para atraso/recompra: voltou a comprar depois de ultrapassar
@@ -10995,17 +10852,23 @@ def summarize_vendor_sales_identities_in_period(conn, vendor_id: int, d0: date, 
 # -----------------------------
 # Commission compute (robusto)
 # -----------------------------
+def _extrato_comissao_vazio(faturamento: float = 0.0) -> dict:
+    return {
+        "faturamento": float(faturamento or 0.0),
+        "comissao": 0.0,
+        "lines": [],
+        "extra_bonus": 0.0,
+        "novo_count": 0,
+        "rep_count": 0,
+        "bateu_meta": False,
+        "devolucoes_valor": 0.0,
+    }
+
+
 def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
     v = conn.execute("SELECT * FROM vendors WHERE id=?", (vendor_id,)).fetchone()
-    if not v:   
-        return {
-            "faturamento": 0.0,
-            "comissao": 0.0,
-            "lines": [],
-            "extra_bonus": 0.0,
-            "novo_count": 0,
-            "rep_count": 0,
-        }
+    if not v:
+        return _extrato_comissao_vazio()
 
     tipo_vendor = (v["tipo"] or "Externo").strip().lower()
 
@@ -11017,14 +10880,7 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
               AND data_emissao IS NOT NULL
               AND date(data_emissao) BETWEEN date(?) AND date(?)
         """, (vendor_id, d0.isoformat(), d1.isoformat())).fetchone()
-        return {
-            "faturamento": float((rows_site["total"] if rows_site else 0) or 0),
-            "comissao": 0.0,
-            "lines": [],
-            "extra_bonus": 0.0,
-            "novo_count": 0,
-            "rep_count": 0,
-        }
+        return _extrato_comissao_vazio(float((rows_site["total"] if rows_site else 0) or 0))
 
     # =========================
     # EXTERNO = 7% sobre LIQUIDEZ
@@ -11033,10 +10889,13 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
         return linhas_comissao_externo_liquidez(conn, vendor_id, d0, d1)
 
     # =========================
-    # INTERNO = comissão por FATURAMENTO
-    # REGRA UNIFICADA DE IDENTIDADE:
-    # GRUPO > REDE > CLIENTE
+    # INTERNO = comissão por FATURAMENTO no ciclo 26→25
+    # Base: NF de saída + DEMO, sem frete e sem clichê.
+    # Devoluções não abatem; aparecem no extrato.
+    # Pedido novo = MOTIVO 10 no Sisplan; JIT IMEDIATO anula o bônus.
+    # ANFARMA (05975) entra nesta carteira; a origem fica no vendor_nome_ref.
     # =========================
+    from crm_npd.sync.etl import eh_responsavel_anfarma
     rows = conn.execute("""
         SELECT
             i.id,
@@ -11045,9 +10904,10 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
             i.data_emissao,
             i.cliente_id,
             i.vendor_id,
-            COALESCE(i.is_jit, 0) AS is_jit,
+            COALESCE(i.tipo_item_ref, '') AS tipo_item_ref,
             COALESCE(c.fantasia, c.nome, '—') AS cliente,
-            COALESCE(i.valor, 0) AS valor
+            COALESCE(i.valor, 0) AS valor,
+            COALESCE(i.vendor_nome_ref, '') AS vendor_nome_ref
         FROM invoices i
         LEFT JOIN customers c ON c.id = i.cliente_id
         WHERE i.vendor_id = ?
@@ -11056,72 +10916,89 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
         ORDER BY date(i.data_emissao) ASC, i.id ASC
     """, (vendor_id, d0.isoformat(), d1.isoformat())).fetchall()
 
-    lines = []
     total_faturamento = 0.0
+    for r in rows:
+        valor = float(r["valor"] or 0)
+        if not f_comissao.invoice_eh_devolucao(
+            tipo_item_ref=r["tipo_item_ref"], valor=valor
+        ):
+            total_faturamento += valor
+
+    mes_str = d1.strftime("%Y-%m")
+    meta = float(get_goal_history(conn, mes_str, "VENDEDOR", vendor_id) or 0.0)
+    if meta <= 0:
+        meta = float(meta_vendedor_get_manual(conn, vendor_id) or 0.0)
+    bateu_meta = f_comissao.bateu_meta_faturamento(total_faturamento, meta)
+
+    lines = []
     total_comissao = 0.0
+    total_devolucoes = 0.0
     novo_count = 0
     rep_count = 0
-
-    cache_primeiro_doc = {}
+    cache_pedido = {}
 
     for r in rows:
         valor = float(r["valor"] or 0)
-        total_faturamento += valor
-
         invoice_id = int(r["id"])
         cliente_id = r["cliente_id"]
-        # Marca JIT para exibição e regra de bônus.
-        # IMPORTANTE: JIT conta normalmente para faturamento e comissão, mas NÃO recebe bônus NOVO (+1%).
-        is_jit = invoice_tem_qualquer_jit(conn, r)
-        doc_atual = (r["numero"] or r["pedido"] or f"ID:{invoice_id}").strip()
+        pedido = (r["pedido"] or "").strip()
+        doc_atual = (r["numero"] or pedido or f"ID:{invoice_id}").strip()
+        is_devolucao = f_comissao.invoice_eh_devolucao(
+            tipo_item_ref=r["tipo_item_ref"], valor=valor
+        )
 
         identity_key = get_customer_identity_key(conn, cliente_id)
         info = get_customer_identity_row(conn, cliente_id)
-        is_novo = False
 
-        if identity_key not in cache_primeiro_doc:
-            cache_primeiro_doc[identity_key] = get_first_invoice_for_identity(conn, None, identity_key)
-
-        primeiro = cache_primeiro_doc.get(identity_key)
-
-        if primeiro:
-            primeiro_doc = (primeiro["numero"] or primeiro["pedido"] or f"ID:{primeiro['id']}").strip()
-            primeira_data = (primeiro["data_emissao"] or "").strip()
-
-            if primeira_data and d0.isoformat() <= primeira_data <= d1.isoformat() and doc_atual == primeiro_doc:
-                is_novo = True
-
-        is_novo = apply_manual_customer_status(conn, identity_key, info.get("identity_nome") or (r["cliente"] or "—"), is_novo)
-        # Regra final: qualquer JIT faturado entra na comissão, mas nunca ganha bônus de NOVO.
-        if is_jit:
-            is_novo = False
-        base_pct, bonus_pct, comissao_linha = f_comissao.comissao_linha_interno(
-            valor, is_novo=is_novo
+        if pedido not in cache_pedido:
+            cache_pedido[pedido] = _info_pedido_comissao(
+                conn, pedido, int(cliente_id or 0), int(vendor_id or 0)
+            )
+        ped_info = cache_pedido[pedido]
+        is_jit_imediato = f_comissao.condicao_jit_imediato(ped_info["condicao_entrega"])
+        sisplan_novo = f_comissao.pedido_sisplan_cliente_novo(
+            ped_info["motivo_pedido"], ped_info["desc_motivo_pedido"]
         )
-
-        total_comissao += comissao_linha
-
-        if is_novo:
-            novo_count += 1
+        is_novo = False
+        if not is_devolucao:
+            is_novo = f_comissao.classificar_cliente_novo(
+                pedido_sisplan_novo=sisplan_novo,
+                is_jit_imediato=is_jit_imediato,
+                status_manual=f_comissao.status_manual_de_texto(
+                    get_manual_customer_status(conn, identity_key)
+                ),
+            )
+            base_pct, bonus_pct, comissao_linha = f_comissao.comissao_linha_interno(
+                valor, is_novo=is_novo, bateu_meta=bateu_meta
+            )
+            total_comissao += comissao_linha
+            if is_novo:
+                novo_count += 1
+            else:
+                rep_count += 1
         else:
-            rep_count += 1
+            base_pct, bonus_pct, comissao_linha = 0.0, 0.0, 0.0
+            total_devolucoes += valor
 
         lines.append({
             "data": r["data_emissao"] or "",
             "cliente": r["cliente"] or "—",
             "cliente_id": r["cliente_id"],
+            "pedido": pedido,
             "valor": valor,
             "base_pct": base_pct,
             "bonus_pct": bonus_pct,
             "comissao": comissao_linha,
             "is_novo": is_novo,
-            "is_jit": is_jit,
+            "is_jit": is_jit_imediato,
+            "is_devolucao": is_devolucao,
+            "is_anfarma": eh_responsavel_anfarma(r["vendor_nome_ref"]),
             "identity_nome": info.get("identity_nome") or "",
             "identity_key": identity_key,
             "doc_ref": doc_atual,
         })
 
-    extra_bonus = f_comissao.bonus_volume(total_faturamento)
+    extra_bonus = f_comissao.bonus_volume(total_faturamento, bateu_meta=bateu_meta)
     total_comissao += extra_bonus
 
     return {
@@ -11131,6 +11008,8 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
         "extra_bonus": extra_bonus,
         "novo_count": novo_count,
         "rep_count": rep_count,
+        "bateu_meta": bateu_meta,
+        "devolucoes_valor": total_devolucoes,
     }
     
 def realizado_externo_liquidez(conn, vendor_id: int, d0: date, d1: date) -> float:
@@ -11185,6 +11064,8 @@ def linhas_comissao_externo_liquidez(conn, vendor_id: int, d0: date, d1: date):
         "extra_bonus": 0.0,
         "novo_count": 0,
         "rep_count": 0,
+        "bateu_meta": False,
+        "devolucoes_valor": 0.0,
     }
 
 
@@ -11322,12 +11203,20 @@ def vendedores():
 
     with conectar() as conn:
         ensure_vendor_type_column(conn)
+        ensure_vendors_schema(conn)
         force_site_vendor_types(conn)
+        from crm_npd.services.vendedores_ciclo import _sync_vendedores_inativos
+        _sync_vendedores_inativos(conn)
         
         # Filtra permissão
         vendor_lock = get_user_vendor_id(conn, user)
         vrows = conn.execute(
-            "SELECT * FROM vendors WHERE (? IS NULL OR id=?) AND COALESCE(UPPER(TRIM(nome)), '') <> 'SITE' ORDER BY nome ASC", 
+            """SELECT * FROM vendors
+               WHERE COALESCE(ativo,1)=1
+                 AND (? IS NULL OR id=?)
+                 AND COALESCE(UPPER(TRIM(nome)), '') <> 'SITE'
+                 AND COALESCE(UPPER(TRIM(tipo)), '') <> 'SITE'
+               ORDER BY nome ASC""",
             (vendor_lock, vendor_lock)
         ).fetchall()
         
@@ -11365,6 +11254,9 @@ def vendedores():
             </div>
         </div>
         <div class="d-flex gap-2">
+            {% if user.role in ['admin','gestor'] %}
+            <a class="btn btn-light border" href="{{ url_for('vendedores_inativos') }}"><i class="bi bi-person-x me-1"></i>Inativos</a>
+            {% endif %}
             <form class="d-flex align-items-center cardx p-1">
                 <input type="month" name="data_ref" class="form-control form-control-sm border-0 bg-light fw-bold" 
                        value="{{ d1_ped.strftime('%Y-%m') }}" onchange="this.form.submit()">
@@ -11416,6 +11308,12 @@ def vendedores():
                             <a class="btn btn-sm btn-outline-primary" href="{{ url_for('vendedor', vendor_id=v['id']) }}">
                                 Abrir
                             </a>
+                            {% if user.role in ['admin','gestor'] %}
+                            <form class="d-inline" method="post" action="{{ url_for('vendedor_acao', vendor_id=v['id']) }}" onsubmit="return confirm('Inativar {{ v['nome']|e }}?');">
+                                <input type="hidden" name="acao" value="inativar">
+                                <button class="btn btn-sm btn-outline-danger" title="Inativar">Inativar</button>
+                            </form>
+                            {% endif %}
                         </td>
                     </tr>
                 {% else %}
@@ -11654,10 +11552,10 @@ def vendedor(vendor_id: int):
     hoje = date.today()
     
     # DEFINIÇÃO DOS CICLOS
-    # A) Financeiro (25-24) -> Para Faturamento, Comissão e Lista de Notas
+    # A) Financeiro (26-25) -> Faturamento, Comissão, Meta e Projeção
     d0_fat, d1_fat = periodo_ciclo_25_24_que_contem_hoje(ref_date)
     
-    # B) Comercial (1-31) -> Para Pedidos, Metas e Projeção
+    # B) Comercial (1-31) -> Pedidos do mês-calendário
     d0_ped = date(ref_date.year, ref_date.month, 1)
     if ref_date.month == 12:
         d1_ped = date(ref_date.year, 12, 31)
@@ -11686,6 +11584,8 @@ def vendedor(vendor_id: int):
         comissao = float(data_fin.get("comissao", 0) or 0)
         lines = data_fin.get("lines", [])
         extra_bonus = float(data_fin.get("extra_bonus", 0) or 0)
+        bateu_meta = bool(data_fin.get("bateu_meta"))
+        devolucoes_valor = float(data_fin.get("devolucoes_valor", 0) or 0)
         
         # Variáveis legadas de contagem (baseadas em notas fiscais)
  # --- B. COMERCIAL (Ciclo 1-31) ---
@@ -11756,37 +11656,36 @@ def vendedor(vendor_id: int):
              old_meta = conn.execute("SELECT meta_manual FROM metas_vendedores WHERE vendor_id=?", (vendor_id,)).fetchone()
              if old_meta: meta_mensal = float(old_meta["meta_manual"] or 0)
 
-        meta_realizado_pct = (pedidos_val / meta_mensal * 100.0) if meta_mensal > 0 else 0.0
-        meta_variacao_pct = ((pedidos_val - meta_mensal) / meta_mensal * 100.0) if meta_mensal > 0 else None
+        meta_realizado_pct = (faturamento / meta_mensal * 100.0) if meta_mensal > 0 else 0.0
+        meta_variacao_pct = ((faturamento - meta_mensal) / meta_mensal * 100.0) if meta_mensal > 0 else None
 
-        # 3. Metas Derivadas (Diária e Semanal)
-        dias_uteis_mes = business_days_between(d0_ped, d1_ped)
+        # 3. Metas Derivadas (Diária e Semanal) — ciclo 26→25
+        dias_uteis_mes = business_days_between(d0_fat, d1_fat)
         meta_diaria = meta_mensal / dias_uteis_mes if dias_uteis_mes > 0 else 0.0
-        meta_semanal = meta_diaria * 5  # <--- Faltava essa
+        meta_semanal = meta_diaria * 5
         
-        # Cálculo do "Necessário Hoje" (Catch-up)
-        falta_para_meta = max(0.0, meta_mensal - pedidos_val)
+        # Cálculo do "Necessário Hoje" (Catch-up) sobre faturamento do ciclo
+        falta_para_meta = max(0.0, meta_mensal - faturamento)
         
-        # Dias úteis restantes (de hoje até o fim do mês)
-        if d1_ped < hoje: du_rest = 0
-        elif d0_ped > hoje: du_rest = dias_uteis_mes
-        else: du_rest = business_days_between(hoje, d1_ped)
+        if d1_fat < hoje: du_rest = 0
+        elif d0_fat > hoje: du_rest = dias_uteis_mes
+        else: du_rest = business_days_between(hoje, d1_fat)
              
         nec_dia = falta_para_meta / du_rest if du_rest > 0 else 0.0
 
-        # 4. Projeção (Baseada no Mês Civil 1-31)
-        total_dias_mes = (d1_ped - d0_ped).days + 1
-        if d1_ped < hoje:
-            dias_passados = total_dias_mes
-            projecao = pedidos_val
-        elif d0_ped > hoje:
+        # 4. Projeção no ciclo 26→25 (mesmo número da comissão)
+        total_dias_ciclo = (d1_fat - d0_fat).days + 1
+        if d1_fat < hoje:
+            dias_passados = total_dias_ciclo
+            projecao = faturamento
+        elif d0_fat > hoje:
             dias_passados = 0
             projecao = 0.0
         else:
-            dias_passados = (hoje - d0_ped).days
+            dias_passados = (hoje - d0_fat).days
             if dias_passados > 0:
-                media_dia = pedidos_val / dias_passados
-                projecao = media_dia * total_dias_mes
+                media_dia = faturamento / dias_passados
+                projecao = media_dia * total_dias_ciclo
             else:
                 projecao = 0.0
 
@@ -11883,7 +11782,7 @@ def vendedor(vendor_id: int):
     body = render_template_string(r"""
     <div class="page-hero mb-4">
       <div class="d-flex align-items-end justify-content-between flex-wrap gap-3 position-relative" style="z-index:1">
-        <div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Performance individual</div><div class="hero-title">{{ (v['codigo'] ~ ' · ') if v['codigo'] else '' }}{{ v['nome'] }}</div><div class="hero-sub mt-1">Meta {{ d0_ped.strftime('%d/%m') }}–{{ d1_ped.strftime('%d/%m') }} · comissão {{ d0_fat.strftime('%d/%m') }}–{{ d1_fat.strftime('%d/%m') }}</div></div>
+        <div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Performance individual</div><div class="hero-title">{{ (v['codigo'] ~ ' · ') if v['codigo'] else '' }}{{ v['nome'] }}</div><div class="hero-sub mt-1">Meta de faturamento {{ d0_fat.strftime('%d/%m') }}–{{ d1_fat.strftime('%d/%m') }}</div></div>
         <div class="d-flex gap-2 align-items-end"><form method="get"><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_str }}" onchange="this.form.submit()"></form><a class="btn btn-outline-light" href="{{ url_for('vendedores') }}">Voltar</a></div>
       </div>
     </div>
@@ -11891,8 +11790,10 @@ def vendedor(vendor_id: int):
     <div class="row g-3 mb-3">
       <div class="col-12 col-md-3">
         <div class="kpi p-3 h-100">
-          <div class="muted">Meta do Mês</div>
+          <div class="muted">Meta de faturamento</div>
           <div class="h4 mb-0 fw-bold">{{ format_brl(meta_mensal) }}</div>
+          <div class="small muted">{{ d0_fat.strftime('%d/%m') }} a {{ d1_fat.strftime('%d/%m') }}</div>
+          {% if meta_mensal > 0 %}<div class="small fw-bold {{ 'text-success' if meta_variacao_pct>=0 else 'text-danger' }}">{{ '%.1f'|format(meta_variacao_pct|abs) }}% {{ 'acima' if meta_variacao_pct>=0 else 'abaixo' }} da meta · {{ '%.1f'|format(meta_realizado_pct) }}% realizado</div>{% endif %}
           {% if user.role in ['admin','gestor'] %}
           <form method="post" action="{{ url_for('vendedor_meta_hist', vendor_id=v['id']) }}" class="mt-2 d-flex gap-1">
              <input type="hidden" name="mes_ref" value="{{ mes_str }}">
@@ -11906,10 +11807,9 @@ def vendedor(vendor_id: int):
         <div class="kpi p-3 h-100">
           <div class="d-flex justify-content-between align-items-start">
             <div>
-              <div class="muted">Pedidos (Realizado)</div>
+              <div class="muted">Pedidos (mês civil)</div>
               <div class="h4 mb-0 text-primary fw-bold">{{ format_brl(pedidos_v) }}</div>
-              <div class="small muted">{{ pedidos_n }} pedidos</div>
-              {% if meta_mensal > 0 %}<div class="small fw-bold {{ 'text-success' if meta_variacao_pct>=0 else 'text-danger' }}">{{ '%.1f'|format(meta_variacao_pct|abs) }}% {{ 'acima' if meta_variacao_pct>=0 else 'abaixo' }} da meta · {{ '%.1f'|format(meta_realizado_pct) }}% realizado</div>{% endif %}
+              <div class="small muted">{{ pedidos_n }} pedidos · {{ d0_ped.strftime('%d/%m') }} a {{ d1_ped.strftime('%d/%m') }}</div>
             </div>
             <div>
               {% if ver_pedidos %}
@@ -11945,7 +11845,8 @@ def vendedor(vendor_id: int):
                 <div class="icon" style="height:30px; width:30px; font-size:0.8rem;">$</div>
             </div>
             <div class="h4 mb-0 text-success fw-bold">{{ format_brl(comissao) }}</div>
-            <div class="small muted">Base Fat: {{ format_brl(faturamento) }}</div>
+            <div class="small muted">Base Fat: {{ format_brl(faturamento) }}{% if meta_mensal > 0 %} · {{ '%.1f'|format(meta_realizado_pct) }}% da meta{% endif %}</div>
+            {% if bateu_meta %}<div class="small text-success fw-bold">Meta batida · 1,75%</div>{% endif %}
         </div>
       </div>
     </div>
@@ -12109,21 +12010,39 @@ def vendedor(vendor_id: int):
     </div>
 
     <div class="cardx p-3 mt-4">
-      <div class="h6 mb-2">Extrato de Comissão (Ciclo de Faturamento)</div>
+      <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
+        <div class="h6 mb-0">Extrato de Comissão (Ciclo 26→25)</div>
+        <a class="btn btn-sm btn-success" href="{{ url_for('vendedor_comissao_excel', vendor_id=v['id'], data_ref=mes_str) }}">
+          <i class="bi bi-file-earmark-excel me-1"></i>Excel
+        </a>
+      </div>
+      <div class="small muted mb-2">{{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · NF de saída + DEMO, sem frete e sem clichê. Devolução não abate.{% if bateu_meta %} Meta batida: 1,75% (novos 2%).{% endif %}</div>
+      <div class="small mb-3">
+        <span class="badge text-bg-light border">Carteira 1%</span>
+        <span class="badge text-bg-success">Pedido novo (Sisplan 10) 2%</span>
+        <span class="badge text-bg-secondary">JIT IMEDIATO sem bônus</span>
+        <span class="badge text-bg-warning">Devolução visível, não desconta</span>
+        <span class="badge text-bg-dark">Associação Nacional (05975)</span>
+        {% if bateu_meta %}<span class="badge text-bg-info">Meta batida 1,75%</span>{% endif %}
+      </div>
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle">
-          <thead><tr><th>Data</th><th>Cliente</th><th class="text-end">Base Comissão</th><th class="text-end">%</th><th class="text-end">Comissão</th></tr></thead>
+          <thead><tr><th>Data</th><th>NF / Pedido</th><th>Cliente</th><th class="text-end">Base</th><th class="text-end">%</th><th class="text-end">Comissão</th></tr></thead>
           <tbody>
             {% for l in lines %}
-              <tr class="linha-comissao"
+              <tr class="linha-comissao {{ 'table-light' if l.is_devolucao else '' }}"
                   data-cliente-id="{{ l.cliente_id or '' }}"
                   data-cliente="{{ l.cliente }}">
                 <td class="muted">{{ l.data[5:] }}</td>
+                <td class="small font-monospace">{{ l.doc_ref or l.pedido or '—' }}</td>
                 <td class="fw-semibold">
                   {{ l.cliente[:25] }}
                   {% if l.identity_nome and l.identity_nome != l.cliente %}
                     <span class="badge rounded-pill text-bg-light border" style="font-size:0.6rem">{{ l.identity_nome }}</span>
                   {% endif %}
+                  {% if l.is_devolucao %}
+                    <span class="badge rounded-pill text-bg-warning" style="font-size:0.6rem">DEVOLUÇÃO</span>
+                  {% else %}
                   <span class="badge rounded-pill {{ 'text-bg-success' if l.is_novo else 'text-bg-light border text-dark' }} customer-status-badge"
                         style="font-size:0.6rem; cursor:context-menu"
                         data-identity-key="{{ l.identity_key }}"
@@ -12133,16 +12052,20 @@ def vendedor(vendor_id: int):
                         title="Botão direito para ações">
                     {{ 'NOVO' if l.is_novo else 'CARTEIRA' }}
                   </span>
+                  {% endif %}
                   {% if l.is_jit %}
-                    <span class="badge rounded-pill text-bg-secondary" style="font-size:0.6rem">JIT</span>
+                    <span class="badge rounded-pill text-bg-secondary" style="font-size:0.6rem">JIT IMEDIATO</span>
+                  {% endif %}
+                  {% if l.is_anfarma %}
+                    <span class="badge rounded-pill text-bg-dark" style="font-size:0.6rem" title="Responsável original 05975 — Associação Nacional">ANFARMA</span>
                   {% endif %}
                 </td>
                 <td class="text-end">{{ format_brl(l.valor) }}</td>
-                <td class="text-end text-muted">{{ "%.1f"|format(l.base_pct + l.bonus_pct) }}%</td>
-                <td class="text-end fw-bold text-success">{{ format_brl(l.comissao) }}</td>
+                <td class="text-end text-muted">{% if l.is_devolucao %}—{% else %}{{ "%.2f"|format(l.base_pct + l.bonus_pct) }}%{% endif %}</td>
+                <td class="text-end fw-bold {{ 'text-muted' if l.is_devolucao else 'text-success' }}">{% if l.is_devolucao %}—{% else %}{{ format_brl(l.comissao) }}{% endif %}</td>
               </tr>
             {% else %}
-              <tr><td colspan="6" class="text-center muted py-3">Nenhum faturamento neste ciclo.</td></tr>
+              <tr><td colspan="7" class="text-center muted py-3">Nenhum faturamento neste ciclo.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -12174,8 +12097,13 @@ def vendedor(vendor_id: int):
         <input type="hidden" name="next" id="ctxNext">
       </form>
 
-      {% if extra_bonus > 0 %}
-        <div class="alert alert-success mt-3 mb-0 py-2"><b>Parabéns!</b> Bônus meta batida (>100k): <b>{{ format_brl(extra_bonus) }}</b></div>
+      {% if devolucoes_valor %}
+        <div class="alert alert-warning mt-3 mb-0 py-2">Devoluções no ciclo: <b>{{ format_brl(devolucoes_valor) }}</b>. Esse valor <b>não reduz</b> a base da comissão; fica visível para o gestor decidir.</div>
+      {% endif %}
+      {% if bateu_meta %}
+        <div class="alert alert-info mt-3 mb-0 py-2">Meta batida: todas as notas a <b>1,75%</b>. Pedidos novos continuam a <b>2%</b>. O bônus de 1% sobre o excedente de R$ 100 mil não se aplica.</div>
+      {% elif extra_bonus > 0 %}
+        <div class="alert alert-success mt-3 mb-0 py-2">Bônus de 1% sobre o que passou de R$ 100 mil no ciclo: <b>{{ format_brl(extra_bonus) }}</b></div>
       {% endif %}
     </div>
     {% if ver_pedidos %}
@@ -12299,6 +12227,7 @@ def vendedor(vendor_id: int):
     projecao=projecao, comissao=comissao, faturamento=faturamento,
     novo=novo_count, rep=rep_count, recuperados=recuperado_count,
     evo=evo, topc_bar=topc_bar, lines=lines, extra_bonus=extra_bonus,
+    bateu_meta=bateu_meta, devolucoes_valor=devolucoes_valor,
     atrasados_qtd=atrasados_qtd, atraso_med=atraso_med, intervalo_med=intervalo_med,
     chart_yoy=chart_yoy, pie=pie, nec_dia=nec_dia,
     metrics_orc=metrics_orc_final, ver_pedidos=ver_pedidos,
@@ -12306,6 +12235,73 @@ def vendedor(vendor_id: int):
     )
     
     return render_page("Visão do Vendedor", body, "vendedores")
+
+
+@app.route("/vendedor/<int:vendor_id>/comissao.xlsx")
+@login_required
+def vendedor_comissao_excel(vendor_id: int):
+    """Exporta o extrato de comissão do vendedor, no mesmo ciclo da tela."""
+    from crm_npd.services.relatorios import _xlsx_response, linhas_excel_extrato_comissao
+
+    user = get_current_user()
+    if user and user.get("role") not in ["admin", "gestor"]:
+        with conectar() as _pc:
+            _own_vendor = get_user_vendor_id(_pc, user)
+        if _own_vendor and _own_vendor > 0 and int(vendor_id) != int(_own_vendor):
+            flash("Acesso negado.", "warning")
+            return redirect(url_for("vendedor", vendor_id=int(_own_vendor)))
+
+    data_ref_str = request.args.get("data_ref", "")
+    try:
+        if data_ref_str:
+            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date()
+        else:
+            ref_date = date.today().replace(day=1)
+    except Exception:
+        ref_date = date.today().replace(day=1)
+
+    mes_str = ref_date.strftime("%Y-%m")
+    d0_fat, d1_fat = periodo_ciclo_25_24_que_contem_hoje(ref_date)
+    d1_calc_fat = min(date.today(), d1_fat)
+
+    with conectar() as conn:
+        v = conn.execute("SELECT * FROM vendors WHERE id=?", (vendor_id,)).fetchone()
+        if not v:
+            flash("Vendedor não encontrado.", "warning")
+            return redirect(url_for("vendedores"))
+        data_fin = compute_vendor_commission(conn, vendor_id, d0_fat, d1_calc_fat)
+
+    nome = (v["nome"] or v["codigo"] or f"vendedor_{vendor_id}").strip()
+    tipo = (v["tipo"] or "").strip() or "—"
+    rows = linhas_excel_extrato_comissao(data_fin)
+    metadata = [
+        ("Vendedor", nome),
+        ("Canal", tipo),
+        ("Mês", mes_str),
+        ("Ciclo", f"{d0_fat.strftime('%d/%m/%Y')} a {d1_fat.strftime('%d/%m/%Y')}"),
+        ("Valor faturamento", float(data_fin.get("faturamento") or 0)),
+        ("Valor comissão", float(data_fin.get("comissao") or 0)),
+        ("Valor bônus 100 mil", float(data_fin.get("extra_bonus") or 0)),
+        ("Valor devoluções", float(data_fin.get("devolucoes_valor") or 0)),
+        ("Meta batida", "Sim" if data_fin.get("bateu_meta") else "Não"),
+        ("Linhas novo", int(data_fin.get("novo_count") or 0)),
+    ]
+    filename = f"comissao_{v['codigo'] or vendor_id}_{mes_str}"
+    return _xlsx_response(
+        filename,
+        f"CRM NPD · Extrato de comissão · {nome}",
+        metadata,
+        [{
+            "name": "Extrato",
+            "title": f"Extrato de comissão · {nome} · {d0_fat.strftime('%d/%m/%Y')} a {d1_fat.strftime('%d/%m/%Y')}",
+            "headers": [
+                "Data", "NF", "Pedido", "Cliente", "Identidade",
+                "Status", "JIT IMEDIATO", "Valor base", "%", "Valor comissão",
+                "Associação Nacional",
+            ],
+            "rows": rows,
+        }],
+    )
 
 
 # -----------------------------
@@ -14255,6 +14251,7 @@ def _performance_build_context(conn, data_ref, include_customer_mix: bool = True
         c["clientes_repeticao"] = 0
         c["clientes_recuperados"] = 0
         c["meta_mensal"] = 0.0
+        c["fat_ciclo"] = 0.0
         c["meta_pct"] = 0.0
         c["meta_delta_pct"] = None
         rows.append(c)
@@ -14267,6 +14264,7 @@ def _performance_build_context(conn, data_ref, include_customer_mix: bool = True
         mix_d0, mix_d1 = periodo_ciclo_25_24_que_contem_hoje(ref)
         if mix_d0 <= date.today() <= mix_d1:
             mix_d1 = date.today()
+        fat_ciclo_map = _faturamento_comissao_por_vendedor(conn, mix_d0, mix_d1)
         for c in rows:
             vid = int(c.get("id") or 0)
             if vid <= 0:
@@ -14282,9 +14280,11 @@ def _performance_build_context(conn, data_ref, include_customer_mix: bool = True
                 if not meta:
                     old_meta = conn.execute("SELECT meta_manual FROM metas_vendedores WHERE vendor_id=?", (vid,)).fetchone()
                     meta = float(old_meta["meta_manual"] or 0) if old_meta else 0.0
+                fat_ciclo = float(fat_ciclo_map.get(vid, 0.0) or 0.0)
+                c["fat_ciclo"] = fat_ciclo
                 c["meta_mensal"] = float(meta or 0)
-                c["meta_pct"] = (float(c.get("ped_valor") or 0) / meta * 100.0) if meta else 0.0
-                c["meta_delta_pct"] = ((float(c.get("ped_valor") or 0) - meta) / meta * 100.0) if meta else None
+                c["meta_pct"] = (fat_ciclo / meta * 100.0) if meta else 0.0
+                c["meta_delta_pct"] = ((fat_ciclo - meta) / meta * 100.0) if meta else None
             except Exception:
                 pass
 
@@ -14487,7 +14487,7 @@ def performance_time():
     <div class="perf-hero mb-4">
       <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
         <div><div class="small text-uppercase fw-bold opacity-75">Gestão comercial</div><div class="h3 fw-bold mb-1">Performance do Time</div><div class="opacity-75">Esforço + qualidade + resultado. O score dá peso maior à geração real de propostas para não premiar uma conversão alta em amostra pequena.</div></div>
-        <form method="get" class="d-flex gap-2 align-items-end"><input type="hidden" name="tipo" value="{{ tipo_filtro }}"><div><label class="form-label mb-1 small text-white-50">MÊS</label><input type="month" class="form-control" name="data_ref" value="{{ data_ref }}"></div><button class="btn btn-light fw-bold">Aplicar</button></form>
+        <div class="d-flex gap-2 align-items-end flex-wrap"><form method="get" class="d-flex gap-2 align-items-end"><input type="hidden" name="tipo" value="{{ tipo_filtro }}"><div><label class="form-label mb-1 small text-white-50">MÊS</label><input type="month" class="form-control" name="data_ref" value="{{ data_ref }}"></div><button class="btn btn-light fw-bold">Aplicar</button></form><a class="btn btn-success" href="{{ url_for('relatorios_exportar',relatorio='performance',data_ref=data_ref,escopo=('TOTAL' if tipo_filtro=='TODOS' else tipo_filtro)) }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a></div>
       </div>
       <div class="perf-switch d-flex gap-2 flex-wrap mt-3">
         <a class="btn {{ 'btn-light active' if tipo_filtro=='TODOS' else 'btn-outline-light' }}" href="{{ url_for('performance_time',data_ref=data_ref,tipo='TODOS') }}">Todos</a>
@@ -14614,7 +14614,7 @@ def performance_vendedor_detalhe(vendor_id):
     <div class="row g-3 mb-4"><div class="col-12 col-xl-5"><div class="cardx p-4 h-100"><div class="section-title mb-1">Composição do score</div><div class="small text-muted mb-3">O peso maior continua sendo atividade. A carteira usa a mesma fonte Novo/Recompra da Visão do Vendedor; cliente novo e recuperado pesam mais que recorrência normal.</div>
       {% for label,key,weight in [('Atividade / propostas','atividade','50%'),('Geração de pipeline','pipeline','15%'),('Conversão ajustada','conversao','10%'),('Resultado faturado','resultado','10%'),('Carteira: novos / recuperados / recorrentes','carteira','10%'),('Evolução','evolucao','5%')] %}<div class="pd-dim"><div class="d-flex justify-content-between small mb-1"><b>{{ label }}</b><span>{{ '%.0f'|format(row.score_dims[key]) }} / 100 · peso {{ weight }}</span></div><div class="track"><span style="width:{{ row.score_dims[key] }}%"></span></div></div>{% endfor %}
       <div class="alert alert-light border mt-3 mb-0"><div class="fw-bold">{{ diagnostico }}</div><div class="small text-muted mt-1">{{ acao }}</div></div>
-    </div></div><div class="col-12 col-xl-7"><div class="cardx p-4 h-100"><div class="section-title mb-1">Leitura gerencial</div><div class="small text-muted mb-3">O score ajuda a localizar padrões; o gestor deve abrir propostas e causas antes de decidir qualquer ação.</div><div class="row g-2"><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Convertidos</div><div class="h4 fw-bold mb-0">{{ row.conv_qtd }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Perdidos</div><div class="h4 fw-bold mb-0">{{ row.perdido_qtd }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Clientes no mês</div><div class="h6 fw-bold mb-0"><span class="text-success">{{ row.clientes_novos }} novos</span> · {{ row.clientes_repeticao }} recorrentes{% if row.clientes_recuperados %} · <span class="text-primary">{{ row.clientes_recuperados }} recuperados</span>{% endif %}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Meta comercial</div>{% if row.meta_mensal>0 %}<div class="h6 fw-bold mb-0">{{ format_brl(row.ped_valor) }} / {{ format_brl(row.meta_mensal) }}</div><div class="small {{ 'text-success' if row.meta_delta_pct>=0 else 'text-danger' }}">{{ '%.1f'|format(row.meta_delta_pct|abs) }}% {{ 'acima' if row.meta_delta_pct>=0 else 'abaixo' }} da meta</div>{% else %}<div class="text-muted">Sem meta definida</div>{% endif %}</div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Ticket faturado</div><div class="h5 fw-bold mb-0">{{ format_brl(row.ticket_fat) }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Variação faturamento</div><div class="h5 fw-bold mb-0">{{ fmt_delta(row.fat_delta) }}</div></div></div></div></div></div></div>
+    </div></div><div class="col-12 col-xl-7"><div class="cardx p-4 h-100"><div class="section-title mb-1">Leitura gerencial</div><div class="small text-muted mb-3">O score ajuda a localizar padrões; o gestor deve abrir propostas e causas antes de decidir qualquer ação.</div><div class="row g-2"><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Convertidos</div><div class="h4 fw-bold mb-0">{{ row.conv_qtd }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Perdidos</div><div class="h4 fw-bold mb-0">{{ row.perdido_qtd }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Clientes no mês</div><div class="h6 fw-bold mb-0"><span class="text-success">{{ row.clientes_novos }} novos</span> · {{ row.clientes_repeticao }} recorrentes{% if row.clientes_recuperados %} · <span class="text-primary">{{ row.clientes_recuperados }} recuperados</span>{% endif %}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Meta de faturamento</div>{% if row.meta_mensal>0 %}<div class="h6 fw-bold mb-0">{{ format_brl(row.fat_ciclo) }} / {{ format_brl(row.meta_mensal) }}</div><div class="small {{ 'text-success' if row.meta_delta_pct>=0 else 'text-danger' }}">{{ '%.1f'|format(row.meta_delta_pct|abs) }}% {{ 'acima' if row.meta_delta_pct>=0 else 'abaixo' }} da meta</div>{% else %}<div class="text-muted">Sem meta definida</div>{% endif %}</div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Ticket faturado</div><div class="h5 fw-bold mb-0">{{ format_brl(row.ticket_fat) }}</div></div></div><div class="col-6"><div class="p-3 rounded-3 bg-light"><div class="small text-muted">Variação faturamento</div><div class="h5 fw-bold mb-0">{{ fmt_delta(row.fat_delta) }}</div></div></div></div></div></div></div>
 
     <div class="row g-3 mb-4"><div class="col-12"><div class="viz-card"><div class="viz-head"><div><div class="viz-title">Score mensal</div><div class="viz-sub">Cada mês recebe um score novo e independente. O score anual é a média dos meses do ano até o período selecionado.</div></div></div><div class="viz-body">{% if chart_score %}<img src="data:image/png;base64,{{ chart_score }}">{% endif %}</div></div></div><div class="col-12"><div class="viz-card"><div class="viz-head"><div><div class="viz-title">Atividade comercial</div><div class="viz-sub">Orçamentos emitidos e quantos viraram pedido nos últimos 6 meses.</div></div></div><div class="viz-body">{% if chart_atividade %}<img src="data:image/png;base64,{{ chart_atividade }}">{% endif %}</div></div></div><div class="col-12 col-xl-6"><div class="viz-card"><div class="viz-head"><div><div class="viz-title">Conversão</div><div class="viz-sub">Taxa mensal de aproveitamento das propostas.</div></div></div><div class="viz-body">{% if chart_conversao %}<img src="data:image/png;base64,{{ chart_conversao }}">{% endif %}</div></div></div><div class="col-12 col-xl-6"><div class="viz-card"><div class="viz-head"><div><div class="viz-title">Faturamento</div><div class="viz-sub">Resultado realizado nos últimos 6 meses.</div></div></div><div class="viz-body">{% if chart_faturamento %}<img src="data:image/png;base64,{{ chart_faturamento }}">{% endif %}</div></div></div></div>
 
@@ -16766,7 +16766,7 @@ def settings():
             <div class="col-12 col-md-7">
               <label class="form-label fw-bold">Dia de fechamento</label>
               <input type="number" min="1" max="31" step="1" class="form-control form-control-lg" name="dia_fechamento" value="{{ dia_fechamento }}">
-              <div class="form-text">Padrão antigo: 24. Ex.: dia 25 = 26/mês anterior até 25/mês atual.</div>
+              <div class="form-text">Padrão: dia 25 = 26/mês anterior até 25/mês atual.</div>
             </div>
             <div class="col-12 col-md-5 d-grid">
               <button class="btn btn-warning btn-lg">Salvar Ciclo</button>
@@ -16809,6 +16809,59 @@ def route_importar_orcamentos():
 # Metas automáticas / manuais (Empresa + Vendedor)
 # CORRIGIDO: Agrupa por 'pedido' para não somar itens duplicados
 # -----------------------------
+_SQL_FAT_BASE_COMISSAO = """
+CASE
+    WHEN UPPER(TRIM(COALESCE(tipo_item_ref,''))) = 'D' THEN 0
+    WHEN COALESCE(valor, 0) < 0 THEN 0
+    ELSE COALESCE(valor, 0)
+END
+"""
+
+
+def _sum_faturamento_comissao(
+    conn: sqlite3.Connection, d0: date, d1: date, vendor_id: Optional[int] = None
+) -> float:
+    """Soma o faturamento da comissão (NF saída + DEMO, sem devolução)."""
+    if vendor_id is None:
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM({_SQL_FAT_BASE_COMISSAO}), 0) AS total
+            FROM invoices
+            WHERE data_emissao IS NOT NULL
+              AND date(data_emissao) BETWEEN date(?) AND date(?)
+            """,
+            (d0.isoformat(), d1.isoformat()),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM({_SQL_FAT_BASE_COMISSAO}), 0) AS total
+            FROM invoices
+            WHERE vendor_id=?
+              AND data_emissao IS NOT NULL
+              AND date(data_emissao) BETWEEN date(?) AND date(?)
+            """,
+            (vendor_id, d0.isoformat(), d1.isoformat()),
+        ).fetchone()
+    return float(row["total"] or 0)
+
+
+def _faturamento_comissao_por_vendedor(
+    conn: sqlite3.Connection, d0: date, d1: date
+) -> dict:
+    rows = conn.execute(
+        f"""
+        SELECT vendor_id, COALESCE(SUM({_SQL_FAT_BASE_COMISSAO}), 0) AS total
+        FROM invoices
+        WHERE data_emissao IS NOT NULL
+          AND date(data_emissao) BETWEEN date(?) AND date(?)
+        GROUP BY vendor_id
+        """,
+        (d0.isoformat(), d1.isoformat()),
+    ).fetchall()
+    return {int(r["vendor_id"] or 0): float(r["total"] or 0) for r in rows}
+
+
 def _sum_pedidos_periodo(conn: sqlite3.Connection, d0: date, d1: date, vendor_id: Optional[int] = None) -> float:
     """Soma PEDIDOS/REALIZADO com a mesma regra do Dashboard/Excel."""
     if vendor_id is None:
@@ -16871,7 +16924,7 @@ def meta_vendedor_calc(conn: sqlite3.Connection, vendor_id: int, meses: int = 3,
     ref = date.today()
     for _ in range(max(1, meses)):
         s, e = ultimo_periodo_fechado(ref)
-        val = _sum_pedidos_periodo(conn, s, e, vendor_id=vendor_id)
+        val = _sum_faturamento_comissao(conn, s, e, vendor_id=vendor_id)
         if val > 0: totals.append(val)
         ref = s - timedelta(days=1)
     if not totals: return 0.0

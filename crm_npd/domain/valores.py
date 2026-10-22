@@ -101,9 +101,10 @@ class LinhaComissao:
         bonus_pct: Percentual de bonus aplicado.
         comissao: Valor de comissao da linha.
         is_novo: Indica se a linha recebeu bonus de cliente novo.
-        is_jit: Indica se o documento e JIT, que nunca recebe bonus de novo.
+        is_jit: Indica se a origem e JIT IMEDIATO, que nunca recebe bonus de novo.
         identity_key: Chave da identidade comercial.
         doc_ref: Numero da nota ou do pedido usado como documento de referencia.
+        is_devolucao: Linha de devolucao: aparece no extrato, nao entra na base.
     """
 
     data: str
@@ -116,6 +117,7 @@ class LinhaComissao:
     is_jit: bool = False
     identity_key: str = ""
     doc_ref: str = ""
+    is_devolucao: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,8 @@ class ExtratoComissao:
         novo_count: Linhas classificadas como cliente novo.
         rep_count: Linhas classificadas como recompra.
         lines: Detalhamento linha a linha.
+        bateu_meta: Se a aliquota de 1,75% esta ativa no ciclo.
+        devolucoes_valor: Soma das devolucoes exibidas, sem abater a base.
     """
 
     faturamento: float = 0.0
@@ -137,6 +141,8 @@ class ExtratoComissao:
     novo_count: int = 0
     rep_count: int = 0
     lines: tuple[LinhaComissao, ...] = field(default_factory=tuple)
+    bateu_meta: bool = False
+    devolucoes_valor: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

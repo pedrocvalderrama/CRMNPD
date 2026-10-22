@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from crm_npd.repositories.firebird.conexao import FirebirdSomenteLeituraError, _validar_select
+from crm_npd.repositories.firebird.conexao import (
+    FirebirdSomenteLeituraError,
+    _kwargs_conexao,
+    _modo_local,
+    _validar_select,
+    descricao_conexao,
+)
 
 
 def test_select_simples_passa() -> None:
@@ -32,3 +38,40 @@ def test_select_com_espaco_passa() -> None:
 def test_escrita_e_bloqueada(sql: str) -> None:
     with pytest.raises(FirebirdSomenteLeituraError):
         _validar_select(sql)
+
+
+def test_conexao_fabrica_usa_host_porta_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SISPLAN_HOST", "192.168.100.168")
+    monkeypatch.setenv("SISPLAN_PORT", "3051")
+    monkeypatch.setenv("SISPLAN_DATABASE", r"C:\Sisplan\Base\14215F.FDB")
+    monkeypatch.setenv("SISPLAN_USER", "SYSDBA")
+    monkeypatch.setenv("SISPLAN_PASSWORD", "masterkey")
+    monkeypatch.setenv("SISPLAN_CHARSET", "WIN1252")
+    kwargs = _kwargs_conexao()
+    assert kwargs["host"] == "192.168.100.168"
+    assert kwargs["port"] == 3051
+    assert kwargs["database"] == r"C:\Sisplan\Base\14215F.FDB"
+    assert kwargs["user"] == "SYSDBA"
+    assert "dsn" not in kwargs
+    assert not _modo_local()
+    assert "192.168.100.168:3051" in descricao_conexao()
+
+
+def test_fbclient_nao_depende_de_auto_sisplan(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SISPLAN_FBCLIENT", raising=False)
+    from crm_npd.repositories.firebird.conexao import _candidatos_fbclient
+
+    caminhos = [str(p).lower() for p in _candidatos_fbclient()]
+    assert all("auto_sisplan" not in c for c in caminhos)
+    assert any(c.endswith(r"vendor\firebird\fbclient.dll") or c.endswith("vendor/firebird/fbclient.dll") for c in caminhos)
+
+
+def test_conexao_local_usa_dsn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    caminho = tmp_path / "14215F.FDB"
+    monkeypatch.setenv("SISPLAN_HOST", "local")
+    monkeypatch.setenv("SISPLAN_DATABASE", str(caminho))
+    monkeypatch.setenv("SISPLAN_PASSWORD", "masterkey")
+    kwargs = _kwargs_conexao()
+    assert kwargs["dsn"] == str(caminho)
+    assert "host" not in kwargs
+    assert _modo_local()
