@@ -50,20 +50,20 @@ def test_conexao_fabrica_usa_host_porta_database(monkeypatch: pytest.MonkeyPatch
     kwargs = _kwargs_conexao()
     assert kwargs["host"] == "192.168.100.168"
     assert kwargs["port"] == 3051
-    assert kwargs["database"] == "C:/Sisplan/Base/14215F.FDB"
+    assert kwargs["database"] == r"C:\Sisplan\Base\14215F.FDB"
     assert kwargs["user"] == "SYSDBA"
     assert "dsn" not in kwargs
     assert not _modo_local()
     assert "192.168.100.168:3051" in descricao_conexao()
 
 
-def test_fbclient_nao_depende_de_auto_sisplan(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fbclient_busca_x64_do_manual(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SISPLAN_FBCLIENT", raising=False)
     from crm_npd.repositories.firebird.conexao import _candidatos_fbclient
 
     caminhos = [str(p).lower() for p in _candidatos_fbclient()]
-    assert all("auto_sisplan" not in c for c in caminhos)
-    assert any(c.endswith(r"vendor\firebird\fbclient.dll") or c.endswith("vendor/firebird/fbclient.dll") for c in caminhos)
+    assert any(c.endswith("fbclient_x64.dll") for c in caminhos)
+    assert any("auto_sisplan" in c and c.endswith("fbclient_x64.dll") for c in caminhos)
 
 
 def test_conexao_local_usa_dsn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

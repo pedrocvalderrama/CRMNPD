@@ -83,12 +83,12 @@ def main() -> int:
     dll = _dll_cliente() if fdb is not None else None
     _ok("fdb instalado", fdb is not None)
     if dll is not None:
-        _ok("fbclient.dll 64-bit", True, str(dll))
+        _ok("fbclient_x64.dll", True, str(dll))
     else:
         if not _ok(
-            "fbclient.dll 64-bit",
+            "fbclient_x64.dll",
             False,
-            "copie C:\\Program Files\\Firebird\\Firebird_3_0\\fbclient.dll para vendor\\firebird",
+            "copie fbclient_x64.dll para a pasta do CRM (MANUAL_ACESSO_BANCO_SISPLAN.md)",
         ):
             falhas += 1
     _ok("SISPLAN_PASSWORD", bool(senha), "definida" if senha else "preencha no .env")

@@ -6,8 +6,7 @@ Parametros oficiais (MANUAL_ACESSO_BANCO_SISPLAN.md):
 - porta ``3051``
 - arquivo ``C:\\Sisplan\\Base\\14215F.FDB``
 - usuario ``SYSDBA`` / senha no ``.env``
-- cliente Firebird: ``vendor/firebird/fbclient.dll`` no projeto, ou o cliente
-  ja instalado no Windows. Nao depende de ``C:\\dev\\auto_sisplan``.
+- cliente Firebird: ``fbclient_x64.dll`` (MANUAL_ACESSO_BANCO_SISPLAN.md).
 
 Override local: ``SISPLAN_HOST=local`` + caminho de um FDB copiado.
 Nunca INSERT/UPDATE/DELETE/DDL/EXECUTE PROCEDURE.
@@ -76,19 +75,22 @@ def caminho_fdb() -> Path:
 
 
 def _candidatos_fbclient() -> list[Path]:
-    """Ordem: .env, vendor 64-bit, Firebird 3 em Program Files. Sem System32 (costuma ser FB 2.5)."""
+    """DLL 64-bit do manual: fbclient_x64.dll. O fbclient do Sisplan (32-bit) nao serve."""
     vistos: list[Path] = []
     env = os.environ.get("SISPLAN_FBCLIENT", "").strip()
     if env:
         vistos.append(Path(env))
     vistos.extend(
         (
-            PROJECT_ROOT / "vendor" / "firebird" / "fbclient.dll",
+            PROJECT_ROOT / "fbclient_x64.dll",
             PROJECT_ROOT / "vendor" / "firebird" / "fbclient_x64.dll",
+            Path(r"C:\dev\auto_sisplan\fbclient_x64.dll"),
+            Path(r"C:\Sisplan\fbclient_x64.dll"),
+            Path(r"\\192.168.100.168\Sisplan\fbclient_x64.dll"),
+            PROJECT_ROOT / "vendor" / "firebird" / "fbclient.dll",
             Path(r"C:\Program Files\Firebird\Firebird_3_0\fbclient.dll"),
             Path(r"C:\Program Files\Firebird\Firebird_4_0\fbclient.dll"),
             Path(r"C:\Firebird\Firebird_3_0\fbclient.dll"),
-            Path(r"C:\Sisplan\Firebird\fbclient.dll"),
         )
     )
     unicos: list[Path] = []
@@ -152,10 +154,8 @@ def _preparar_cliente() -> None:
     dll = _dll_cliente()
     if dll is None:
         logger.warning(
-            "fbclient.dll 64-bit do Firebird 3 nao encontrado. "
-            "Copie de 'C:\\Program Files\\Firebird\\Firebird_3_0\\fbclient.dll' "
-            "para vendor\\firebird\\ ou defina SISPLAN_FBCLIENT no .env. "
-            "O cliente 32-bit do Sisplan nao funciona com este Python."
+            "fbclient_x64.dll nao encontrado (MANUAL_ACESSO_BANCO_SISPLAN.md). "
+            "Copie o arquivo para a pasta do CRM ou defina SISPLAN_FBCLIENT no .env."
         )
 
 
@@ -171,12 +171,10 @@ def _kwargs_conexao() -> dict[str, Any]:
     }
     if _modo_local():
         return {"dsn": str(caminho_fdb()), **comum}
-    # Barra invertida + "C:" no DSN vira "unavailable database" em alguns fbclient.
-    caminho = str(caminho_fdb()).replace("\\", "/")
     return {
         "host": _host(),
         "port": _porta(),
-        "database": caminho,
+        "database": str(caminho_fdb()),
         **comum,
     }
 
