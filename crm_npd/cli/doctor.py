@@ -71,7 +71,6 @@ def main() -> int:
 
     from crm_npd.repositories.firebird.conexao import (
         _dll_cliente,
-        _modo_local,
         descricao_conexao,
         executar_select,
     )
@@ -81,14 +80,16 @@ def main() -> int:
     except ImportError:
         fdb = None
     senha = os.environ.get("SISPLAN_PASSWORD", "")
-    dll = _dll_cliente()
+    dll = _dll_cliente() if fdb is not None else None
     _ok("fdb instalado", fdb is not None)
     if dll is not None:
-        _ok("fbclient.dll", True, str(dll))
-    elif not _modo_local():
-        _ok("fbclient.dll", True, "cliente do sistema (Firebird instalado)")
+        _ok("fbclient.dll 64-bit", True, str(dll))
     else:
-        if not _ok("fbclient.dll", False, "coloque vendor/firebird/fbclient.dll junto do projeto"):
+        if not _ok(
+            "fbclient.dll 64-bit",
+            False,
+            "copie C:\\Program Files\\Firebird\\Firebird_3_0\\fbclient.dll para vendor\\firebird",
+        ):
             falhas += 1
     _ok("SISPLAN_PASSWORD", bool(senha), "definida" if senha else "preencha no .env")
     _ok("alvo Sisplan", True, descricao_conexao())

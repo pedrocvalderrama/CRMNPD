@@ -15,12 +15,15 @@ Nunca INSERT/UPDATE/DELETE/DDL/EXECUTE PROCEDURE.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 from crm_npd.settings import PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
 
 # Manual de acesso ao banco Sisplan (fabrica).
 HOST_FABRICA = "192.168.100.168"
@@ -73,7 +76,7 @@ def caminho_fdb() -> Path:
 
 
 def _candidatos_fbclient() -> list[Path]:
-    """Ordem: .env (opcional), vendor do projeto, Firebird instalado no Windows."""
+    """Ordem: .env, vendor 64-bit, Firebird 3 em Program Files. Sem System32 (costuma ser FB 2.5)."""
     vistos: list[Path] = []
     env = os.environ.get("SISPLAN_FBCLIENT", "").strip()
     if env:
@@ -84,7 +87,8 @@ def _candidatos_fbclient() -> list[Path]:
             PROJECT_ROOT / "vendor" / "firebird" / "fbclient_x64.dll",
             Path(r"C:\Program Files\Firebird\Firebird_3_0\fbclient.dll"),
             Path(r"C:\Program Files\Firebird\Firebird_4_0\fbclient.dll"),
-            Path(r"C:\Windows\System32\fbclient.dll"),
+            Path(r"C:\Firebird\Firebird_3_0\fbclient.dll"),
+            Path(r"C:\Sisplan\Firebird\fbclient.dll"),
         )
     )
     unicos: list[Path] = []
@@ -99,9 +103,18 @@ def _candidatos_fbclient() -> list[Path]:
 
 
 def _dll_cliente() -> Path | None:
+    """Primeira DLL 64-bit que o Python consegue carregar (Sisplan 32-bit nao serve)."""
+    import fdb
+
     for candidato in _candidatos_fbclient():
-        if candidato.is_file():
+        if not candidato.is_file():
+            continue
+        try:
+            fdb.load_api(str(candidato))
+            logger.info("fbclient=%s", candidato)
             return candidato
+        except Exception:
+            logger.warning("fbclient incompativel com Python 64-bit (precisa Firebird 3 x64): %s", candidato)
     return None
 
 
@@ -138,10 +151,12 @@ def _validar_select(sql: str) -> str:
 def _preparar_cliente() -> None:
     dll = _dll_cliente()
     if dll is None:
-        return
-    import fdb
-
-    fdb.load_api(str(dll))
+        logger.warning(
+            "fbclient.dll 64-bit do Firebird 3 nao encontrado. "
+            "Copie de 'C:\\Program Files\\Firebird\\Firebird_3_0\\fbclient.dll' "
+            "para vendor\\firebird\\ ou defina SISPLAN_FBCLIENT no .env. "
+            "O cliente 32-bit do Sisplan nao funciona com este Python."
+        )
 
 
 def _kwargs_conexao() -> dict[str, Any]:
