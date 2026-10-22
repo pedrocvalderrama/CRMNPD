@@ -3,7 +3,9 @@
 ## Requisitos
 
 - Windows 10/11
-- Python 3.12 ou 3.13 (64 bits)
+- Python **3.12** ou 3.13 (64 bits). Python 3.10 **não** serve
+  (`matplotlib` e `numpy` desta versão exigem ≥ 3.11). No Windows use o
+  instalador oficial e marque o *py launcher*.
 - Este repositório
 
 O CRM lê o Sisplan no servidor da fábrica (`192.168.100.168:3051`,
