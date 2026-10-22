@@ -50,7 +50,7 @@ def test_conexao_fabrica_usa_host_porta_database(monkeypatch: pytest.MonkeyPatch
     kwargs = _kwargs_conexao()
     assert kwargs["host"] == "192.168.100.168"
     assert kwargs["port"] == 3051
-    assert kwargs["database"] == r"C:\Sisplan\Base\14215F.FDB"
+    assert kwargs["database"] == "C:/Sisplan/Base/14215F.FDB"
     assert kwargs["user"] == "SYSDBA"
     assert "dsn" not in kwargs
     assert not _modo_local()

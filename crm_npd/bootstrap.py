@@ -73,5 +73,12 @@ def _primeira_carga_fdb(legacy, conn) -> None:
         synced or "nunca",
         alvo_atual,
     )
-    sincronizar_crm(conn)
+    try:
+        sincronizar_crm(conn)
+    except Exception:
+        logger.exception(
+            "carga completa falhou; o Flask sobe, mas os numeros podem estar desatualizados. "
+            "Confira se C:\\Sisplan\\Base\\14215F.FDB existe no host %s e se a porta 3051 responde.",
+            alvo_atual,
+        )
 

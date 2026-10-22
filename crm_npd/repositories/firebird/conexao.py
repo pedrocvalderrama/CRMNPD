@@ -156,10 +156,12 @@ def _kwargs_conexao() -> dict[str, Any]:
     }
     if _modo_local():
         return {"dsn": str(caminho_fdb()), **comum}
+    # Barra invertida + "C:" no DSN vira "unavailable database" em alguns fbclient.
+    caminho = str(caminho_fdb()).replace("\\", "/")
     return {
         "host": _host(),
         "port": _porta(),
-        "database": str(caminho_fdb()),
+        "database": caminho,
         **comum,
     }
 
