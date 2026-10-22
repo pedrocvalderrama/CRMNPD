@@ -11,6 +11,7 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 
 from crm_npd.domain.enums import EtapaFunil
+from crm_npd.domain.status_os import rotulo_status_os
 from crm_npd.domain.valores import MetricasPipeline
 
 #: Dias em aberto a partir dos quais um orcamento acionavel conta como parado.
@@ -96,7 +97,7 @@ def determinar_etapa(
     if pedido and pedido != "0":
         return EtapaFunil.GANHO
 
-    descricao = normalizar_texto(desc_status)
+    descricao = normalizar_texto(rotulo_status_os(desc_status))
     codigo = normalizar_texto(status_code)
 
     if any(texto in descricao for texto in TEXTOS_GANHO):

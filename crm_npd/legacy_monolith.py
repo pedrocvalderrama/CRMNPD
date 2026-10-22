@@ -44,6 +44,7 @@ from crm_npd.domain import (
     Periodo,
     StatusManualCliente,
 )
+from crm_npd.domain.status_os import codigo_status_os, rotulo_status_os
 from crm_npd.metrics import comissao as f_comissao
 from crm_npd.metrics import funil as f_funil
 from crm_npd.metrics import percentuais as f_pct
@@ -7838,7 +7839,10 @@ def orcamentos_detalhe():
             ORDER BY qtd DESC
         """
 
-        stats_rows = conn.execute(query_stats, params_vendedor).fetchall()
+        stats_rows = [
+            {**dict(r), "status_nome": rotulo_status_os(r["status_nome"])}
+            for r in conn.execute(query_stats, params_vendedor).fetchall()
+        ]
         total_orc = sum(r["qtd"] for r in stats_rows)
 
         # Fonte única também para os KPIs de orçamento: usa a mesma classificação
@@ -7878,13 +7882,35 @@ def orcamentos_detalhe():
         params_final = list(params_vendedor)
         
         if status_filtro:
-            if status_filtro == 'PEDIDO APROVADO':
+            filtro_status = status_filtro.strip().upper()
+            if filtro_status == 'PEDIDO APROVADO' or filtro_status.endswith('PEDIDO APROVADO'):
                 # Se filtrou por Pedido Aprovado, pega tudo que tem pedido_id
                 sql_final += " AND (pedido_id IS NOT NULL AND pedido_id != '' AND pedido_id != '0')"
             else:
-                # Se filtrou por outra fase, pega apenas o que NÃO tem pedido_id
-                sql_final += " AND UPPER(TRIM(COALESCE(desc_status, 'SEM STATUS'))) = ? AND (pedido_id IS NULL OR pedido_id = '' OR pedido_id = '0')"
-                params_final.append(status_filtro.strip().upper())
+                # SQLite pode ter so o codigo (40) ou o rotulo (40 - MANUTENCAO...).
+                codigo_filtro = codigo_status_os(status_filtro)
+                sql_final += " AND (pedido_id IS NULL OR pedido_id = '' OR pedido_id = '0')"
+                if codigo_filtro:
+                    sql_final += (
+                        " AND ("
+                        " TRIM(COALESCE(status_os, '')) = ?"
+                        " OR TRIM(COALESCE(status_os, '')) = ?"
+                        " OR UPPER(TRIM(COALESCE(desc_status, 'SEM STATUS'))) = ?"
+                        " OR UPPER(TRIM(COALESCE(desc_status, ''))) = ?"
+                        " OR UPPER(TRIM(COALESCE(desc_status, ''))) LIKE ?"
+                        ")"
+                    )
+                    codigo_curto = codigo_filtro.lstrip("0") or "0"
+                    params_final.extend([
+                        codigo_filtro,
+                        codigo_curto,
+                        filtro_status,
+                        codigo_filtro,
+                        f"{codigo_filtro} -%",
+                    ])
+                else:
+                    sql_final += " AND UPPER(TRIM(COALESCE(desc_status, 'SEM STATUS'))) = ?"
+                    params_final.append(filtro_status)
 
         query_list = f"""
             SELECT
@@ -7899,10 +7925,12 @@ def orcamentos_detalhe():
                 o.pedido_id,
                 o.vendedor_nome
             FROM orcamentos o
-            WHERE o.data_inicio BETWEEN ? AND ? {sql_final.replace('vendedor_nome','o.vendedor_nome').replace('desc_status','o.desc_status').replace('pedido_id','o.pedido_id')}
+            WHERE o.data_inicio BETWEEN ? AND ? {sql_final.replace('vendedor_nome','o.vendedor_nome').replace('desc_status','o.desc_status').replace('pedido_id','o.pedido_id').replace('status_os','o.status_os')}
             ORDER BY o.data_inicio DESC
         """
         rows = [dict(r) for r in conn.execute(query_list, params_final).fetchall()]
+        for r in rows:
+            r["desc_status"] = rotulo_status_os(r.get("desc_status"))
 
         # Resolve nomes em lote. A versão anterior executava até duas subconsultas por linha
         # de orçamento; em bases grandes isso virava milhares de SELECTs na mesma página.

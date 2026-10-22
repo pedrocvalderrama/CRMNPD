@@ -16,6 +16,7 @@ CODIGO_ANFARMA = "05975"
 CODIGO_JOSEANE = "12667"
 LABEL_JOSEANE = "12667 - JOSEANE VOLINGER DOS SANTOS"
 
+from crm_npd.domain.status_os import rotulo_status_os
 from crm_npd.repositories.firebird.conexao import (
     descricao_conexao,
     disponivel,
@@ -444,11 +445,8 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
 
 def _rotulo_status_os(codigo, descricao) -> str | None:
     """Junta codigo e descricao do STATUS_OS: '19 - PEDIDO APROVADO'."""
-    cod = _txt(codigo)
-    desc = _txt(descricao)
-    if cod and desc:
-        return f"{cod} - {desc}"
-    return desc or cod or None
+    rotulo = rotulo_status_os(codigo, descricao)
+    return rotulo or None
 
 
 def _gravar_orcamentos(conn, m, rows: list[dict], agora: str) -> int:

@@ -170,7 +170,7 @@ O 104 (`status_os`, `prospeccao`, `dt_prev`, `dt_retorno`, `tipo_contato`, `valo
 | `dt_validade` | `OS_001.DT_VALIDADE` | |
 | `status` | `OS_001.STATUS` | `A` aberto, `F` fechado (amostra) |
 | `status_os` | `OS_001.STATUS_OS` | código (`19`, `40`, `09`…) |
-| `desc_status` | `TIPO_MOTIVO_001.DESCRICAO` via `STATUS_OS` | ex. `19 - PEDIDO APROVADO` |
+| `desc_status` | cadastro PED (`crm_npd/domain/status_os.py`) + `TIPO_MOTIVO_001` | ex. `40 - MANUTENCAO DE CARTEIRA` |
 | `prospeccao` | `OS_001.PROSPECCAO` | |
 | `desc_prospeccao` | `CAD_PROSP_001.NOME` / `FANTASIA` | join pelo código |
 | `tipo_contato` | `OS_001.TIPO_CONTATO` | `LIGACAO`, `WHATSAPP`, `E-MAIL`, `VISITA`, `OUTROS` |

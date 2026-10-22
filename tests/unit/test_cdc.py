@@ -136,7 +136,7 @@ def test_troca_de_alvo_ou_csv_pede_carga_completa() -> None:
 def test_rotulo_status_os_junta_codigo_e_descricao() -> None:
     assert _rotulo_status_os("40", "MANUTENCAO DE CARTEIRA") == "40 - MANUTENCAO DE CARTEIRA"
     assert _rotulo_status_os("19", "PEDIDO APROVADO") == "19 - PEDIDO APROVADO"
-    assert _rotulo_status_os("09", None) == "09"
+    assert _rotulo_status_os("09", None) == "09 - ORCAMENTO EM NEGOCIACAO"
     assert _rotulo_status_os("", "PEDIDO APROVADO") == "PEDIDO APROVADO"
 
 

@@ -24,6 +24,13 @@ def test_textos_de_desfecho() -> None:
     assert f.determinar_etapa(None) is EtapaFunil.NOVO
 
 
+def test_codigo_status_os_vira_descricao_do_cadastro() -> None:
+    assert f.determinar_etapa("40") is EtapaFunil.CONTATO
+    assert f.determinar_etapa("09") is EtapaFunil.NEGOCIACAO
+    assert f.determinar_etapa("21") is EtapaFunil.PERDIDO
+    assert f.determinar_etapa("33") is EtapaFunil.PERDIDO
+
+
 def test_orcamento_convertido_regra_unica() -> None:
     assert f.orcamento_convertido("123") is True
     assert f.orcamento_convertido("0") is True
