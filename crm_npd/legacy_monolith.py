@@ -5147,7 +5147,15 @@ def import_orcamentos_csv(file_bytes: bytes, filename: str) -> Tuple[int, int, i
             desc_prospeccao = first_not_empty(rr.get("desc_prospeccao")).strip()
             funcionario = first_not_empty(rr.get("funcionario")).strip()
             nome_funcionario = first_not_empty(rr.get("nome_funcionario")).strip()
-            cidade = first_not_empty(rr.get("nome_1"), rr.get("cidade")).strip()
+            cidade_cand = first_not_empty(
+                rr.get("cidade"), rr.get("municipio"), rr.get("nomcep"), rr.get("nome_cidade"), rr.get("nome_1")
+            ).strip()
+            # nome_1 às vezes vem como logradouro; evita gravar rua como cidade.
+            if _parece_logradouro(cidade_cand):
+                cidade_cand = first_not_empty(rr.get("cidade"), rr.get("municipio"), rr.get("nomcep")).strip()
+                if _parece_logradouro(cidade_cand):
+                    cidade_cand = ""
+            cidade = cidade_cand
             medida_ref = first_not_empty(rr.get("medida"), rr.get("formato"), rr.get("tamanho"), rr.get("dimensao"), rr.get("dimensoes")).strip()
 
             dedupe_key = build_dedupe_key(
@@ -7978,14 +7986,9 @@ def _desempenho_filtros_request() -> dict:
     equipe = (request.args.get("equipe") or "").strip().upper()
     if equipe not in ("INTERNO", "EXTERNO"):
         equipe = ""
-    vendor_raw = (request.args.get("vendedor") or "").strip()
-    try:
-        vendedor_id = int(vendor_raw) if vendor_raw else 0
-    except Exception:
-        vendedor_id = 0
     return {
         "equipe": equipe,
-        "vendedor_id": vendedor_id,
+        "vendedor": (request.args.get("vendedor") or "").strip(),
         "grupo": (request.args.get("grupo") or "").strip(),
         "formato": (request.args.get("formato") or "").strip(),
         "papel": (request.args.get("papel") or "").strip(),
@@ -7994,51 +7997,82 @@ def _desempenho_filtros_request() -> dict:
     }
 
 
+def _parece_logradouro(valor: str) -> bool:
+    """Detecta rua/avenida gravada por engano no campo cidade."""
+    import re
+    s = (valor or "").strip()
+    if not s:
+        return True
+    if re.search(
+        r"^(R |R\. ?|RUA |AV |AV\. ?|AVENIDA |ROD |ROD\. ?|RODOVIA |AL |AL\. ?|"
+        r"TRAV |TV |PCA |PRACA |PRAÇA |PC |EST |ESTRADA |SRV |SERVID|CALD |"
+        r"1A RUA|BR-)",
+        s,
+        re.I,
+    ):
+        return True
+    up = s.upper()
+    if " - LADO " in up or " LADO IMPAR" in up or " LADO PAR" in up:
+        return True
+    return False
+
+
 def _desempenho_filtro_sql(filtros: dict) -> tuple[str, list]:
     clauses: List[str] = []
     params: list = []
     if filtros.get("equipe") in ("INTERNO", "EXTERNO"):
         clauses.append("COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') = ?")
         params.append(filtros["equipe"])
-    if int(filtros.get("vendedor_id") or 0) > 0:
-        clauses.append("i.vendor_id = ?")
-        params.append(int(filtros["vendedor_id"]))
+    if filtros.get("vendedor"):
+        clauses.append("UPPER(TRIM(COALESCE(v.nome,''))) = UPPER(?)")
+        params.append(filtros["vendedor"])
     if filtros.get("grupo"):
         clauses.append("UPPER(TRIM(COALESCE(i.grupo_ref,''))) = UPPER(?)")
         params.append(filtros["grupo"])
     if filtros.get("formato"):
+        # Formato real está em orders.medida_ref; invoices.formato/medida costumam vir "0".
         clauses.append(
-            "UPPER(TRIM(COALESCE(NULLIF(TRIM(i.formato),''), NULLIF(TRIM(i.medida_ref),''), ''))) = UPPER(?)"
+            """EXISTS (
+                SELECT 1 FROM orders o
+                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                  AND UPPER(REPLACE(TRIM(COALESCE(o.medida_ref,'')), ' ', ''))
+                      = UPPER(REPLACE(TRIM(?), ' ', ''))
+                  AND TRIM(COALESCE(o.medida_ref,'')) NOT IN ('', '0', '-')
+            )"""
         )
         params.append(filtros["formato"])
     if filtros.get("papel"):
         clauses.append("UPPER(TRIM(COALESCE(i.papel_ref,''))) = UPPER(?)")
         params.append(filtros["papel"])
     if filtros.get("uf"):
-        # Geo costuma vir do orçamento (Sisplan); customers.uf é opcional/legado.
         clauses.append(
             """(
               UPPER(TRIM(COALESCE(c.uf,''))) = UPPER(?)
               OR EXISTS (
-                SELECT 1
-                FROM orcamentos ox
+                SELECT 1 FROM orders o
+                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                  AND UPPER(TRIM(COALESCE(o.uf,''))) = UPPER(?)
+              )
+              OR EXISTS (
+                SELECT 1 FROM orcamentos ox
                 WHERE TRIM(COALESCE(c.codigo,'')) <> ''
                   AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
                   AND UPPER(TRIM(COALESCE(ox.uf,''))) = UPPER(?)
               )
             )"""
         )
-        params.extend([filtros["uf"], filtros["uf"]])
+        params.extend([filtros["uf"], filtros["uf"], filtros["uf"]])
     if filtros.get("cidade"):
         clauses.append(
             """(
               UPPER(TRIM(COALESCE(c.cidade,''))) = UPPER(?)
               OR EXISTS (
-                SELECT 1
-                FROM orcamentos ox
-                WHERE TRIM(COALESCE(c.codigo,'')) <> ''
-                  AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
-                  AND UPPER(TRIM(COALESCE(ox.cidade,''))) = UPPER(?)
+                SELECT 1 FROM orders o
+                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                  AND UPPER(TRIM(COALESCE(o.cidade,''))) = UPPER(?)
               )
             )"""
         )
@@ -8048,12 +8082,12 @@ def _desempenho_filtro_sql(filtros: dict) -> tuple[str, list]:
     return " AND " + " AND ".join(clauses), params
 
 
-def _desempenho_filtros_ativos(filtros: dict, vendor_nome: str = "") -> List[str]:
+def _desempenho_filtros_ativos(filtros: dict) -> List[str]:
     labels = []
     if filtros.get("equipe"):
         labels.append("Equipe " + str(filtros["equipe"]).title())
-    if int(filtros.get("vendedor_id") or 0) > 0:
-        labels.append(vendor_nome or "Vendedor")
+    if filtros.get("vendedor"):
+        labels.append(filtros["vendedor"])
     if filtros.get("grupo"):
         labels.append(filtros["grupo"])
     if filtros.get("formato"):
@@ -8068,18 +8102,14 @@ def _desempenho_filtros_ativos(filtros: dict, vendor_nome: str = "") -> List[str
 
 
 def _ensure_customers_geo_cols(conn) -> None:
-    """Garante colunas de geo em customers (bases antigas podem não ter)."""
-    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(customers)").fetchall()}
-    if "uf" not in cols:
-        try:
-            conn.execute("ALTER TABLE customers ADD COLUMN uf TEXT")
-        except Exception:
-            pass
-    if "cidade" not in cols:
-        try:
-            conn.execute("ALTER TABLE customers ADD COLUMN cidade TEXT")
-        except Exception:
-            pass
+    """Garante colunas de geo em customers/orders (bases antigas podem não ter)."""
+    for table, col in (("customers", "uf"), ("customers", "cidade"), ("orders", "uf"), ("orders", "cidade")):
+        cols = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+            except Exception:
+                pass
 
 
 def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
@@ -8102,14 +8132,16 @@ def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
         ).fetchall()
         if r[0]
     ]
+    # Formato = medida dos pedidos (ex.: 18X30X10), não o campo quebrado das notas.
     formatos = [
         str(r[0]).strip()
         for r in conn.execute(
             """
-            SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(formato),''), NULLIF(TRIM(medida_ref),''), ''))
-            FROM invoices
-            WHERE TRIM(COALESCE(NULLIF(TRIM(formato),''), NULLIF(TRIM(medida_ref),''), ''))<>''
-            ORDER BY 1
+            SELECT TRIM(medida_ref) AS m
+            FROM orders
+            WHERE TRIM(COALESCE(medida_ref,'')) NOT IN ('', '0', '-')
+            GROUP BY TRIM(medida_ref)
+            ORDER BY COUNT(*) DESC, m
             """
         ).fetchall()
         if r[0]
@@ -8121,13 +8153,14 @@ def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
         ).fetchall()
         if r[0]
     ]
-    # Estado/cidade: customers (se preenchido) + orçamentos (fonte usual no Sisplan).
     ufs = [
         str(r[0]).strip().upper()
         for r in conn.execute(
             """
             SELECT DISTINCT u FROM (
               SELECT UPPER(TRIM(uf)) AS u FROM customers WHERE TRIM(COALESCE(uf,''))<>''
+              UNION
+              SELECT UPPER(TRIM(uf)) AS u FROM orders WHERE TRIM(COALESCE(uf,''))<>''
               UNION
               SELECT UPPER(TRIM(uf)) AS u FROM orcamentos WHERE TRIM(COALESCE(uf,''))<>''
             ) x
@@ -8136,40 +8169,35 @@ def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
         ).fetchall()
         if r[0]
     ]
+    cidade_sql = """
+        SELECT DISTINCT c FROM (
+          SELECT TRIM(cidade) AS c FROM customers WHERE TRIM(COALESCE(cidade,''))<>''
+          UNION
+          SELECT TRIM(cidade) AS c FROM orders WHERE TRIM(COALESCE(cidade,''))<>''
+        ) x
+        ORDER BY 1
+        LIMIT 1200
+    """
+    cidade_params: tuple = ()
     if filtros.get("uf"):
-        cidades = [
-            str(r[0]).strip()
-            for r in conn.execute(
-                """
-                SELECT DISTINCT c FROM (
-                  SELECT TRIM(cidade) AS c FROM customers
-                  WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
-                  UNION
-                  SELECT TRIM(cidade) AS c FROM orcamentos
-                  WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
-                ) x
-                ORDER BY 1
-                """,
-                (filtros["uf"], filtros["uf"]),
-            ).fetchall()
-            if r[0]
-        ]
-    else:
-        cidades = [
-            str(r[0]).strip()
-            for r in conn.execute(
-                """
-                SELECT DISTINCT c FROM (
-                  SELECT TRIM(cidade) AS c FROM customers WHERE TRIM(COALESCE(cidade,''))<>''
-                  UNION
-                  SELECT TRIM(cidade) AS c FROM orcamentos WHERE TRIM(COALESCE(cidade,''))<>''
-                ) x
-                ORDER BY 1
-                LIMIT 800
-                """
-            ).fetchall()
-            if r[0]
-        ]
+        cidade_sql = """
+            SELECT DISTINCT c FROM (
+              SELECT TRIM(cidade) AS c FROM customers
+              WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
+              UNION
+              SELECT TRIM(cidade) AS c FROM orders
+              WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
+            ) x
+            ORDER BY 1
+            LIMIT 1200
+        """
+        cidade_params = (filtros["uf"], filtros["uf"])
+    cidades_brutas = [
+        str(r[0]).strip()
+        for r in conn.execute(cidade_sql, cidade_params).fetchall()
+        if r[0]
+    ]
+    cidades = [c for c in cidades_brutas if not _parece_logradouro(c)]
     return {
         "vendors": vendors,
         "grupos": grupos,
@@ -8346,13 +8374,7 @@ def desempenho():
 
     with conectar() as conn:
         opcoes = _desempenho_opcoes_filtro(conn, filtros)
-        vendor_nome = ""
-        if filtros.get("vendedor_id"):
-            for v in opcoes["vendors"]:
-                if int(v["id"]) == int(filtros["vendedor_id"]):
-                    vendor_nome = str(v["nome"] or "")
-                    break
-        filtros_ativos = _desempenho_filtros_ativos(filtros, vendor_nome)
+        filtros_ativos = _desempenho_filtros_ativos(filtros)
         fat_ref, notas_ref, cli_ref, unid_ref = _soma_faturamento_periodo(
             conn, d0_ref, d1_ref, filtro_sql, filtro_params
         )
@@ -8522,12 +8544,10 @@ def desempenho():
               </div>
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Vendedor</label>
-                <select class="form-select" name="vendedor">
-                  <option value="">Todos</option>
-                  {% for v in opcoes.vendors %}
-                    <option value="{{ v.id }}" {% if filtros.vendedor_id == v.id %}selected{% endif %}>{{ v.nome }}{% if v.tipo %} ({{ v.tipo|title }}){% endif %}</option>
-                  {% endfor %}
-                </select>
+                <input class="form-control" name="vendedor" list="desempListaVendedores" value="{{ filtros.vendedor }}" placeholder="Digite para buscar" autocomplete="off">
+                <datalist id="desempListaVendedores">
+                  {% for v in opcoes.vendors %}<option value="{{ v.nome }}"></option>{% endfor %}
+                </datalist>
               </div>
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Grupo de produto</label>
@@ -8538,10 +8558,10 @@ def desempenho():
               </div>
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Formato</label>
-                <select class="form-select" name="formato">
-                  <option value="">Todos</option>
-                  {% for f in opcoes.formatos %}<option value="{{ f }}" {% if filtros.formato == f %}selected{% endif %}>{{ f }}</option>{% endfor %}
-                </select>
+                <input class="form-control" name="formato" list="desempListaFormatos" value="{{ filtros.formato }}" placeholder="Ex.: 18X30X10" autocomplete="off">
+                <datalist id="desempListaFormatos">
+                  {% for f in opcoes.formatos %}<option value="{{ f }}"></option>{% endfor %}
+                </datalist>
               </div>
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Tipo de papel</label>
@@ -8559,10 +8579,10 @@ def desempenho():
               </div>
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Cidade</label>
-                <select class="form-select" name="cidade">
-                  <option value="">Todas</option>
-                  {% for c in opcoes.cidades %}<option value="{{ c }}" {% if filtros.cidade == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
-                </select>
+                <input class="form-control" name="cidade" list="desempListaCidades" value="{{ filtros.cidade }}" placeholder="Digite para buscar" autocomplete="off">
+                <datalist id="desempListaCidades">
+                  {% for c in opcoes.cidades %}<option value="{{ c }}"></option>{% endfor %}
+                </datalist>
               </div>
               <div class="col-12 col-md-6 col-xl-3 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary flex-grow-1"><i class="bi bi-check2 me-1"></i>Aplicar</button>

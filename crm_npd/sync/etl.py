@@ -324,6 +324,21 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
             cancelado = 1
         is_jit = 1 if "98 - JIT" in condicao.upper() else 0
         cliente_id = m.upsert_customer(conn, fantasia, fantasia, codigo_hint=codigo, cache=cache)
+        cidade = _txt(row.get("CIDADE"))
+        uf = _txt(row.get("UF")).upper()
+        if cliente_id and (cidade or uf):
+            try:
+                conn.execute(
+                    """
+                    UPDATE customers
+                    SET cidade = CASE WHEN TRIM(COALESCE(?, '')) <> '' THEN ? ELSE cidade END,
+                        uf = CASE WHEN TRIM(COALESCE(?, '')) <> '' THEN ? ELSE uf END
+                    WHERE id = ?
+                    """,
+                    (cidade, cidade, uf, uf, int(cliente_id)),
+                )
+            except Exception:
+                pass
         dedupe = m.build_dedupe_key(
             "PEDIDOS", medida, data_emissao or "", valor_item, pedido, codigo, vendor_nome,
             extra_refs=[_txt(row.get("CODIGO")), _txt(row.get("ORDEM"))],
@@ -338,8 +353,17 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
             condicao or None, is_jit, grupo or None, tipo_item or None, papel or None, preco, valor_item,
             situacao or None, motivo or None, desc_motivo or None, cancelado,
             entrega, produto_codigo or None, produto_ref or None, observacao or None,
+            cidade or None, uf or None,
         ))
     if inserts:
+        try:
+            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+            if "cidade" not in cols:
+                conn.execute("ALTER TABLE orders ADD COLUMN cidade TEXT")
+            if "uf" not in cols:
+                conn.execute("ALTER TABLE orders ADD COLUMN uf TEXT")
+        except Exception:
+            pass
         conn.executemany(
             """
             INSERT INTO orders(
@@ -348,8 +372,9 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
                 medida_ref, cliente_nome_ref, vendor_nome_ref, dedupe_key,
                 condicao_entrega, is_jit, grupo_ref, tipo_item_ref, papel_ref, preco_ref, valor_item_ref,
                 situacao_pedido, motivo_pedido, desc_motivo_pedido, pedido_cancelado,
-                entrega_pedido, produto_codigo_ref, produto_ref, observacao_ref
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                entrega_pedido, produto_codigo_ref, produto_ref, observacao_ref,
+                cidade, uf
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )
