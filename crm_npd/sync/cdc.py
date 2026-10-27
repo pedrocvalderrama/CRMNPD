@@ -366,6 +366,11 @@ def loop_cdc(*, uma_vez: bool = False) -> None:
 def iniciar_cdc_em_background() -> bool:
     """Sobe o listener numa thread daemon (opcional, SISPLAN_CDC_AUTO=1)."""
     global _cdc_thread
+    from crm_npd.sync.fonte import usando_firebird
+
+    if not usando_firebird():
+        logger.info("cdc.auto ignorado: CRM_NPD_FONTE=sqlite")
+        return False
     if not _cdc_auto():
         return False
     from crm_npd.repositories.firebird.conexao import disponivel

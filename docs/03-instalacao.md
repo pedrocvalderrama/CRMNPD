@@ -45,6 +45,26 @@ run.bat
 O script cria `.venv` se faltar e sobe o Flask com o Python do venv. Abra
 `http://127.0.0.1:8089`.
 
+## Testar nesta máquina (só SQLite)
+
+O `run.bat` do servidor continua falando com o Sisplan. Para abrir o CRM
+aqui e mexer em tela, **não** use o `run.bat`.
+
+1. No servidor, pare o Flask.
+2. Copie `crm_npd.db` (e, se existirem, `crm_npd.db-wal` e
+   `crm_npd.db-shm`) da pasta do CRM no servidor para esta pasta.
+3. Aqui:
+
+```bat
+run_local.bat
+```
+
+Abra `http://127.0.0.1:8089`. Essa janela força `CRM_NPD_FONTE=sqlite`,
+desliga o ouvinte e a carga do FDB. O Sisplan não é aberto.
+
+O `.env` está no `.gitignore`. Commit de código não leva host, senha nem
+fonte do banco. No servidor continue usando o `.env` de lá e o `run.bat`.
+
 O ouvinte CDC (pedidos, faturamento, orçamentos) sobe na mesma janela se
 `SISPLAN_CDC_AUTO=1`. Para rodá-lo separado:
 

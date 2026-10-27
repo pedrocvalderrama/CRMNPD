@@ -179,10 +179,10 @@
     .section-heading p{font-size:11.5px;color:#718096;margin:2px 0 0}
     .channel-card{height:100%;position:relative;overflow:hidden;border-radius:20px;padding:22px 20px 20px;background:#fff;border:1px solid #dde7f2;box-shadow:0 10px 28px rgba(21,42,72,.075)}
     .channel-card:before{content:"";position:absolute;left:0;right:0;top:0;height:6px;pointer-events:none}
-    .channel-card:after{content:"";position:absolute;width:160px;height:160px;border-radius:50%;right:-70px;top:-85px;opacity:.10;pointer-events:none}
-    .channel-card.internal:before{background:linear-gradient(90deg,#2563eb,#38bdf8)}.channel-card.internal:after{background:#2563eb}
-    .channel-card.external:before{background:linear-gradient(90deg,#16a34a,#34d399)}.channel-card.external:after{background:#16a34a}
-    .channel-card.site:before{background:linear-gradient(90deg,#7c3aed,#a855f7)}.channel-card.site:after{background:#7c3aed}
+    .channel-card:after{content:none}
+    .channel-card.internal:before{background:linear-gradient(90deg,#2563eb,#38bdf8)}
+    .channel-card.external:before{background:linear-gradient(90deg,#16a34a,#34d399)}
+    .channel-card.site:before{background:linear-gradient(90deg,#7c3aed,#a855f7)}
     .channel-tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:10px;font-weight:900;letter-spacing:.08em}
     .channel-tag.internal{background:#eaf1ff;color:#1d4ed8}.channel-tag.external{background:#eaf8ef;color:#15803d}.channel-tag.site{background:#f1eaff;color:#6d28d9}
     .channel-main{font-size:1.72rem;font-weight:900;letter-spacing:-.04em;margin-top:12px;color:#10233a}
@@ -231,6 +231,140 @@
     .table-responsive{background:#fff;border:1px solid #dce5ef}
     .form-control,.form-select{background:#fff;border-color:#d5e0eb}
     @media(max-width:900px){.content:after{inset:72px 0 0 0}}
+
+    /* Dashboard: abas + identidade Fat (frio) / Pedidos (quente comercial) */
+    .dash-tabs{display:inline-flex;flex-wrap:wrap;gap:4px;padding:4px;background:#eef3f9;border:1px solid #d5e0ec;border-radius:999px}
+    .dash-tabs a{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:12px;font-weight:800;color:#5a7088;text-decoration:none;white-space:nowrap;transition:.15s ease}
+    .dash-tabs a:hover{color:#163355;background:rgba(255,255,255,.7)}
+    .dash-tabs a.active{background:#fff;color:#10243c;box-shadow:0 2px 10px rgba(20,42,75,.10)}
+    .dash-block{background:#fff;border:1px solid #dce6f0;border-radius:20px;padding:20px 20px 16px;box-shadow:0 10px 28px rgba(21,42,72,.07);height:auto!important;min-height:0!important;align-self:flex-start;overflow:visible}
+    .dash-block--fat{border-left:4px solid #0e7490}
+    .dash-block--ped{border-left:4px solid #7c3aed}
+    .dash-block .row{align-items:flex-start}
+    .dash-block .channel-card{height:auto!important;min-height:0!important;padding:18px 18px 14px}
+    .dash-block .dash-kpi{height:auto!important;min-height:0!important}
+    .dash-block .channel-main{margin-top:8px}
+    .dash-block .channel-status{margin-top:8px}
+    .dash-block .channel-meta{margin-top:10px;padding-top:10px}
+    .dash-block .section-heading{margin:12px 0 10px}
+    .dash-block-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+    .dash-block-head .sub{font-size:11.5px;color:#718197;margin-top:4px}
+    .dash-pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 12px;font-size:11px;font-weight:900;letter-spacing:.06em;text-transform:uppercase}
+    .dash-pill--fat{background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd}
+    .dash-pill--ped{background:#f3e8ff;color:#6d28d9;border:1px solid #e9d5ff}
+    .dash-kpi{background:#fbfdff;border:1px solid #e3ebf4;border-radius:16px;padding:16px;height:100%}
+    .dash-kpi .kpi-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7a8ba0;font-weight:850}
+    .dash-kpi .kpi-value{font-size:1.45rem;font-weight:900;letter-spacing:-.03em;color:#11253d;margin-top:6px}
+    .dash-kpi .kpi-meta{font-size:11px;color:#7a8ba0;margin-top:6px}
+    .dash-kpi .icon{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:#fff;flex-shrink:0}
+    .dash-block--fat .dash-kpi .icon.meta{background:#0e7490}
+    .dash-block--fat .dash-kpi .icon.done{background:#059669}
+    .dash-block--fat .dash-kpi .icon.warn{background:#0369a1}
+    .dash-block--fat .dash-kpi .icon.ok{background:#059669}
+    .dash-block--fat .progress-bar.dash-bar-meta{background:#0e7490}
+    .dash-block--fat .progress-bar.dash-bar-canal-int{background:#0369a1}
+    .dash-block--fat .progress-bar.dash-bar-canal-ext{background:#059669}
+    .dash-block--fat .channel-main{color:#0e7490}
+    .dash-block--fat .channel-card.internal:before{background:linear-gradient(90deg,#0369a1,#0e7490)}
+    .dash-block--fat .channel-card.external:before{background:linear-gradient(90deg,#059669,#34d399)}
+    .dash-block--ped .dash-kpi .icon.meta{background:#7c3aed}
+    .dash-block--ped .dash-kpi .icon.done{background:#6366f1}
+    .dash-block--ped .dash-kpi .icon.warn{background:#d97706}
+    .dash-block--ped .dash-kpi .icon.ok{background:#16a34a}
+    .dash-block--ped .progress-bar.dash-bar-meta{background:#7c3aed}
+    .dash-block--ped .progress-bar.dash-bar-canal-int{background:#6366f1}
+    .dash-block--ped .progress-bar.dash-bar-canal-ext{background:#d97706}
+    .dash-block--ped .channel-main{color:#6d28d9}
+    .dash-block--ped .channel-card.internal:before{background:linear-gradient(90deg,#6366f1,#818cf8)}
+    .dash-block--ped .channel-card.external:before{background:linear-gradient(90deg,#d97706,#f59e0b)}
+    .dash-block--ped .channel-card.site:before{background:linear-gradient(90deg,#7c3aed,#a855f7)}
+    .dash-toolbar{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:1.25rem}
+    @media(max-width:900px){.dash-tabs{width:100%}.dash-tabs a{flex:1;justify-content:center;padding:8px 10px;font-size:11px}}
+
+    /* Desempenho: comparador de períodos */
+    .period-compare{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;background:#fff;border:1px solid #dce5ef;border-radius:16px;box-shadow:0 8px 22px rgba(20,42,75,.06);overflow:hidden}
+    .period-compare-side{flex:1 1 280px;padding:16px 18px;min-width:0}
+    .period-compare-side .label-row{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:#1a2f47;margin-bottom:10px}
+    .period-compare-side .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+    .period-compare-side.ref .dot{background:#c5d0dc}
+    .period-compare-side.cmp .dot{background:#0e7490}
+    .period-compare-fields{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .period-compare-fields select{min-width:72px;max-width:100px;border-radius:10px;border:1px solid #d5e0eb;background:#fbfcfe;font-size:13px;font-weight:700;color:#163355;padding:7px 10px}
+    .period-compare-fields .ate{font-size:12px;color:#8a98a9;font-weight:650}
+    .period-compare-vs{display:flex;align-items:center;justify-content:center;padding:8px 6px;align-self:center}
+    .period-compare-vs span{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#eef3f8;border:1px solid #d7e1ec;font-size:11px;font-weight:900;letter-spacing:.06em;color:#5a7088}
+    .period-compare-actions{display:flex;align-items:center;padding:12px 16px;border-left:1px solid #e7eef6}
+    @media(max-width:900px){.period-compare-actions{border-left:0;border-top:1px solid #e7eef6;width:100%;justify-content:stretch}.period-compare-actions .btn{width:100%}}
+
+    /* Desempenho: card pequeno de Comparação (fundo da bolinha) */
+    .dash-kpi--cmp{background:#0e7490;border-color:#0c657a;color:#fff;box-shadow:0 8px 20px rgba(14,116,144,.28)}
+    .dash-kpi--cmp .kpi-value{color:#fff}
+    .dash-kpi--cmp .kpi-meta,.dash-kpi--cmp .small,.dash-kpi--cmp .text-muted{color:rgba(255,255,255,.78)!important}
+    .dash-kpi--cmp .dash-pill{background:rgba(255,255,255,.16)!important;color:#fff!important;border-color:rgba(255,255,255,.22)!important}
+
+    /* Desempenho: filtros adicionais recolhíveis */
+    .desemp-extra-filter{border:1px solid #dce5ef;border-radius:16px;background:#fff;box-shadow:0 8px 22px rgba(20,42,75,.05);overflow:hidden}
+    .desemp-extra-filter-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;background:#f8fafc}
+    .desemp-extra-filter-body{padding:16px 16px 18px;border-top:1px solid #e7eef6}
+    .desemp-filter-count{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800;background:#e0f2fe;color:#0e7490}
+
+    /* Desempenho: cards de gráficos com mesma altura */
+    .desemp-charts-row > [class*="col-"]{display:flex}
+    .dash-block.desemp-chart-card{height:100%!important;min-height:100%!important;align-self:stretch;display:flex;flex-direction:column}
+    .desemp-equipe-card .equipe-cmp-list{flex:1 1 auto;justify-content:space-evenly;gap:36px;min-height:0}
+
+    /* Desempenho: Interno x externo */
+    .equipe-cmp-list{display:flex;flex-direction:column;gap:36px}
+    .equipe-cmp-row{padding:6px 0}
+    .equipe-cmp-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+    .equipe-cmp-name{font-size:14px;font-weight:800;color:#0e7490}
+    .equipe-cmp-badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:800;white-space:nowrap}
+    .equipe-cmp-badge.up{background:#d1fae5;color:#047857}
+    .equipe-cmp-badge.down{background:#fee2e2;color:#b91c1c}
+    .equipe-cmp-bars{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+    .equipe-cmp-bar{height:10px;border-radius:999px;max-width:100%;min-width:4px}
+    .equipe-cmp-bar.ref{height:7px;background:#cbd5e1}
+    .equipe-cmp-bar.cmp{height:12px;background:#0e7490}
+    .equipe-cmp-vals{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:#7a8ba0;font-weight:650}
+
+    /* Desempenho: tabela mensal Interno × Externo */
+    .fat-mes-table{font-size:12.5px;border-collapse:separate;border-spacing:0}
+    .fat-mes-table th,.fat-mes-table td{padding:.55rem .7rem;border-bottom:1px solid #e8eef5;vertical-align:middle;white-space:nowrap}
+    .fat-mes-table thead th{font-size:11px;font-weight:800;color:#334155}
+    .fat-mes-th-mes{background:#f8fafc;min-width:64px}
+    .fat-mes-th-ref{background:#f1f5f9;color:#475569!important;text-align:center!important}
+    .fat-mes-th-cmp{background:#e0f2fe;color:#0e7490!important;text-align:center!important}
+    .fat-mes-table tbody td:nth-child(2),
+    .fat-mes-table tbody td:nth-child(3),
+    .fat-mes-table tbody td:nth-child(4),
+    .fat-mes-table tbody td:nth-child(5),
+    .fat-mes-table tfoot td:nth-child(2),
+    .fat-mes-table tfoot td:nth-child(3),
+    .fat-mes-table tfoot td:nth-child(4),
+    .fat-mes-table tfoot td:nth-child(5){text-align:center!important}
+    .fat-mes-th-var,.fat-mes-th-diff{background:#f8fafc;font-weight:750!important;line-height:1.25}
+    .fat-mes-table tbody tr:nth-child(even){background:#fafcfe}
+    .fat-mes-total td{background:#ecfdf5!important;border-top:2px solid #a7f3d0;padding-top:.7rem;padding-bottom:.7rem}
+    .fat-mes-var{display:inline-flex;align-items:center;gap:3px;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800}
+    .fat-mes-var.up{background:#d1fae5;color:#047857}
+    .fat-mes-var.down{background:#fee2e2;color:#b91c1c}
+    /* Divisórias centradas: Comparação | Referência | Variações */
+    .fat-mes-table thead tr:first-child th:nth-child(2),
+    .fat-mes-table thead tr:nth-child(2) th:nth-child(2),
+    .fat-mes-table tbody td:nth-child(3),
+    .fat-mes-table tfoot td:nth-child(3){padding-right:1.1rem}
+    .fat-mes-table thead tr:first-child th:nth-child(3),
+    .fat-mes-table thead tr:nth-child(2) th:nth-child(3),
+    .fat-mes-table tbody td:nth-child(4),
+    .fat-mes-table tfoot td:nth-child(4){border-left:2px solid #d7e3ee;padding-left:1.1rem;padding-right:.7rem}
+    .fat-mes-table thead tr:first-child th:nth-child(3),
+    .fat-mes-table thead tr:nth-child(2) th:nth-child(4),
+    .fat-mes-table tbody td:nth-child(5),
+    .fat-mes-table tfoot td:nth-child(5){padding-right:1.1rem}
+    .fat-mes-table thead tr:first-child th:nth-child(4),
+    .fat-mes-table thead tr:nth-child(2) th:nth-child(5),
+    .fat-mes-table tbody td:nth-child(6),
+    .fat-mes-table tfoot td:nth-child(6){border-left:2px solid #d7e3ee;padding-left:1.1rem}
 
     /* V4.4.4 seller analytics: charts stay inside their cards */
     .vendor-dashboard .viz-card{min-width:0}

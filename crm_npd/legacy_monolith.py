@@ -285,7 +285,7 @@ def init_db() -> None:
           CREATE TABLE IF NOT EXISTS goals_history (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               periodo TEXT NOT NULL,      -- Formato: 'YYYY-MM'
-              tipo_entidade TEXT,         -- 'EQUIPE_INTERNA', 'EQUIPE_EXTERNA', 'VENDEDOR'
+              tipo_entidade TEXT,         -- PEDIDOS_*/FATURAMENTO_*/VENDEDOR (legado: EQUIPE_*)
               entity_id INTEGER,          -- ID do vendedor (se for meta individual)
               valor REAL NOT NULL,
               updated_at TEXT,
@@ -1694,13 +1694,22 @@ def refresh_repurchase_tasks_after_sisplan(conn, actor_name: str = "Sistema") ->
     return {"cancelled": int(cancelled), "moved": int(moved), "dedup": int(dedup)}
 
 
+# Metas de equipe por eixo. Legado EQUIPE_* = pedidos (antes da separação).
+META_EIXOS = ("pedidos", "faturamento")
+_META_TIPOS = {
+    "pedidos": ("PEDIDOS_INTERNA", "PEDIDOS_EXTERNO"),
+    "faturamento": ("FATURAMENTO_INTERNA", "FATURAMENTO_EXTERNO"),
+}
+_META_LEGADO_PEDIDOS = ("EQUIPE_INTERNA", "EQUIPE_EXTERNO")
+
+
 def ensure_goals_table(conn):
     """Cria tabela para armazenar histórico de metas por mês."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS goals_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             periodo TEXT NOT NULL,      -- Formato: 'YYYY-MM'
-            tipo_entidade TEXT,         -- 'EQUIPE_INTERNA', 'EQUIPE_EXTERNA', 'VENDEDOR'
+            tipo_entidade TEXT,         -- PEDIDOS_*/FATURAMENTO_*/VENDEDOR (legado: EQUIPE_*)
             entity_id INTEGER,          -- ID do vendedor (se for meta individual)
             valor REAL NOT NULL,
             updated_at TEXT,
@@ -1725,6 +1734,47 @@ def get_goal_history(conn, periodo: str, tipo: str, entity_id: int = 0) -> float
         WHERE periodo=? AND tipo_entidade=? AND entity_id=?
     """, (periodo, tipo, entity_id)).fetchone()
     return float(row["valor"]) if row else 0.0
+
+
+def _goal_history_existe(conn, periodo: str, tipo: str, entity_id: int = 0) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM goals_history
+        WHERE periodo=? AND tipo_entidade=? AND entity_id=?
+        """,
+        (periodo, tipo, entity_id),
+    ).fetchone()
+    return row is not None
+
+
+def get_meta_equipe(conn, periodo: str, eixo: str) -> tuple[float, float]:
+    """Meta Interna/Externa do mês para pedidos ou faturamento.
+
+    Pedidos: se ainda nao houver PEDIDOS_*, usa o legado EQUIPE_*.
+    """
+    chave = (eixo or "pedidos").strip().lower()
+    if chave not in _META_TIPOS:
+        chave = "pedidos"
+    tipo_int, tipo_ext = _META_TIPOS[chave]
+    if chave == "pedidos" and not (
+        _goal_history_existe(conn, periodo, tipo_int)
+        or _goal_history_existe(conn, periodo, tipo_ext)
+    ):
+        tipo_int, tipo_ext = _META_LEGADO_PEDIDOS
+    return (
+        get_goal_history(conn, periodo, tipo_int),
+        get_goal_history(conn, periodo, tipo_ext),
+    )
+
+
+def set_meta_equipe(conn, periodo: str, eixo: str, interna: float, externa: float) -> None:
+    """Grava meta Interna/Externa no eixo pedidos ou faturamento."""
+    chave = (eixo or "pedidos").strip().lower()
+    if chave not in _META_TIPOS:
+        raise ValueError(f"Eixo de meta invalido: {eixo}")
+    tipo_int, tipo_ext = _META_TIPOS[chave]
+    set_goal_history(conn, periodo, tipo_int, float(interna or 0.0))
+    set_goal_history(conn, periodo, tipo_ext, float(externa or 0.0))
 
 # Inicializa a tabela na primeira execução
 with conectar() as conn:
@@ -2315,6 +2365,7 @@ def render_page(title: str, body_html: str, active: str) -> str:
             "label": "Visão geral", "icon": "bi-grid-1x2",
             "items": [
                 {"label": "Dashboard", "endpoint": "dashboard", "icon": "bi-speedometer2"},
+                {"label": "Desempenho", "endpoint": "desempenho", "icon": "bi-graph-up"},
                 {"label": "A Faturar", "endpoint": "a_faturar", "icon": "bi-receipt-cutoff"},
                 {"label": "Análise Histórica", "endpoint": "analise_historica", "icon": "bi-calendar3-range"},
                 {"label": "Relatórios", "endpoint": "relatorios", "icon": "bi-file-earmark-spreadsheet"},
@@ -3026,6 +3077,62 @@ def line_chart(labels: List[str], series: List[Tuple[str, List[float]]], title: 
     ax.margins(x=.01)
     fig.patch.set_facecolor("#f8fbff"); ax.set_facecolor("#f8fbff")
     plt.tight_layout(pad=.8)
+    return fig_to_base64(fig)
+
+
+def desempenho_evolucao_chart(
+    labels: List[str],
+    series_ref: Tuple[str, List[float]],
+    series_cmp: Tuple[str, List[float]],
+) -> str:
+    """Linha mensal: referência (cinza) vs comparação (teal da bolinha)."""
+    import math
+    fig, ax = plt.subplots(figsize=(8.6, 3.9))
+    x = list(range(len(labels)))
+
+    def _plot(name: str, values: List[float], color: str, z: int):
+        vals = []
+        for v in values[: len(labels)]:
+            try:
+                fv = float(v)
+            except Exception:
+                fv = float("nan")
+            vals.append(fv if not (isinstance(fv, float) and math.isnan(fv)) else float("nan"))
+        while len(vals) < len(labels):
+            vals.append(float("nan"))
+        ax.plot(x, vals, label=name, color=color, linewidth=2.4, solid_capstyle="round", zorder=z)
+        xs = [i for i, v in enumerate(vals) if not math.isnan(v)]
+        ys = [vals[i] for i in xs]
+        if xs:
+            ax.scatter(xs, ys, s=42, color="#ffffff", edgecolor=color, linewidth=1.8, zorder=z + 1)
+
+    _plot(series_ref[0], series_ref[1], "#94a3b8", 2)
+    _plot(series_cmp[0], series_cmp[1], "#0e7490", 3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8.2, color="#8a98a9")
+    ax.tick_params(axis="y", labelsize=8, colors="#8a98a9")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _p: _short_money(v) if v else "0"))
+    ax.grid(axis="y", linestyle="--", linewidth=0.8, color="#d7e1ec", alpha=0.9)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#e2e8f0")
+    ax.legend(loc="upper right", frameon=False, fontsize=8.2, labelcolor="#334155")
+    ax.margins(x=0.02)
+    ymax = 0.0
+    for vals in (series_ref[1], series_cmp[1]):
+        for v in vals:
+            try:
+                fv = float(v)
+            except Exception:
+                continue
+            if not math.isnan(fv):
+                ymax = max(ymax, fv)
+    ax.set_ylim(0, ymax * 1.18 if ymax > 0 else 1)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
+    plt.tight_layout(pad=0.7)
     return fig_to_base64(fig)
 
 
@@ -7154,6 +7261,8 @@ def dashboard():
     # --- 1. DATAS ---
     data_ref_str = request.args.get("data_ref", "")
     ver_pedidos = request.args.get("ver_pedidos", "0") == "1"
+    visao_raw = (request.args.get("visao") or "geral").strip().lower()
+    visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
 
     try:
         if data_ref_str:
@@ -7200,14 +7309,6 @@ def dashboard():
         fat_ext = f_map.get("EXTERNO", 0.0)
         fat_total = fat_int + fat_ext
 
-        # Faturamento do mês-calendário: fonte única = relatório 731 / tabela invoices.
-        # Não mistura ciclo de comissão, pedidos nem orçamento.
-        fat_mes_info = faturamento_mes_calendario(conn, ref_date, ate_hoje=True)
-        d1_fat_mes = fat_mes_info["fim"]
-        fat_mes_total = fat_mes_info["valor"]
-        fat_mes_qtd = fat_mes_info["qtd"]
-        fat_mes_ultima_data_base = fat_mes_info["ultima_data_base"]
-        
         qtd_fat_int = q_map.get("INTERNO", 0)
         qtd_fat_ext = q_map.get("EXTERNO", 0)
         fat_qtd = qtd_fat_int + qtd_fat_ext
@@ -7243,13 +7344,12 @@ def dashboard():
 
         # --- C. METAS (Histórico Mês a Mês) ---
         mes_ref = ref_date.strftime("%Y-%m")
-        
-        # 1. Busca a meta definida no histórico para este mês (via /settings)
-        meta_int = get_goal_history(conn, mes_ref, "EQUIPE_INTERNA")
-        meta_ext = get_goal_history(conn, mes_ref, "EQUIPE_EXTERNO")
-        
-        # 2. Se não tiver meta de equipe definida, tenta somar as metas individuais dos vendedores (Fallback)
-        if (meta_int + meta_ext) == 0:
+
+        meta_ped_int, meta_ped_ext = get_meta_equipe(conn, mes_ref, "pedidos")
+        meta_fat_int, meta_fat_ext = get_meta_equipe(conn, mes_ref, "faturamento")
+
+        # Pedidos: se equipe vazia, tenta soma das metas individuais / meta global legada.
+        if (meta_ped_int + meta_ped_ext) == 0:
             rows_m = conn.execute("""
                 SELECT COALESCE(upper(v.tipo),'EXTERNO') as tipo, SUM(m.meta_manual) as mt 
                 FROM metas_vendedores m JOIN vendors v ON v.id=m.vendor_id 
@@ -7257,22 +7357,21 @@ def dashboard():
                 GROUP BY tipo
             """).fetchall()
             m_map = {r["tipo"]: r["mt"] for r in rows_m}
-            # Se a soma individual existir, usa ela como meta da equipe
             if m_map.get("INTERNO") or m_map.get("EXTERNO"):
-                meta_int = m_map.get("INTERNO", 0.0)
-                meta_ext = m_map.get("EXTERNO", 0.0)
+                meta_ped_int = m_map.get("INTERNO", 0.0)
+                meta_ped_ext = m_map.get("EXTERNO", 0.0)
 
-        meta_total = meta_int + meta_ext
-        
-        # 3. Se ainda for 0 (sistema novo), usa a meta global antiga dividida
-        if meta_total == 0:
+        meta_ped_total = meta_ped_int + meta_ped_ext
+        if meta_ped_total == 0:
             meta_total_config = meta_empresa(conn)
-            meta_int = meta_total_config * 0.5
-            meta_ext = meta_total_config * 0.5
-            meta_total = meta_int + meta_ext
+            meta_ped_int = meta_total_config * 0.5
+            meta_ped_ext = meta_total_config * 0.5
+            meta_ped_total = meta_ped_int + meta_ped_ext
 
-         #-------------------------------------#
-        
+        meta_fat_total = meta_fat_int + meta_fat_ext
+        # Compat: templates/código antigo ainda usam meta_* como pedidos.
+        meta_int, meta_ext, meta_total = meta_ped_int, meta_ped_ext, meta_ped_total
+
         # Status (Gap Qtd)
         gap_qtd_int = max(0, qtd_ped_int - qtd_fat_int)
         gap_qtd_ext = max(0, qtd_ped_ext - qtd_fat_ext)
@@ -7284,46 +7383,49 @@ def dashboard():
         pct_quebra = (100.0 - (fat_total / ped_total * 100)) if ped_total > 0 else 0.0
         if pct_quebra < 0: pct_quebra = 0.0
 
-        # Dias úteis (Mês Comercial)
-        du_total = business_days_between(d0_ped, d1_ped)
-        if d1_ped < hoje: du_rest = 0
-        elif d0_ped > hoje: du_rest = du_total
-        else: du_rest = business_days_between(hoje, d1_ped)
+        def _dias_uteis(d0: date, d1: date) -> tuple[int, int]:
+            total = business_days_between(d0, d1)
+            if d1 < hoje:
+                return total, 0
+            if d0 > hoje:
+                return total, total
+            return total, business_days_between(hoje, d1)
 
-        # Calculadora de KPI Grupo
-        def calc_grupo(p_val, f_val, p_qtd, f_qtd, meta):
-            pct = (p_val / meta * 100) if meta > 0 else 0.0
-            falta = max(meta - p_val, 0.0)
+        du_total_ped, du_rest_ped = _dias_uteis(d0_ped, d1_ped)
+        du_total_fat, du_rest_fat = _dias_uteis(d0_fat, d1_fat)
+        du_total, du_rest = du_total_ped, du_rest_ped
+
+        def calc_eixo(realizado: float, qtd: int, meta: float, du_total: int, du_rest: int) -> dict:
+            pct = (realizado / meta * 100) if meta > 0 else 0.0
+            falta = max(meta - realizado, 0.0)
             ideal = meta / du_total if du_total > 0 else 0.0
             nec = (falta / du_rest) if du_rest > 0 else falta
-
-            # REGRA CORRETA DO CARD DE PERFORMANCE:
-            # ticket médio de pedidos = valor realizado em pedidos / pedidos únicos válidos.
-            tk = (p_val / p_qtd) if p_qtd > 0 else 0.0
-
-            qb = (100 - (f_val / p_val * 100)) if p_val > 0 else 0.0
-            if qb < 0:
-                qb = 0.0
-
-            # gap específico deste grupo
-            gap = max(0, p_qtd - f_qtd)
-
+            tk = (realizado / qtd) if qtd > 0 else 0.0
             return {
                 "pct": pct,
                 "falta": falta,
                 "ideal": ideal,
                 "nec": nec,
                 "ticket": tk,
-                "quebra": qb,
-                "gap_qtd": gap
             }
 
-        # Gera objetos
-        kpi_int = calc_grupo(ped_int, fat_int, qtd_ped_int, qtd_fat_int, meta_int)
-        kpi_ext = calc_grupo(ped_ext, fat_ext, qtd_ped_ext, qtd_fat_ext, meta_ext)
-        kpi_tot = calc_grupo(ped_total, fat_total, ped_qtd, fat_qtd, meta_total)
+        def calc_grupo(p_val, f_val, p_qtd, f_qtd, meta):
+            base = calc_eixo(p_val, p_qtd, meta, du_total_ped, du_rest_ped)
+            qb = (100 - (f_val / p_val * 100)) if p_val > 0 else 0.0
+            if qb < 0:
+                qb = 0.0
+            base["quebra"] = qb
+            base["gap_qtd"] = max(0, p_qtd - f_qtd)
+            return base
 
-        # Variáveis avulsas para compatibilidade
+        kpi_fat_int = calc_eixo(fat_int, qtd_fat_int, meta_fat_int, du_total_fat, du_rest_fat)
+        kpi_fat_ext = calc_eixo(fat_ext, qtd_fat_ext, meta_fat_ext, du_total_fat, du_rest_fat)
+        kpi_fat_tot = calc_eixo(fat_total, fat_qtd, meta_fat_total, du_total_fat, du_rest_fat)
+
+        kpi_int = calc_grupo(ped_int, fat_int, qtd_ped_int, qtd_fat_int, meta_ped_int)
+        kpi_ext = calc_grupo(ped_ext, fat_ext, qtd_ped_ext, qtd_fat_ext, meta_ped_ext)
+        kpi_tot = calc_grupo(ped_total, fat_total, ped_qtd, fat_qtd, meta_ped_total)
+
         pct_realizado = kpi_tot["pct"]
         falta = kpi_tot["falta"]
         meta_diaria_ideal = kpi_tot["ideal"]
@@ -7390,9 +7492,12 @@ def dashboard():
 
         # Depois de ajustar os contadores visuais pela regra oficial,
         # recalcula os KPIs para ticket médio, gap e status ficarem coerentes.
-        kpi_int = calc_grupo(ped_int, fat_int, qtd_ped_int, qtd_fat_int, meta_int)
-        kpi_ext = calc_grupo(ped_ext, fat_ext, qtd_ped_ext, qtd_fat_ext, meta_ext)
-        kpi_tot = calc_grupo(ped_total, fat_total, ped_qtd, fat_qtd, meta_total)
+        kpi_fat_int = calc_eixo(fat_int, qtd_fat_int, meta_fat_int, du_total_fat, du_rest_fat)
+        kpi_fat_ext = calc_eixo(fat_ext, qtd_fat_ext, meta_fat_ext, du_total_fat, du_rest_fat)
+        kpi_fat_tot = calc_eixo(fat_total, fat_qtd, meta_fat_total, du_total_fat, du_rest_fat)
+        kpi_int = calc_grupo(ped_int, fat_int, qtd_ped_int, qtd_fat_int, meta_ped_int)
+        kpi_ext = calc_grupo(ped_ext, fat_ext, qtd_ped_ext, qtd_fat_ext, meta_ped_ext)
+        kpi_tot = calc_grupo(ped_total, fat_total, ped_qtd, fat_qtd, meta_ped_total)
         pct_realizado = kpi_tot["pct"]
         falta = kpi_tot["falta"]
         meta_diaria_ideal = kpi_tot["ideal"]
@@ -7540,228 +7645,281 @@ def dashboard():
         gap_qtd_site = max(0, qtd_ped_site - qtd_fat_site)
         ticket_site = (ped_site / qtd_ped_site) if qtd_ped_site > 0 else 0.0
 
-        # CRM 4.0: pulso do pipeline para o dashboard executivo.
-        crm_metrics = _crm_pipeline_metrics(conn, None, d0_ped, d1_ped)
-
     # --- HTML ---
     body = render_template_string(r"""
-    <div class="d-flex align-items-end justify-content-between flex-wrap gap-2 mb-4">
+    <div class="dash-toolbar">
       <div>
         <div class="h3 mb-1 fw-bold">Performance Geral do Time</div>
-        <div class="muted small d-flex gap-3">
-            <span>Meta: <b>{{ d0_ped.strftime('%d/%m') }}-{{ d1_ped.strftime('%d/%m') }}</b></span>
-            <span class="vr"></span>
+        <div class="muted small d-flex gap-3 flex-wrap">
+            <span>Pedidos: <b>{{ d0_ped.strftime('%d/%m') }}-{{ d1_ped.strftime('%d/%m') }}</b></span>
+            <span class="vr d-none d-md-inline"></span>
             <span>Fat: <b>{{ d0_fat.strftime('%d/%m') }}-{{ d1_fat.strftime('%d/%m') }}</b></span>
         </div>
       </div>
-      <form class="d-flex gap-2 align-items-end cardx p-3" method="get">
-        <div><label class="form-label small fw-bold text-muted mb-0">MÊS REF</label><input type="month" name="data_ref" class="form-control fw-bold" value="{{ d1_fat.strftime('%Y-%m') }}" onchange="this.form.submit()"></div>
-        <div class="vr mx-1"></div>{% if user and user.get('role') == 'admin' %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_historico_status_clientes') }}">Auditoria Novo/Carteira</a>{% endif %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('importacoes') }}">Importações</a>
-      </form>
+      <div class="d-flex align-items-end gap-3 flex-wrap">
+        <nav class="dash-tabs" aria-label="Visão do dashboard">
+          <a class="{{ 'active' if visao == 'geral' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='geral') }}">Visão Geral</a>
+          <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Faturamento</a>
+          <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='pedidos') }}">Pedidos</a>
+        </nav>
+        <form class="d-flex gap-2 align-items-end cardx p-3" method="get">
+          <input type="hidden" name="visao" value="{{ visao }}">
+          <div><label class="form-label small fw-bold text-muted mb-0">MÊS REF</label><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()"></div>
+        </form>
+      </div>
     </div>
 
-    <div class="tech-panel tech-grid p-4 mb-4">
-      <div class="row g-4 align-items-center">
-        <div class="col-12 col-xl-5">
-          <div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#8fb3d5">Pulso comercial</div>
-          <div class="display-6 fw-bold mb-2">{{ '%.1f'|format(kpi_tot.pct) }}% da meta do mês</div>
-          <div class="text-white-50 mb-3">{{ ped_qtd }} pedidos válidos, {{ fat_qtd }} faturados e {{ gap_qtd }} ainda pendentes de faturamento.</div>
-          <div class="d-flex gap-2 flex-wrap">
-            <span class="chip chip-success">{{ format_brl(ped_total) }} realizado</span>
-            <span class="chip">{{ format_brl(meta_total) }} meta</span>
-            <span class="chip chip-warning" title="Ciclo {{ d0_fat.strftime('%d/%m') }} a {{ d1_fat.strftime('%d/%m') }}">{{ format_brl(fat_total) }} faturado no ciclo</span>
-            <span class="chip" title="Fonte única: relatório 731 • {{ fat_mes_qtd }} linha(s) • {{ d0_ped.strftime('%d/%m') }} a {{ d1_fat_mes.strftime('%d/%m') if d1_fat_mes else d0_ped.strftime('%d/%m') }}{% if fat_mes_ultima_data_base %} • base atualizada até {{ fat_mes_ultima_data_base[8:10] }}/{{ fat_mes_ultima_data_base[5:7] }}/{{ fat_mes_ultima_data_base[0:4] }}{% endif %}">{{ format_brl(fat_mes_total) }} faturado no mês</span>
+    {% if visao == 'geral' %}
+    <div class="d-flex flex-column gap-4 mb-2">
+      <div>
+        <div class="dash-block dash-block--fat">
+          <div class="dash-block-head">
+            <div>
+              <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
+              <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
+            </div>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Detalhar</a>
+          </div>
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+                <div class="kpi-value">{{ format_brl(meta_fat_total) }}</div>
+                <div class="progress mt-2" style="height:7px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if kpi_fat_tot.pct > 100 else kpi_fat_tot.pct }}%"></div></div>
+                <div class="kpi-meta">{{ '%.1f'|format(kpi_fat_tot.pct) }}% atingido</div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+                <div class="kpi-value">{{ format_brl(fat_total) }}</div>
+                <div class="kpi-meta">{{ fat_qtd }} notas no ciclo</div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if kpi_fat_tot.falta <= 0 else 'Falta faturar' }}</div><div class="icon {{ 'ok' if kpi_fat_tot.falta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if kpi_fat_tot.falta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+                <div class="kpi-value">{{ format_brl((fat_total - meta_fat_total) if kpi_fat_tot.falta <= 0 else kpi_fat_tot.falta) }}</div>
+                <div class="kpi-meta">{{ 'Acima da meta' if kpi_fat_tot.falta <= 0 else 'Para bater a meta' }}</div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="col-12 col-xl-7">
-          <div class="metric-strip">
-            <div class="hero-kpi">
-              <div class="hero-kpi-label">Pipeline ativo</div>
-              <div class="hero-kpi-value">{{ format_brl(crm_metrics.pipeline) }}</div>
-              <div class="hero-kpi-sub">{{ crm_metrics.active }} oportunidades sem desfecho final</div>
+      </div>
+      <div>
+        <div class="dash-block dash-block--ped">
+          <div class="dash-block-head">
+            <div>
+              <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Pedidos</span>
+              <div class="sub">Mês {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
             </div>
-            <div class="hero-kpi">
-              <div class="hero-kpi-label">Forecast provável</div>
-              <div class="hero-kpi-value">{{ format_brl(crm_metrics.weighted) }}</div>
-              <div class="hero-kpi-sub">ponderado pela etapa comercial</div>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='pedidos') }}">Detalhar</a>
+          </div>
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+                <div class="kpi-value">{{ format_brl(meta_ped_total) }}</div>
+                <div class="progress mt-2" style="height:7px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if kpi_tot.pct > 100 else kpi_tot.pct }}%"></div></div>
+                <div class="kpi-meta">{{ '%.1f'|format(kpi_tot.pct) }}% atingido</div>
+              </div>
             </div>
-            <div class="hero-kpi">
-              <div class="hero-kpi-label">Em atenção</div>
-              <div class="hero-kpi-value">{{ crm_metrics.overdue }}</div>
-              <div class="hero-kpi-sub">negociação/contato/aprovação há 14+ dias</div>
+            <div class="col-12 col-md-4">
+              <a href="{{ url_for('dashboard_pedidos_detalhe', data_ref=mes_ref, periodo='mes') }}" class="text-decoration-none text-dark d-block h-100">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Realizado</div><div class="icon done"><i class="bi bi-cart3"></i></div></div>
+                <div class="kpi-value">{{ format_brl(ped_total) }}</div>
+                <div class="kpi-meta">{{ ped_qtd }} pedidos · clique para detalhar</div>
+              </div>
+              </a>
             </div>
-            <div class="hero-kpi">
-              <div class="hero-kpi-label">Taxa de ganho</div>
-              <div class="hero-kpi-value">{{ '%.1f'|format(crm_metrics.conversion) }}%</div>
-              <div class="hero-kpi-sub">{{ crm_metrics.won }} ganhos em {{ crm_metrics.closed }} fechados</div>
+            <div class="col-12 col-md-4">
+              <div class="dash-kpi">
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if kpi_tot.falta <= 0 else 'Falta vender' }}</div><div class="icon {{ 'ok' if kpi_tot.falta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if kpi_tot.falta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+                <div class="kpi-value">{{ format_brl((ped_total - meta_ped_total) if kpi_tot.falta <= 0 else kpi_tot.falta) }}</div>
+                <div class="kpi-meta">{{ 'Acima da meta' if kpi_tot.falta <= 0 else 'Para bater a meta' }}</div>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
+    {% endif %}
 
-    <div class="row g-4 mb-4">
-      <div class="col-12 col-md-4">
-        <div class="kpi p-4 h-100 bg-white shadow-sm border rounded">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <div class="text-uppercase text-muted small fw-bold">Meta Total (Mês)</div>
-                <div class="icon" style="background:#6610f2; color:white; width:32px; height:32px; border-radius:8px; display:grid; place-items:center;">🎯</div>
-            </div>
-            <div class="h3 fw-bold text-dark mb-2">{{ format_brl(meta_total) }}</div>
-            <div class="progress" style="height:8px"><div class="progress-bar" style="background:#6610f2; width:{{ 100 if kpi_tot.pct > 100 else kpi_tot.pct }}%"></div></div>
-            <div class="mt-2 small text-muted">{{ "%.1f"|format(kpi_tot.pct) }}% atingido</div>
+    {% if visao == 'faturamento' %}
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
+          <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · meta em Settings</div>
         </div>
       </div>
-      <div class="col-12 col-md-4">
-        <a href="{{ url_for('dashboard_pedidos_detalhe', data_ref=mes_ref, periodo='mes') }}" class="text-decoration-none text-dark d-block h-100">
-        <div class="kpi p-4 h-100 bg-white shadow-sm border rounded">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <div class="text-uppercase text-muted small fw-bold">Total Realizado (Pedidos)</div>
-                <div class="icon" style="background:#0d6efd; color:white; width:32px; height:32px; border-radius:8px; display:grid; place-items:center;">📝</div>
-            </div>
-            <div class="h3 fw-bold text-primary mb-0">{{ format_brl(ped_total) }}</div>
-            <div class="small text-muted mt-2">Vendas validadas do período comercial · clique para detalhar</div>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Faturamento</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+            <div class="kpi-value">{{ format_brl(meta_fat_total) }}</div>
+            <div class="progress mt-2" style="height:8px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if kpi_fat_tot.pct > 100 else kpi_fat_tot.pct }}%"></div></div>
+            <div class="kpi-meta">{{ '%.1f'|format(kpi_fat_tot.pct) }}% atingido</div>
+          </div>
         </div>
-        </a>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total Faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+            <div class="kpi-value">{{ format_brl(fat_total) }}</div>
+            <div class="kpi-meta">{{ fat_qtd }} notas no ciclo de faturamento</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if kpi_fat_tot.falta <= 0 else 'Falta faturar' }}</div><div class="icon {{ 'ok' if kpi_fat_tot.falta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if kpi_fat_tot.falta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+            <div class="kpi-value">{{ format_brl((fat_total - meta_fat_total) if kpi_fat_tot.falta <= 0 else kpi_fat_tot.falta) }}</div>
+            <div class="kpi-meta">{{ 'Acima da meta de faturamento' if kpi_fat_tot.falta <= 0 else 'Valor necessário para bater a meta' }}</div>
+          </div>
+        </div>
       </div>
-      <div class="col-12 col-md-4">
-        <div class="kpi p-4 h-100 bg-white shadow-sm border rounded">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <div class="text-uppercase text-muted small fw-bold">{{ 'Meta superada' if kpi_tot.falta <= 0 else 'Falta vender' }}</div>
-                <div class="icon" style="background:{{ '#16a34a' if kpi_tot.falta <= 0 else '#fd7e14' }}; color:white; width:32px; height:32px; border-radius:8px; display:grid; place-items:center;">{{ '✓' if kpi_tot.falta <= 0 else '⚠️' }}</div>
-            </div>
-            <div class="h3 fw-bold {{ 'text-success' if kpi_tot.falta <= 0 else 'text-warning' }} mb-0">{{ format_brl((ped_total - meta_total) if kpi_tot.falta <= 0 else kpi_tot.falta) }}</div>
-            <div class="small text-muted mt-2">{{ 'Acima da meta total do mês' if kpi_tot.falta <= 0 else 'Valor necessário para bater a meta' }}</div>
+      <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>Interno e Externo no ciclo financeiro.</p></div></div>
+      <div class="row g-3">
+        <div class="col-12 col-xl-6">
+          <div class="channel-card internal">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag internal"><i class="bi bi-people-fill"></i> INTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_int) }}</span></div>
+            <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_int) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_int.pct) }}%</div></div>
+            <div class="progress mt-3" style="height:7px"><div class="progress-bar dash-bar-canal-int" style="width:{{ 100 if kpi_fat_int.pct > 100 else kpi_fat_int.pct }}%"></div></div>
+            <div class="channel-status"><span>{{ qtd_fat_int }} notas</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_int.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_int.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_int.nec > kpi_fat_int.ideal else 'text-success' }}">{{ format_brl(kpi_fat_int.nec) }}</div></div></div>
+          </div>
+        </div>
+        <div class="col-12 col-xl-6">
+          <div class="channel-card external">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag external"><i class="bi bi-person-workspace"></i> EXTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_ext) }}</span></div>
+            <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_ext) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_ext.pct) }}%</div></div>
+            <div class="progress mt-3" style="height:7px"><div class="progress-bar dash-bar-canal-ext" style="width:{{ 100 if kpi_fat_ext.pct > 100 else kpi_fat_ext.pct }}%"></div></div>
+            <div class="channel-status"><span>{{ qtd_fat_ext }} notas</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_ext.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_ext.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_ext.nec > kpi_fat_ext.ideal else 'text-success' }}">{{ format_brl(kpi_fat_ext.nec) }}</div></div></div>
+          </div>
         </div>
       </div>
     </div>
+    {% endif %}
 
-    <div class="row g-3 mb-4">
-      <div class="col-12 col-md-4"><div class="metric-pill h-100"><div class="metric-label">Orçamentos criados</div><div class="num">{{ metrics_orc['total'] }}</div><div class="desc">Total de propostas no período</div></div></div>
-      <div class="col-12 col-md-4"><div class="metric-pill h-100"><div class="metric-label">Pedidos originados</div><div class="num">{{ metrics_orc['convertidos'] }}</div><div class="desc">{{ "%.1f"|format(metrics_orc['taxa_conversao']) }}% de aproveitamento sobre os orçamentos</div></div></div>
-      <div class="col-12 col-md-4"><a href="{{ url_for('orcamentos_detalhe', data_ref=mes_ref) }}" class="text-decoration-none text-dark d-block h-100"><div class="metric-pill h-100"><div class="metric-label">Valor em orçamentos</div><div class="num">{{ format_brl(metrics_orc['valor_total']) }}</div><div class="desc">Potencial de vendas · clique para detalhar</div></div></a></div>
-    </div>
-
-    <div class="section-heading">
-      <div><h2>Performance por canal</h2><p>Interno, Externo e Site voltaram a aparecer separados, com os mesmos cálculos e indicadores do dashboard original.</p></div>
-    </div>
-    <div class="row g-3 mb-4">
-      <div class="col-12 col-xl-4">
-        <div class="channel-card internal">
-          <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag internal"><i class="bi bi-people-fill"></i> INTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_int) }}</span></div>
-          <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main text-primary">{{ format_brl(ped_int) }}</div><div class="small text-muted">realizado em pedidos</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_int.pct) }}%</div></div>
-          <div class="progress mt-3" style="height:7px"><div class="progress-bar bg-primary" style="width:{{ 100 if kpi_int.pct > 100 else kpi_int.pct }}%"></div></div>
-          <div class="channel-status"><span>{{ qtd_ped_int }} pedidos</span><span>{{ qtd_fat_int }} faturados</span><span class="pending">{{ gap_qtd_int }} pendentes</span></div>
-          <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_int.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_int.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_int.nec > kpi_int.ideal else 'text-success' }}">{{ format_brl(kpi_int.nec) }}</div></div></div>
+    {% if visao == 'pedidos' %}
+    <div class="dash-block dash-block--ped mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Vendas &amp; Pedidos</span>
+          <div class="sub">Mês comercial {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · meta em Settings</div>
         </div>
       </div>
-      <div class="col-12 col-xl-4">
-        <div class="channel-card external">
-          <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag external"><i class="bi bi-person-workspace"></i> EXTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_ext) }}</span></div>
-          <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main text-success">{{ format_brl(ped_ext) }}</div><div class="small text-muted">realizado em pedidos</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_ext.pct) }}%</div></div>
-          <div class="progress mt-3" style="height:7px"><div class="progress-bar bg-success" style="width:{{ 100 if kpi_ext.pct > 100 else kpi_ext.pct }}%"></div></div>
-          <div class="channel-status"><span>{{ qtd_ped_ext }} pedidos</span><span>{{ qtd_fat_ext }} faturados</span><span class="pending">{{ gap_qtd_ext }} pendentes</span></div>
-          <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_ext.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_ext.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_ext.nec > kpi_ext.ideal else 'text-success' }}">{{ format_brl(kpi_ext.nec) }}</div></div></div>
+      <div class="row g-3 mb-3 align-items-start">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Pedidos</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+            <div class="kpi-value">{{ format_brl(meta_ped_total) }}</div>
+            <div class="progress mt-2" style="height:8px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if kpi_tot.pct > 100 else kpi_tot.pct }}%"></div></div>
+            <div class="kpi-meta">{{ '%.1f'|format(kpi_tot.pct) }}% atingido</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <a href="{{ url_for('dashboard_pedidos_detalhe', data_ref=mes_ref, periodo='mes') }}" class="text-decoration-none text-dark d-block">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total Realizado</div><div class="icon done"><i class="bi bi-cart3"></i></div></div>
+            <div class="kpi-value">{{ format_brl(ped_total) }}</div>
+            <div class="kpi-meta">Vendas validadas · clique para detalhar</div>
+          </div>
+          </a>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if kpi_tot.falta <= 0 else 'Falta vender' }}</div><div class="icon {{ 'ok' if kpi_tot.falta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if kpi_tot.falta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+            <div class="kpi-value">{{ format_brl((ped_total - meta_ped_total) if kpi_tot.falta <= 0 else kpi_tot.falta) }}</div>
+            <div class="kpi-meta">{{ 'Acima da meta de pedidos' if kpi_tot.falta <= 0 else 'Valor necessário para bater a meta' }}</div>
+          </div>
         </div>
       </div>
-      <div class="col-12 col-xl-4">
-        <div class="channel-card site">
-          <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#7c3aed;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
-          <div><div class="channel-main" style="color:#7c3aed">{{ format_brl(ped_site) }}</div><div class="small text-muted">realizado em pedidos do canal</div></div>
-          <div class="channel-status"><span>{{ qtd_ped_site }} pedidos</span><span>{{ qtd_fat_site }} faturados</span><span class="pending">{{ gap_qtd_site }} pendentes</span></div>
-          <div class="channel-meta"><div class="box"><div class="label">Faturamento</div><div class="value">{{ format_brl(fat_site) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_site) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site) }}</div></div></div>
+
+      <div class="section-heading mt-1 mb-3"><div><h2>Performance por canal</h2><p>Interno, Externo e Site no mês comercial.</p></div></div>
+      <div class="row g-3 align-items-start">
+        <div class="col-12 col-xl-4">
+          <div class="channel-card internal">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag internal"><i class="bi bi-people-fill"></i> INTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_ped_int) }}</span></div>
+            <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(ped_int) }}</div><div class="small text-muted">realizado em pedidos</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_int.pct) }}%</div></div>
+            <div class="progress mt-3" style="height:7px"><div class="progress-bar dash-bar-canal-int" style="width:{{ 100 if kpi_int.pct > 100 else kpi_int.pct }}%"></div></div>
+            <div class="channel-status"><span>{{ qtd_ped_int }} pedidos</span><span>{{ qtd_fat_int }} faturados</span><span class="pending">{{ gap_qtd_int }} pendentes</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_int.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_int.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_int.nec > kpi_int.ideal else 'text-success' }}">{{ format_brl(kpi_int.nec) }}</div></div></div>
+          </div>
+        </div>
+        <div class="col-12 col-xl-4">
+          <div class="channel-card external">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag external"><i class="bi bi-person-workspace"></i> EXTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_ped_ext) }}</span></div>
+            <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(ped_ext) }}</div><div class="small text-muted">realizado em pedidos</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_ext.pct) }}%</div></div>
+            <div class="progress mt-3" style="height:7px"><div class="progress-bar dash-bar-canal-ext" style="width:{{ 100 if kpi_ext.pct > 100 else kpi_ext.pct }}%"></div></div>
+            <div class="channel-status"><span>{{ qtd_ped_ext }} pedidos</span><span>{{ qtd_fat_ext }} faturados</span><span class="pending">{{ gap_qtd_ext }} pendentes</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_ext.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_ext.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_ext.nec > kpi_ext.ideal else 'text-success' }}">{{ format_brl(kpi_ext.nec) }}</div></div></div>
+          </div>
+        </div>
+        <div class="col-12 col-xl-4">
+          <div class="channel-card site">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#7c3aed;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
+            <div><div class="channel-main" style="color:#7c3aed">{{ format_brl(ped_site) }}</div><div class="small text-muted">realizado em pedidos do canal</div></div>
+            <div class="channel-status"><span>{{ qtd_ped_site }} pedidos</span><span>{{ qtd_fat_site }} faturados</span><span class="pending">{{ gap_qtd_site }} pendentes</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Faturamento</div><div class="value">{{ format_brl(fat_site) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_site) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site) }}</div></div></div>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="section-heading"><div><h2>Leitura visual do mês</h2><p>Gráficos compactos, cada um respondendo a uma pergunta diferente.</p></div></div>
-
     <div class="row g-4 mt-1">
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="d-flex justify-content-between align-items-end mb-3"><div><div class="h6 fw-bold mb-1">Ritmo diário de vendas</div><div class="chart-caption">Pedidos válidos vs faturamento do período comercial</div></div></div>{% if line_tot %}<div class="chart-frame chart-lg"><img class="chart-img" src="data:image/png;base64,{{ line_tot }}"></div>{% endif %}</div></div>
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="h6 fw-bold mb-1">Status da carteira</div><div class="chart-caption mb-3">Pedidos faturados e pedidos ainda pendentes</div>{% if pie_status %}<div class="chart-frame chart-lg"><img class="chart-img" src="data:image/png;base64,{{ pie_status }}"></div>{% endif %}<div class="row g-2 mt-2"><div class="col-4"><div class="chip chip-success w-100 justify-content-center">{{ fat_qtd }} faturados</div></div><div class="col-4"><div class="chip chip-warning w-100 justify-content-center">{{ gap_qtd }} pendentes</div></div><div class="col-4"><div class="chip w-100 justify-content-center">{{ ped_qtd }} total</div></div></div></div></div>
     </div>
-
     <div class="row g-4 mt-1">
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="h6 fw-bold mb-1">Equilíbrio entre equipes</div><div class="chart-caption mb-3">Comparativo diário entre time interno e externo</div>{% if line_comp %}<div class="chart-frame"><img class="chart-img" src="data:image/png;base64,{{ line_comp }}"></div>{% endif %}</div></div>
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="h6 fw-bold mb-1">Nova carteira x recompra</div><div class="chart-caption mb-3">Mostra se o mês está sendo sustentado por clientes novos ou recorrentes</div>{% if pie_novo %}<div class="chart-frame"><img class="chart-img" src="data:image/png;base64,{{ pie_novo }}"></div>{% else %}<div class="text-muted">Sem dados.</div>{% endif %}</div></div>
     </div>
-
     <div class="row g-4 mt-1">
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="h6 fw-bold mb-1">Quem mais vendeu</div><div class="chart-caption mb-3">Ranking por valor realizado em pedidos</div>{% if top_bar %}<div class="chart-frame chart-lg"><img class="chart-img" src="data:image/png;base64,{{ top_bar }}"></div>{% else %}<div class="text-muted">Sem dados.</div>{% endif %}</div></div>
         <div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="h6 fw-bold mb-1">Clientes mais relevantes</div><div class="chart-caption mb-3">Concentração dos maiores clientes no período</div>{% if top_clientes_chart %}<div class="chart-frame chart-lg"><img class="chart-img" src="data:image/png;base64,{{ top_clientes_chart }}"></div>{% else %}<div class="text-muted">Sem dados.</div>{% endif %}</div></div>
     </div>
-
     <div class="row mt-4">
       <div class="col-12"><div class="cardx p-4 h-100"><div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2"><div><div class="h6 fw-bold mb-1">Campanha por Medida</div><div class="chart-caption">Tabela completa do período • o gráfico resume Top 5 e Bottom 5 • {{ total_pedidos_periodo }} pedidos</div></div></div>{% if top_medidas_chart %}<div class="mb-3 campaign-chart-wrap"><img class="chart-img campaign-chart-img" src="data:image/png;base64,{{ top_medidas_chart }}"></div><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Medida</th><th class="text-end">Pedidos</th><th class="text-end">%</th><th class="text-end">Valor</th></tr></thead><tbody>{% for r in top_medidas_rows %}<tr><td>{{ r['medida'] }}</td><td class="text-end">{{ r['qtd_pedidos'] }}</td><td class="text-end">{{ '%.2f'|format(r['pct_pedidos'] or 0) }}%</td><td class="text-end">{{ format_brl(r['valor_total'] or 0) }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="text-muted">Sem dados.</div>{% endif %}</div></div>
     </div>
     <div class="row mt-4">
-  <div class="col-12">
-    <div class="cardx p-4">
-      <div class="h6 fw-bold mb-3">Últimos Pedidos Tirados</div>
-
-      <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-
-          <thead>
-            <tr>
-              <th>Data</th>
-              <th>Pedido</th>
-              <th>Cliente</th>
-              <th>Vendedor</th>
-              <th>Medida</th>
-              <th class="text-end">Valor</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {% for uv in ultimos_pedidos %}
-            <tr>
-              <td class="muted">
-                {{ uv["data_emissao"][5:] if uv["data_emissao"] else "-" }}
-              </td>
-
-              <td class="text-primary fw-bold">
-                {{ uv["numero"] or "-" }}
-              </td>
-
-              <td>
-                {{ (uv["cliente"] or "-")[:34] }}
-              </td>
-
-              <td>
-                {{ uv["vend"] or "-" }}
-              </td>
-
-              <td>
-                {{ uv["medida"] or "-" }}
-              </td>
-
-              <td class="text-end fw-bold">
-                {{ format_brl(uv["valor"] or 0) }}
-              </td>
-            </tr>
-
-            {% else %}
-            <tr>
-              <td colspan="6" class="text-center py-3">
-                Sem dados.
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-
-        </table>
+      <div class="col-12">
+        <div class="cardx p-4">
+          <div class="h6 fw-bold mb-3">Últimos Pedidos Tirados</div>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead><tr><th>Data</th><th>Pedido</th><th>Cliente</th><th>Vendedor</th><th>Medida</th><th class="text-end">Valor</th></tr></thead>
+              <tbody>
+                {% for uv in ultimos_pedidos %}
+                <tr>
+                  <td class="muted">{{ uv["data_emissao"][5:] if uv["data_emissao"] else "-" }}</td>
+                  <td class="text-primary fw-bold">{{ uv["numero"] or "-" }}</td>
+                  <td>{{ (uv["cliente"] or "-")[:34] }}</td>
+                  <td>{{ uv["vend"] or "-" }}</td>
+                  <td>{{ uv["medida"] or "-" }}</td>
+                  <td class="text-end fw-bold">{{ format_brl(uv["valor"] or 0) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-center py-3">Sem dados.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-
     </div>
-  </div>
-</div>
+    {% endif %}
     """,
     d0_ped=d0_ped, d1_ped=d1_ped, d0_fat=d0_fat, d1_fat=d1_fat,
     meta_total=meta_total, meta_int=meta_int, meta_ext=meta_ext,
+    meta_ped_total=meta_ped_total, meta_ped_int=meta_ped_int, meta_ped_ext=meta_ped_ext,
+    meta_fat_total=meta_fat_total, meta_fat_int=meta_fat_int, meta_fat_ext=meta_fat_ext,
     ped_total=ped_total, ped_int=ped_int, ped_ext=ped_ext,
-    fat_total=fat_total, fat_int=fat_int, fat_ext=fat_ext, fat_mes_total=fat_mes_total, d1_fat_mes=d1_fat_mes, fat_mes_qtd=fat_mes_qtd, fat_mes_ultima_data_base=fat_mes_ultima_data_base,
+    fat_total=fat_total, fat_int=fat_int, fat_ext=fat_ext,
     kpi_tot=kpi_tot, kpi_int=kpi_int, kpi_ext=kpi_ext,
+    kpi_fat_tot=kpi_fat_tot, kpi_fat_int=kpi_fat_int, kpi_fat_ext=kpi_fat_ext,
     diff_val=diff_val, pct_quebra=pct_quebra, pct_realizado=pct_realizado, falta=falta,
     ped_qtd=ped_qtd, fat_qtd=fat_qtd, gap_qtd=gap_qtd,
     qtd_ped_int=qtd_ped_int, qtd_fat_int=qtd_fat_int, gap_qtd_int=gap_qtd_int,
@@ -7772,11 +7930,962 @@ def dashboard():
     top_clientes_chart=top_clientes_chart, top_medidas_chart=top_medidas_chart,
     chart_yoy=chart_yoy, ultimos_pedidos=ultimos_pedidos,
     metrics_orc=metrics_orc, top_medidas_rows=top_medidas_rows, total_pedidos_periodo=total_pedidos_periodo,
-    crm_metrics=crm_metrics, mes_ref=mes_ref, user=user,
+    mes_ref=mes_ref, visao=visao,
     format_brl=format_brl
     )
 
     return render_page("Dashboard", body, "dashboard")
+
+
+_MESES_PT_CURTO = (
+    (1, "Jan"), (2, "Fev"), (3, "Mar"), (4, "Abr"), (5, "Mai"), (6, "Jun"),
+    (7, "Jul"), (8, "Ago"), (9, "Set"), (10, "Out"), (11, "Nov"), (12, "Dez"),
+)
+
+
+def _parse_mes_ano(valor, default: int, minimo: int = 1, maximo: int = 12) -> int:
+    try:
+        n = int(str(valor or "").strip())
+    except Exception:
+        return default
+    return max(minimo, min(maximo, n))
+
+
+def _intervalo_meses_calendario(ano: int, mes_ini: int, mes_fim: int) -> tuple[date, date]:
+    """Primeiro dia do mês inicial até o último dia do mês final (mesmo ano)."""
+    if mes_fim < mes_ini:
+        mes_fim = mes_ini
+    d0 = date(ano, mes_ini, 1)
+    if mes_fim == 12:
+        d1 = date(ano, 12, 31)
+    else:
+        d1 = date(ano, mes_fim + 1, 1) - timedelta(days=1)
+    return d0, d1
+
+
+_DESEMP_JOIN = """
+        FROM invoices i
+        LEFT JOIN vendors v ON v.id = i.vendor_id
+        LEFT JOIN customers c ON c.id = i.cliente_id
+"""
+_DESEMP_BASE_WHERE = """
+          AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
+          AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
+"""
+
+
+def _desempenho_filtros_request() -> dict:
+    equipe = (request.args.get("equipe") or "").strip().upper()
+    if equipe not in ("INTERNO", "EXTERNO"):
+        equipe = ""
+    vendor_raw = (request.args.get("vendedor") or "").strip()
+    try:
+        vendedor_id = int(vendor_raw) if vendor_raw else 0
+    except Exception:
+        vendedor_id = 0
+    return {
+        "equipe": equipe,
+        "vendedor_id": vendedor_id,
+        "grupo": (request.args.get("grupo") or "").strip(),
+        "formato": (request.args.get("formato") or "").strip(),
+        "papel": (request.args.get("papel") or "").strip(),
+        "uf": (request.args.get("uf") or "").strip().upper(),
+        "cidade": (request.args.get("cidade") or "").strip(),
+    }
+
+
+def _desempenho_filtro_sql(filtros: dict) -> tuple[str, list]:
+    clauses: List[str] = []
+    params: list = []
+    if filtros.get("equipe") in ("INTERNO", "EXTERNO"):
+        clauses.append("COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') = ?")
+        params.append(filtros["equipe"])
+    if int(filtros.get("vendedor_id") or 0) > 0:
+        clauses.append("i.vendor_id = ?")
+        params.append(int(filtros["vendedor_id"]))
+    if filtros.get("grupo"):
+        clauses.append("UPPER(TRIM(COALESCE(i.grupo_ref,''))) = UPPER(?)")
+        params.append(filtros["grupo"])
+    if filtros.get("formato"):
+        clauses.append(
+            "UPPER(TRIM(COALESCE(NULLIF(TRIM(i.formato),''), NULLIF(TRIM(i.medida_ref),''), ''))) = UPPER(?)"
+        )
+        params.append(filtros["formato"])
+    if filtros.get("papel"):
+        clauses.append("UPPER(TRIM(COALESCE(i.papel_ref,''))) = UPPER(?)")
+        params.append(filtros["papel"])
+    if filtros.get("uf"):
+        # Geo costuma vir do orçamento (Sisplan); customers.uf é opcional/legado.
+        clauses.append(
+            """(
+              UPPER(TRIM(COALESCE(c.uf,''))) = UPPER(?)
+              OR EXISTS (
+                SELECT 1
+                FROM orcamentos ox
+                WHERE TRIM(COALESCE(c.codigo,'')) <> ''
+                  AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
+                  AND UPPER(TRIM(COALESCE(ox.uf,''))) = UPPER(?)
+              )
+            )"""
+        )
+        params.extend([filtros["uf"], filtros["uf"]])
+    if filtros.get("cidade"):
+        clauses.append(
+            """(
+              UPPER(TRIM(COALESCE(c.cidade,''))) = UPPER(?)
+              OR EXISTS (
+                SELECT 1
+                FROM orcamentos ox
+                WHERE TRIM(COALESCE(c.codigo,'')) <> ''
+                  AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
+                  AND UPPER(TRIM(COALESCE(ox.cidade,''))) = UPPER(?)
+              )
+            )"""
+        )
+        params.extend([filtros["cidade"], filtros["cidade"]])
+    if not clauses:
+        return "", []
+    return " AND " + " AND ".join(clauses), params
+
+
+def _desempenho_filtros_ativos(filtros: dict, vendor_nome: str = "") -> List[str]:
+    labels = []
+    if filtros.get("equipe"):
+        labels.append("Equipe " + str(filtros["equipe"]).title())
+    if int(filtros.get("vendedor_id") or 0) > 0:
+        labels.append(vendor_nome or "Vendedor")
+    if filtros.get("grupo"):
+        labels.append(filtros["grupo"])
+    if filtros.get("formato"):
+        labels.append(filtros["formato"])
+    if filtros.get("papel"):
+        labels.append(filtros["papel"])
+    if filtros.get("uf"):
+        labels.append(filtros["uf"])
+    if filtros.get("cidade"):
+        labels.append(filtros["cidade"])
+    return labels
+
+
+def _ensure_customers_geo_cols(conn) -> None:
+    """Garante colunas de geo em customers (bases antigas podem não ter)."""
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(customers)").fetchall()}
+    if "uf" not in cols:
+        try:
+            conn.execute("ALTER TABLE customers ADD COLUMN uf TEXT")
+        except Exception:
+            pass
+    if "cidade" not in cols:
+        try:
+            conn.execute("ALTER TABLE customers ADD COLUMN cidade TEXT")
+        except Exception:
+            pass
+
+
+def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
+    _ensure_customers_geo_cols(conn)
+    vendors = conn.execute(
+        """
+        SELECT id, nome, COALESCE(UPPER(TRIM(tipo)),'EXTERNO') AS tipo
+        FROM vendors
+        WHERE COALESCE(UPPER(TRIM(nome)),'') <> 'SITE'
+          AND COALESCE(UPPER(TRIM(tipo)),'') <> 'SITE'
+          AND COALESCE(TRIM(nome),'') <> ''
+          AND COALESCE(ativo,1)=1
+        ORDER BY nome
+        """
+    ).fetchall()
+    grupos = [
+        str(r[0]).strip()
+        for r in conn.execute(
+            "SELECT DISTINCT TRIM(grupo_ref) FROM invoices WHERE TRIM(COALESCE(grupo_ref,''))<>'' ORDER BY 1"
+        ).fetchall()
+        if r[0]
+    ]
+    formatos = [
+        str(r[0]).strip()
+        for r in conn.execute(
+            """
+            SELECT DISTINCT TRIM(COALESCE(NULLIF(TRIM(formato),''), NULLIF(TRIM(medida_ref),''), ''))
+            FROM invoices
+            WHERE TRIM(COALESCE(NULLIF(TRIM(formato),''), NULLIF(TRIM(medida_ref),''), ''))<>''
+            ORDER BY 1
+            """
+        ).fetchall()
+        if r[0]
+    ]
+    papeis = [
+        str(r[0]).strip()
+        for r in conn.execute(
+            "SELECT DISTINCT TRIM(papel_ref) FROM invoices WHERE TRIM(COALESCE(papel_ref,''))<>'' ORDER BY 1"
+        ).fetchall()
+        if r[0]
+    ]
+    # Estado/cidade: customers (se preenchido) + orçamentos (fonte usual no Sisplan).
+    ufs = [
+        str(r[0]).strip().upper()
+        for r in conn.execute(
+            """
+            SELECT DISTINCT u FROM (
+              SELECT UPPER(TRIM(uf)) AS u FROM customers WHERE TRIM(COALESCE(uf,''))<>''
+              UNION
+              SELECT UPPER(TRIM(uf)) AS u FROM orcamentos WHERE TRIM(COALESCE(uf,''))<>''
+            ) x
+            ORDER BY 1
+            """
+        ).fetchall()
+        if r[0]
+    ]
+    if filtros.get("uf"):
+        cidades = [
+            str(r[0]).strip()
+            for r in conn.execute(
+                """
+                SELECT DISTINCT c FROM (
+                  SELECT TRIM(cidade) AS c FROM customers
+                  WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
+                  UNION
+                  SELECT TRIM(cidade) AS c FROM orcamentos
+                  WHERE TRIM(COALESCE(cidade,''))<>'' AND UPPER(TRIM(COALESCE(uf,''))) = UPPER(?)
+                ) x
+                ORDER BY 1
+                """,
+                (filtros["uf"], filtros["uf"]),
+            ).fetchall()
+            if r[0]
+        ]
+    else:
+        cidades = [
+            str(r[0]).strip()
+            for r in conn.execute(
+                """
+                SELECT DISTINCT c FROM (
+                  SELECT TRIM(cidade) AS c FROM customers WHERE TRIM(COALESCE(cidade,''))<>''
+                  UNION
+                  SELECT TRIM(cidade) AS c FROM orcamentos WHERE TRIM(COALESCE(cidade,''))<>''
+                ) x
+                ORDER BY 1
+                LIMIT 800
+                """
+            ).fetchall()
+            if r[0]
+        ]
+    return {
+        "vendors": vendors,
+        "grupos": grupos,
+        "formatos": formatos,
+        "papeis": papeis,
+        "ufs": ufs,
+        "cidades": cidades,
+    }
+
+
+def _soma_faturamento_periodo(
+    conn, d0: date, d1: date, filtro_sql: str = "", filtro_params: Optional[list] = None
+) -> tuple[float, int, int, float]:
+    """Faturamento do intervalo (sem SITE): valor, qtd notas, clientes e unidades."""
+    params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
+    row = conn.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(i.valor),0) AS val,
+            COUNT(*) AS qtd,
+            COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id,0) > 0 THEN i.cliente_id END) AS clientes,
+            COALESCE(SUM(COALESCE(i.quantidade,0)),0) AS unidades
+        {_DESEMP_JOIN}
+        WHERE i.data_emissao IS NOT NULL
+          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+          {_DESEMP_BASE_WHERE}
+          {filtro_sql}
+        """,
+        params,
+    ).fetchone()
+    return (
+        float(row["val"] or 0),
+        int(row["qtd"] or 0),
+        int(row["clientes"] or 0),
+        float(row["unidades"] or 0),
+    )
+
+
+def _fat_mensal_ano(
+    conn, ano: int, mes_ini: int, mes_fim: int, filtro_sql: str = "", filtro_params: Optional[list] = None
+) -> List[float]:
+    """12 valores mensais; fora do intervalo selecionado = NaN (não desenha a linha)."""
+    params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
+    rows = conn.execute(
+        f"""
+        SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
+               COALESCE(SUM(i.valor),0) AS val
+        {_DESEMP_JOIN}
+        WHERE i.data_emissao IS NOT NULL
+          AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
+          AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
+          {_DESEMP_BASE_WHERE}
+          {filtro_sql}
+        GROUP BY m
+        """,
+        params,
+    ).fetchall()
+    by_m = {int(r["m"]): float(r["val"] or 0) for r in rows}
+    out: List[float] = []
+    for m in range(1, 13):
+        if mes_ini <= m <= mes_fim:
+            out.append(by_m.get(m, 0.0))
+        else:
+            out.append(float("nan"))
+    return out
+
+
+def _fat_mensal_por_equipe(
+    conn, ano: int, mes_ini: int, mes_fim: int, filtro_sql: str = "", filtro_params: Optional[list] = None
+) -> Dict[int, Dict[str, float]]:
+    """Faturamento mensal por time (INTERNO/EXTERNO) no intervalo do ano."""
+    params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
+    rows = conn.execute(
+        f"""
+        SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
+               COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
+               COALESCE(SUM(i.valor),0) AS val
+        {_DESEMP_JOIN}
+        WHERE i.data_emissao IS NOT NULL
+          AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
+          AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
+          {_DESEMP_BASE_WHERE}
+          {filtro_sql}
+        GROUP BY m, COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+        """,
+        params,
+    ).fetchall()
+    out: Dict[int, Dict[str, float]] = {
+        m: {"INTERNO": 0.0, "EXTERNO": 0.0} for m in range(mes_ini, mes_fim + 1)
+    }
+    for r in rows:
+        m = int(r["m"] or 0)
+        if m not in out:
+            continue
+        tipo = str(r["tipo"] or "EXTERNO").upper()
+        if tipo == "INTERNO":
+            out[m]["INTERNO"] = float(r["val"] or 0)
+        elif tipo == "EXTERNO":
+            out[m]["EXTERNO"] = float(r["val"] or 0)
+    return out
+
+
+def _fat_por_equipe(
+    conn, d0: date, d1: date, filtro_sql: str = "", filtro_params: Optional[list] = None
+) -> dict:
+    params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
+    rows = conn.execute(
+        f"""
+        SELECT COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
+               COALESCE(SUM(i.valor),0) AS val
+        {_DESEMP_JOIN}
+        WHERE i.data_emissao IS NOT NULL
+          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+          {_DESEMP_BASE_WHERE}
+          {filtro_sql}
+        GROUP BY COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+        """,
+        params,
+    ).fetchall()
+    out = {"INTERNO": 0.0, "EXTERNO": 0.0}
+    for r in rows:
+        tipo = str(r["tipo"] or "EXTERNO").upper()
+        if tipo == "INTERNO":
+            out["INTERNO"] = float(r["val"] or 0)
+        elif tipo == "EXTERNO":
+            out["EXTERNO"] = float(r["val"] or 0)
+    return out
+
+
+def _rotulo_periodo_meses(ano: int, mes_ini: int, mes_fim: int) -> str:
+    nomes = dict(_MESES_PT_CURTO)
+    if mes_ini == mes_fim:
+        return f"{nomes.get(mes_ini, mes_ini)} {ano}"
+    return f"{nomes.get(mes_ini, mes_ini)} - {nomes.get(mes_fim, mes_fim)} {ano}"
+
+
+def _delta_pct(atual: float, base: float) -> float:
+    if base > 0:
+        return ((atual / base) - 1.0) * 100.0
+    return 100.0 if atual > 0 else 0.0
+
+
+@app.route("/desempenho")
+@login_required
+def desempenho():
+    """Comparativo de faturamento entre dois intervalos de meses."""
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    hoje = date.today()
+    anos = list(range(hoje.year, hoje.year - 8, -1))
+
+    ref_ano = _parse_mes_ano(request.args.get("ref_ano"), hoje.year, 2000, hoje.year + 1)
+    ref_mes_ini = _parse_mes_ano(request.args.get("ref_mes_ini"), 1)
+    ref_mes_fim = _parse_mes_ano(request.args.get("ref_mes_fim"), hoje.month)
+    cmp_ano = _parse_mes_ano(request.args.get("cmp_ano"), hoje.year, 2000, hoje.year + 1)
+    cmp_mes_ini = _parse_mes_ano(request.args.get("cmp_mes_ini"), 1)
+    cmp_mes_fim = _parse_mes_ano(
+        request.args.get("cmp_mes_fim"),
+        max(1, hoje.month - 1) if hoje.month > 1 else 1,
+    )
+    if ref_mes_fim < ref_mes_ini:
+        ref_mes_fim = ref_mes_ini
+    if cmp_mes_fim < cmp_mes_ini:
+        cmp_mes_fim = cmp_mes_ini
+
+    d0_ref, d1_ref = _intervalo_meses_calendario(ref_ano, ref_mes_ini, ref_mes_fim)
+    d0_cmp, d1_cmp = _intervalo_meses_calendario(cmp_ano, cmp_mes_ini, cmp_mes_fim)
+
+    filtros = _desempenho_filtros_request()
+    filtro_sql, filtro_params = _desempenho_filtro_sql(filtros)
+
+    with conectar() as conn:
+        opcoes = _desempenho_opcoes_filtro(conn, filtros)
+        vendor_nome = ""
+        if filtros.get("vendedor_id"):
+            for v in opcoes["vendors"]:
+                if int(v["id"]) == int(filtros["vendedor_id"]):
+                    vendor_nome = str(v["nome"] or "")
+                    break
+        filtros_ativos = _desempenho_filtros_ativos(filtros, vendor_nome)
+        fat_ref, notas_ref, cli_ref, unid_ref = _soma_faturamento_periodo(
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params
+        )
+        fat_cmp, notas_cmp, cli_cmp, unid_cmp = _soma_faturamento_periodo(
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params
+        )
+        mensal_ref = _fat_mensal_ano(conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params)
+        mensal_cmp = _fat_mensal_ano(conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params)
+        fat_eq_ref = _fat_por_equipe(conn, d0_ref, d1_ref, filtro_sql, filtro_params)
+        fat_eq_cmp = _fat_por_equipe(conn, d0_cmp, d1_cmp, filtro_sql, filtro_params)
+        fat_mes_eq_ref = _fat_mensal_por_equipe(
+            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params
+        )
+        fat_mes_eq_cmp = _fat_mensal_por_equipe(
+            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params
+        )
+
+    ticket_ref = (fat_ref / notas_ref) if notas_ref > 0 else 0.0
+    ticket_cmp = (fat_cmp / notas_cmp) if notas_cmp > 0 else 0.0
+
+    delta_fat = fat_cmp - fat_ref
+    delta_fat_pct = _delta_pct(fat_cmp, fat_ref)
+    delta_unid = unid_cmp - unid_ref
+    delta_unid_pct = _delta_pct(unid_cmp, unid_ref)
+    delta_cli = cli_cmp - cli_ref
+    delta_cli_pct = _delta_pct(float(cli_cmp), float(cli_ref))
+    delta_ticket = ticket_cmp - ticket_ref
+    delta_ticket_pct = _delta_pct(ticket_cmp, ticket_ref)
+
+    label_ref = _rotulo_periodo_meses(ref_ano, ref_mes_ini, ref_mes_fim)
+    label_cmp = _rotulo_periodo_meses(cmp_ano, cmp_mes_ini, cmp_mes_fim)
+    meses_labels = [n for _, n in _MESES_PT_CURTO]
+    chart_evol = desempenho_evolucao_chart(
+        meses_labels,
+        (label_ref, mensal_ref),
+        (label_cmp, mensal_cmp),
+    )
+
+    max_eq = max(
+        fat_eq_ref["INTERNO"], fat_eq_ref["EXTERNO"],
+        fat_eq_cmp["INTERNO"], fat_eq_cmp["EXTERNO"],
+        1.0,
+    )
+    equipes = []
+    for tipo, nome in (("INTERNO", "Equipe interna"), ("EXTERNO", "Equipe externa")):
+        v_ref = float(fat_eq_ref.get(tipo) or 0)
+        v_cmp = float(fat_eq_cmp.get(tipo) or 0)
+        equipes.append({
+            "nome": nome,
+            "ref": v_ref,
+            "cmp": v_cmp,
+            "pct": _delta_pct(v_cmp, v_ref),
+            "w_ref": (v_ref / max_eq) * 100.0,
+            "w_cmp": (v_cmp / max_eq) * 100.0,
+        })
+
+    mes_ini_tab = min(ref_mes_ini, cmp_mes_ini)
+    mes_fim_tab = max(ref_mes_fim, cmp_mes_fim)
+    nomes_mes = dict(_MESES_PT_CURTO)
+    tabela_meses = []
+    tot_ref_int = tot_ref_ext = tot_cmp_int = tot_cmp_ext = 0.0
+    for m in range(mes_ini_tab, mes_fim_tab + 1):
+        in_ref = ref_mes_ini <= m <= ref_mes_fim
+        in_cmp = cmp_mes_ini <= m <= cmp_mes_fim
+        r_int = float(fat_mes_eq_ref.get(m, {}).get("INTERNO") or 0) if in_ref else None
+        r_ext = float(fat_mes_eq_ref.get(m, {}).get("EXTERNO") or 0) if in_ref else None
+        c_int = float(fat_mes_eq_cmp.get(m, {}).get("INTERNO") or 0) if in_cmp else None
+        c_ext = float(fat_mes_eq_cmp.get(m, {}).get("EXTERNO") or 0) if in_cmp else None
+        if r_int is not None:
+            tot_ref_int += r_int
+            tot_ref_ext += float(r_ext or 0)
+        if c_int is not None:
+            tot_cmp_int += c_int
+            tot_cmp_ext += float(c_ext or 0)
+        var_int = _delta_pct(float(c_int or 0), float(r_int or 0)) if (in_ref and in_cmp) else None
+        var_ext = _delta_pct(float(c_ext or 0), float(r_ext or 0)) if (in_ref and in_cmp) else None
+        diff_ei = (float(c_ext or 0) - float(c_int or 0)) if in_cmp else None
+        tabela_meses.append({
+            "mes": nomes_mes.get(m, str(m)),
+            "ref_int": r_int,
+            "ref_ext": r_ext,
+            "cmp_int": c_int,
+            "cmp_ext": c_ext,
+            "var_int": var_int,
+            "var_ext": var_ext,
+            "diff_ei": diff_ei,
+        })
+    tabela_total = {
+        "ref_int": tot_ref_int,
+        "ref_ext": tot_ref_ext,
+        "cmp_int": tot_cmp_int,
+        "cmp_ext": tot_cmp_ext,
+        "var_int": _delta_pct(tot_cmp_int, tot_ref_int),
+        "var_ext": _delta_pct(tot_cmp_ext, tot_ref_ext),
+        "diff_ei": tot_cmp_ext - tot_cmp_int,
+    }
+
+    body = render_template_string(
+        r"""
+    <div class="mb-3">
+      <div class="h3 mb-1 fw-bold">Desempenho comercial</div>
+      <div class="muted small">Comparativo de faturamento entre dois intervalos de meses.</div>
+    </div>
+
+    <form method="get" class="mb-4" id="desempenhoFiltro">
+      <div class="period-compare mb-3">
+        <div class="period-compare-side cmp">
+          <div class="label-row"><span class="dot"></span> Período de comparação</div>
+          <div class="period-compare-fields">
+            <select name="cmp_ano" onchange="this.form.submit()">
+              {% for a in anos %}<option value="{{ a }}" {% if a == cmp_ano %}selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+            <select name="cmp_mes_ini" onchange="this.form.submit()">
+              {% for m, n in meses %}<option value="{{ m }}" {% if m == cmp_mes_ini %}selected{% endif %}>{{ n }}</option>{% endfor %}
+            </select>
+            <span class="ate">até</span>
+            <select name="cmp_mes_fim" onchange="this.form.submit()">
+              {% for m, n in meses %}<option value="{{ m }}" {% if m == cmp_mes_fim %}selected{% endif %}>{{ n }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="period-compare-vs"><span>VS</span></div>
+        <div class="period-compare-side ref">
+          <div class="label-row"><span class="dot"></span> Período de referência</div>
+          <div class="period-compare-fields">
+            <select name="ref_ano" onchange="this.form.submit()">
+              {% for a in anos %}<option value="{{ a }}" {% if a == ref_ano %}selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+            <select name="ref_mes_ini" onchange="this.form.submit()">
+              {% for m, n in meses %}<option value="{{ m }}" {% if m == ref_mes_ini %}selected{% endif %}>{{ n }}</option>{% endfor %}
+            </select>
+            <span class="ate">até</span>
+            <select name="ref_mes_fim" onchange="this.form.submit()">
+              {% for m, n in meses %}<option value="{{ m }}" {% if m == ref_mes_fim %}selected{% endif %}>{{ n }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="desemp-extra-filter cardx">
+        <div class="desemp-extra-filter-bar">
+          <div class="d-flex align-items-center gap-2 flex-wrap min-w-0">
+            <i class="bi bi-funnel text-primary"></i>
+            <span class="fw-bold">Filtros adicionais</span>
+            {% if filtros_ativos %}
+              <span class="desemp-filter-count">{{ filtros_ativos|length }} ativo{{ 's' if filtros_ativos|length != 1 else '' }}</span>
+              {% for t in filtros_ativos[:4] %}<span class="chip">{{ t }}</span>{% endfor %}
+              {% if filtros_ativos|length > 4 %}<span class="chip">+{{ filtros_ativos|length - 4 }}</span>{% endif %}
+            {% else %}
+              <span class="small text-muted">Equipe, vendedor, produto, formato, papel, UF e cidade</span>
+            {% endif %}
+          </div>
+          <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#desempFiltrosExtra" aria-expanded="{{ 'true' if filtros_ativos else 'false' }}">
+            <i class="bi bi-sliders me-1"></i><span class="desemp-filter-toggle-label">{{ 'Ocultar' if filtros_ativos else 'Mostrar' }}</span>
+          </button>
+        </div>
+        <div class="collapse {% if filtros_ativos %}show{% endif %}" id="desempFiltrosExtra">
+          <div class="desemp-extra-filter-body">
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Equipe</label>
+                <select class="form-select" name="equipe">
+                  <option value="">Todas</option>
+                  <option value="INTERNO" {% if filtros.equipe == 'INTERNO' %}selected{% endif %}>Interna</option>
+                  <option value="EXTERNO" {% if filtros.equipe == 'EXTERNO' %}selected{% endif %}>Externa</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Vendedor</label>
+                <select class="form-select" name="vendedor">
+                  <option value="">Todos</option>
+                  {% for v in opcoes.vendors %}
+                    <option value="{{ v.id }}" {% if filtros.vendedor_id == v.id %}selected{% endif %}>{{ v.nome }}{% if v.tipo %} ({{ v.tipo|title }}){% endif %}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Grupo de produto</label>
+                <select class="form-select" name="grupo">
+                  <option value="">Todos</option>
+                  {% for g in opcoes.grupos %}<option value="{{ g }}" {% if filtros.grupo == g %}selected{% endif %}>{{ g }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Formato</label>
+                <select class="form-select" name="formato">
+                  <option value="">Todos</option>
+                  {% for f in opcoes.formatos %}<option value="{{ f }}" {% if filtros.formato == f %}selected{% endif %}>{{ f }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Tipo de papel</label>
+                <select class="form-select" name="papel">
+                  <option value="">Todos</option>
+                  {% for p in opcoes.papeis %}<option value="{{ p }}" {% if filtros.papel == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Estado</label>
+                <select class="form-select" name="uf" onchange="this.form.submit()">
+                  <option value="">Todos</option>
+                  {% for u in opcoes.ufs %}<option value="{{ u }}" {% if filtros.uf == u %}selected{% endif %}>{{ u }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3">
+                <label class="form-label fw-bold small mb-1">Cidade</label>
+                <select class="form-select" name="cidade">
+                  <option value="">Todas</option>
+                  {% for c in opcoes.cidades %}<option value="{{ c }}" {% if filtros.cidade == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-6 col-xl-3 d-flex align-items-end gap-2">
+                <button type="submit" class="btn btn-primary flex-grow-1"><i class="bi bi-check2 me-1"></i>Aplicar</button>
+                <a class="btn btn-light border" href="{{ url_for('desempenho', cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </form>
+    <script>
+      (function(){
+        var el = document.getElementById('desempFiltrosExtra');
+        var label = document.querySelector('.desemp-filter-toggle-label');
+        if(!el || !label) return;
+        el.addEventListener('show.bs.collapse', function(){ label.textContent = 'Ocultar'; });
+        el.addEventListener('hide.bs.collapse', function(){ label.textContent = 'Mostrar'; });
+      })();
+    </script>
+
+    <div class="dash-block dash-block--fat mb-3">
+      <div class="dash-block-head mb-3">
+        <div>
+          <div class="h5 fw-bold mb-0">Faturamento</div>
+          <div class="sub">Valor faturado no período</div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi dash-kpi--cmp">
+            <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
+            <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ format_brl(fat_cmp) }}</div>
+            <div class="kpi-meta">{{ notas_cmp }} notas</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
+            <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ format_brl(fat_ref) }}</div>
+            <div class="kpi-meta">{{ notas_ref }} notas</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill mb-2" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0"><i class="bi bi-arrow-left-right"></i> Diferença</div>
+            <div class="small text-muted mb-1">Comparação − Referência</div>
+            <div class="kpi-value {{ 'text-success' if delta_fat >= 0 else 'text-danger' }}">{{ format_brl(delta_fat) }}</div>
+            <div class="kpi-meta {{ 'text-success' if delta_fat >= 0 else 'text-danger' }}">{{ '%+.1f'|format(delta_fat_pct) }}% vs referência</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-block dash-block--fat mb-3">
+      <div class="dash-block-head mb-3">
+        <div>
+          <div class="h5 fw-bold mb-0">Quantidade faturada</div>
+          <div class="sub">Unidades vendidas no período</div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi dash-kpi--cmp">
+            <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
+            <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ '%.0f'|format(unid_cmp) }}</div>
+            <div class="kpi-meta">unidades</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
+            <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ '%.0f'|format(unid_ref) }}</div>
+            <div class="kpi-meta">unidades</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill mb-2" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0"><i class="bi bi-arrow-left-right"></i> Diferença</div>
+            <div class="small text-muted mb-1">Comparação − Referência</div>
+            <div class="kpi-value {{ 'text-success' if delta_unid >= 0 else 'text-danger' }}">{{ '%+.0f'|format(delta_unid) }}</div>
+            <div class="kpi-meta {{ 'text-success' if delta_unid >= 0 else 'text-danger' }}">{{ '%+.1f'|format(delta_unid_pct) }}% vs referência</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-block dash-block--fat mb-3">
+      <div class="dash-block-head mb-3">
+        <div>
+          <div class="h5 fw-bold mb-0">Clientes ativos</div>
+          <div class="sub">Clientes distintos com faturamento no período</div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi dash-kpi--cmp">
+            <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
+            <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ cli_cmp }}</div>
+            <div class="kpi-meta">clientes</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
+            <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ cli_ref }}</div>
+            <div class="kpi-meta">clientes</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill mb-2" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0"><i class="bi bi-arrow-left-right"></i> Diferença</div>
+            <div class="small text-muted mb-1">Comparação − Referência</div>
+            <div class="kpi-value {{ 'text-success' if delta_cli >= 0 else 'text-danger' }}">{{ '%+d'|format(delta_cli) }}</div>
+            <div class="kpi-meta {{ 'text-success' if delta_cli >= 0 else 'text-danger' }}">{{ '%+.1f'|format(delta_cli_pct) }}% vs referência</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-block dash-block--fat mb-3">
+      <div class="dash-block-head mb-3">
+        <div>
+          <div class="h5 fw-bold mb-0">Ticket médio</div>
+          <div class="sub">Valor faturado ÷ quantidade de notas</div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi dash-kpi--cmp">
+            <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
+            <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ format_brl(ticket_cmp) }}</div>
+            <div class="kpi-meta">por nota</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
+            <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
+            <div class="kpi-value">{{ format_brl(ticket_ref) }}</div>
+            <div class="kpi-meta">por nota</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="dash-pill mb-2" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0"><i class="bi bi-arrow-left-right"></i> Diferença</div>
+            <div class="small text-muted mb-1">Comparação − Referência</div>
+            <div class="kpi-value {{ 'text-success' if delta_ticket >= 0 else 'text-danger' }}">{{ format_brl(delta_ticket) }}</div>
+            <div class="kpi-meta {{ 'text-success' if delta_ticket >= 0 else 'text-danger' }}">{{ '%+.1f'|format(delta_ticket_pct) }}% vs referência</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3 desemp-charts-row align-items-stretch">
+      <div class="col-12 col-xl-7 d-flex">
+        <div class="dash-block desemp-chart-card w-100">
+          <div class="dash-block-head mb-2">
+            <div>
+              <div class="h5 fw-bold mb-0" style="color:#0e7490">Evolução do faturamento</div>
+              <div class="sub">Distribuição mensal dos períodos selecionados</div>
+            </div>
+          </div>
+          {% if chart_evol %}
+            <div class="text-center desemp-chart-body"><img src="data:image/png;base64,{{ chart_evol }}" alt="Evolução do faturamento" style="max-width:100%;height:auto"></div>
+          {% else %}
+            <div class="muted small">Sem dados para o gráfico.</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-12 col-xl-5 d-flex">
+        <div class="dash-block desemp-chart-card desemp-equipe-card w-100">
+          <div class="dash-block-head mb-3">
+            <div>
+              <div class="h5 fw-bold mb-0" style="color:#0e7490">Interno x externo</div>
+              <div class="sub">Comparativo por equipe</div>
+            </div>
+          </div>
+          <div class="equipe-cmp-list">
+            {% for eq in equipes %}
+            <div class="equipe-cmp-row">
+              <div class="equipe-cmp-head">
+                <div class="equipe-cmp-name">{{ eq.nome }}</div>
+                <div class="equipe-cmp-badge {{ 'up' if eq.pct >= 0 else 'down' }}">
+                  {{ '↗' if eq.pct >= 0 else '↘' }} {{ '%+.1f'|format(eq.pct) }}%
+                </div>
+              </div>
+              <div class="equipe-cmp-bars">
+                <div class="equipe-cmp-bar ref" style="width:{{ '%.1f'|format(eq.w_ref) }}%"></div>
+                <div class="equipe-cmp-bar cmp" style="width:{{ '%.1f'|format(eq.w_cmp) }}%"></div>
+              </div>
+              <div class="equipe-cmp-vals">
+                <span>Ref. {{ format_brl(eq.ref) }}</span>
+                <span>Comp. {{ format_brl(eq.cmp) }}</span>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash-block mb-3">
+      <div class="dash-block-head mb-3">
+        <div>
+          <div class="h5 fw-bold mb-0" style="color:#0e7490">Faturamento mensal — Interno × Externo</div>
+          <div class="sub">Cada linha é um mês. Compare os valores do time interno e externo nas colunas lado a lado.</div>
+        </div>
+        <div class="dash-pill dash-pill--fat"><i class="bi bi-people"></i> Interno × externo</div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0 fat-mes-table">
+          <thead>
+            <tr>
+              <th rowspan="2" class="fat-mes-th-mes">Mês</th>
+              <th colspan="2" class="text-center fat-mes-th-cmp">{{ label_cmp }} — Comparação</th>
+              <th colspan="2" class="text-center fat-mes-th-ref">{{ label_ref }} — Referência</th>
+              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time interno</th>
+              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time externo</th>
+              <th rowspan="2" class="text-center fat-mes-th-diff">Externo − Interno<br>na comparação (R$)</th>
+            </tr>
+            <tr>
+              <th class="text-center fat-mes-th-cmp">Interno (R$)</th>
+              <th class="text-center fat-mes-th-cmp">Externo (R$)</th>
+              <th class="text-center fat-mes-th-ref">Interno (R$)</th>
+              <th class="text-center fat-mes-th-ref">Externo (R$)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in tabela_meses %}
+            <tr>
+              <td class="fw-bold">{{ r.mes }}</td>
+              <td class="text-center">{{ format_brl(r.cmp_int) if r.cmp_int is not none else '—' }}</td>
+              <td class="text-center">{{ format_brl(r.cmp_ext) if r.cmp_ext is not none else '—' }}</td>
+              <td class="text-center">{{ format_brl(r.ref_int) if r.ref_int is not none else '—' }}</td>
+              <td class="text-center">{{ format_brl(r.ref_ext) if r.ref_ext is not none else '—' }}</td>
+              <td class="text-center">
+                {% if r.var_int is not none %}
+                  <span class="fat-mes-var {{ 'up' if r.var_int >= 0 else 'down' }}">{{ '↗' if r.var_int >= 0 else '↘' }} {{ '%.0f'|format(r.var_int) }}%</span>
+                {% else %}—{% endif %}
+              </td>
+              <td class="text-center">
+                {% if r.var_ext is not none %}
+                  <span class="fat-mes-var {{ 'up' if r.var_ext >= 0 else 'down' }}">{{ '↗' if r.var_ext >= 0 else '↘' }} {{ '%.0f'|format(r.var_ext) }}%</span>
+                {% else %}—{% endif %}
+              </td>
+              <td class="text-end {{ 'text-success' if (r.diff_ei or 0) >= 0 else 'text-danger' }}">
+                {% if r.diff_ei is not none %}{{ '%s%s'|format('+' if r.diff_ei >= 0 else '', format_brl(r.diff_ei)) }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr class="fat-mes-total">
+              <td class="fw-bold">TOTAL</td>
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_int) }}</td>
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_ext) }}</td>
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_int) }}</td>
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_ext) }}</td>
+              <td class="text-center">
+                <span class="fat-mes-var {{ 'up' if tabela_total.var_int >= 0 else 'down' }}">{{ '↗' if tabela_total.var_int >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_int) }}%</span>
+              </td>
+              <td class="text-center">
+                <span class="fat-mes-var {{ 'up' if tabela_total.var_ext >= 0 else 'down' }}">{{ '↗' if tabela_total.var_ext >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_ext) }}%</span>
+              </td>
+              <td class="text-end fw-bold {{ 'text-success' if tabela_total.diff_ei >= 0 else 'text-danger' }}">
+                {{ '%s%s'|format('+' if tabela_total.diff_ei >= 0 else '', format_brl(tabela_total.diff_ei)) }}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+        """,
+        anos=anos,
+        meses=_MESES_PT_CURTO,
+        label_ref=label_ref,
+        label_cmp=label_cmp,
+        tabela_meses=tabela_meses,
+        tabela_total=tabela_total,
+        ref_ano=ref_ano,
+        ref_mes_ini=ref_mes_ini,
+        ref_mes_fim=ref_mes_fim,
+        cmp_ano=cmp_ano,
+        cmp_mes_ini=cmp_mes_ini,
+        cmp_mes_fim=cmp_mes_fim,
+        d0_ref=d0_ref,
+        d1_ref=d1_ref,
+        d0_cmp=d0_cmp,
+        d1_cmp=d1_cmp,
+        fat_ref=fat_ref,
+        fat_cmp=fat_cmp,
+        notas_ref=notas_ref,
+        notas_cmp=notas_cmp,
+        unid_ref=unid_ref,
+        unid_cmp=unid_cmp,
+        cli_ref=cli_ref,
+        cli_cmp=cli_cmp,
+        ticket_ref=ticket_ref,
+        ticket_cmp=ticket_cmp,
+        delta_fat=delta_fat,
+        delta_fat_pct=delta_fat_pct,
+        delta_unid=delta_unid,
+        delta_unid_pct=delta_unid_pct,
+        delta_cli=delta_cli,
+        delta_cli_pct=delta_cli_pct,
+        delta_ticket=delta_ticket,
+        delta_ticket_pct=delta_ticket_pct,
+        chart_evol=chart_evol,
+        equipes=equipes,
+        filtros=filtros,
+        filtros_ativos=filtros_ativos,
+        opcoes=opcoes,
+        format_brl=format_brl,
+    )
+    return render_page("Desempenho", body, "desempenho")
+
 
 @app.route("/orcamentos_detalhe")
 @login_required
@@ -8585,10 +9694,15 @@ def importar_csv():
 
     from crm_npd.repositories.firebird.conexao import descricao_conexao, disponivel
     from crm_npd.settings import aplicar_env
+    from crm_npd.sync.fonte import usando_firebird
     aplicar_env()
-    fonte = descricao_conexao()
+    somente_sqlite = not usando_firebird()
+    fonte = "SQLite local (crm_npd.db)" if somente_sqlite else descricao_conexao()
 
     if request.method == "POST":
+        if somente_sqlite:
+            flash("Modo local: esta maquina le so o SQLite. O Sisplan nao e aberto daqui.", "warning")
+            return redirect(url_for("importar_csv"))
         if not disponivel():
             flash("Firebird indisponivel. Confira SISPLAN_HOST, SISPLAN_DATABASE e SISPLAN_PASSWORD no .env.", "danger")
             return redirect(url_for("importar_csv"))
@@ -8638,7 +9752,8 @@ def importar_csv():
           <form method="post" id="sisplanFdbForm">
             <button class="btn btn-primary px-4" {% if not ok %}disabled{% endif %}><i class="bi bi-arrow-repeat me-1"></i> Ler FDB agora</button>
           </form>
-          {% if not ok %}<div class="alert alert-warning mt-3 mb-0">Firebird indisponivel. Confira host, porta, caminho do FDB, DLL e senha no .env.</div>{% endif %}
+          {% if somente_sqlite %}<div class="alert alert-info mt-3 mb-0">Modo local: os numeros desta tela vem do SQLite copiado. O Sisplan nao e aberto daqui. No servidor continue usando run.bat.</div>
+          {% elif not ok %}<div class="alert alert-warning mt-3 mb-0">Firebird indisponivel. Confira host, porta, caminho do FDB, DLL e senha no .env.</div>{% endif %}
         </div>
       </div>
       <div class="col-12 col-xl-4">
@@ -8662,7 +9777,7 @@ def importar_csv():
       const overlay = document.getElementById('sisplanProcessing');
       if (form && overlay) form.addEventListener('submit', () => { overlay.style.display = 'flex'; });
     </script>
-    """, fonte=fonte, synced=synced, origem=origem, n_ped=n_ped, n_fat=n_fat, n_orc=n_orc, n_liq=n_liq, ok=disponivel())
+    """, fonte=fonte, synced=synced, origem=origem, n_ped=n_ped, n_fat=n_fat, n_orc=n_orc, n_liq=n_liq, ok=disponivel() and not somente_sqlite, somente_sqlite=somente_sqlite)
     return render_page("Atualizar Sisplan", body, "importar_csv")
 
 
@@ -16722,20 +17837,36 @@ def settings():
                 flash(f"Fechamento do ciclo de faturamento de {mes_post} salvo para o dia {dia_fechamento}.", "success")
                 return redirect(url_for("settings", mes_ref=mes_post))
 
-            meta_int = parse_br_money(request.form.get("meta_interno", "0"))
-            meta_ext = parse_br_money(request.form.get("meta_externo", "0"))
-            set_goal_history(conn, mes_post, "EQUIPE_INTERNA", meta_int)
-            set_goal_history(conn, mes_post, "EQUIPE_EXTERNO", meta_ext)
+            if acao == "salvar_metas_faturamento":
+                set_meta_equipe(
+                    conn,
+                    mes_post,
+                    "faturamento",
+                    parse_br_money(request.form.get("meta_fat_interno", "0")),
+                    parse_br_money(request.form.get("meta_fat_externo", "0")),
+                )
+                conn.commit()
+                flash(f"Metas de faturamento de {mes_post} atualizadas.", "success")
+                return redirect(url_for("settings", mes_ref=mes_post))
+
+            # salvar_metas_pedidos (padrao) e legado salvar_metas
+            set_meta_equipe(
+                conn,
+                mes_post,
+                "pedidos",
+                parse_br_money(request.form.get("meta_ped_interno", request.form.get("meta_interno", "0"))),
+                parse_br_money(request.form.get("meta_ped_externo", request.form.get("meta_externo", "0"))),
+            )
             conn.commit()
         
-        flash(f"Metas de {mes_post} atualizadas.", "success")
+        flash(f"Metas de pedidos de {mes_post} atualizadas.", "success")
         return redirect(url_for("settings", mes_ref=mes_post))
 
     with conectar() as conn:
         ensure_goals_table(conn)
         ensure_ciclos_faturamento_table(conn)
-        val_int = get_goal_history(conn, mes_ref, "EQUIPE_INTERNA")
-        val_ext = get_goal_history(conn, mes_ref, "EQUIPE_EXTERNO")
+        ped_int, ped_ext = get_meta_equipe(conn, mes_ref, "pedidos")
+        fat_int, fat_ext = get_meta_equipe(conn, mes_ref, "faturamento")
         dia_fechamento = get_dia_fechamento_faturamento(conn, mes_ref, default=24)
 
     try:
@@ -16745,34 +17876,52 @@ def settings():
     d0_fat, d1_fat = periodo_ciclo_faturamento_manual(ref_dt)
 
     body = render_template_string(r"""
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+      <div>
+        <div class="h3 mb-0">Configurações</div>
+        <div class="text-muted small">Metas e ciclo de faturamento por mês de referência.</div>
+      </div>
+      <form method="get" class="d-flex align-items-center">
+        <input type="month" name="mes_ref" class="form-control form-control-sm fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()">
+      </form>
+    </div>
     <div class="row justify-content-center g-4">
-      <div class="col-12 col-lg-7">
+      <div class="col-12 col-lg-7 d-flex flex-column gap-4">
         <div class="cardx p-4">
-          <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-              <div>
-                <div class="h4 mb-0">Configurar Metas</div>
-                <div class="text-muted small">Metas comerciais por mês de referência.</div>
-              </div>
-              <form method="get" class="d-flex align-items-center">
-                  <input type="month" name="mes_ref" class="form-control form-control-sm fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()">
-              </form>
-          </div>
-          <p class="text-muted small">Defina as metas para o mês selecionado acima ({{ mes_ref }}).</p>
+          <div class="h4 mb-1">Configurar Metas Pedidos</div>
+          <div class="text-muted small mb-3">Meta comercial de pedidos para {{ mes_ref }} (Interna e Externa).</div>
           <form method="post">
-            <input type="hidden" name="acao" value="salvar_metas">
+            <input type="hidden" name="acao" value="salvar_metas_pedidos">
             <input type="hidden" name="mes_ref" value="{{ mes_ref }}">
             <div class="mb-3">
               <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
-              <input class="form-control form-control-lg" name="meta_interno" value="{{ format_brl(val_int) }}">
+              <input class="form-control form-control-lg" name="meta_ped_interno" value="{{ format_brl(ped_int) }}">
             </div>
             <div class="mb-4">
               <label class="form-label fw-bold text-success">Meta Equipe EXTERNA (R$)</label>
-              <input class="form-control form-control-lg" name="meta_externo" value="{{ format_brl(val_ext) }}">
+              <input class="form-control form-control-lg" name="meta_ped_externo" value="{{ format_brl(ped_ext) }}">
             </div>
             <div class="d-flex gap-2 flex-wrap">
-              <button class="btn btn-primary">Salvar Metas</button>
+              <button class="btn btn-primary">Salvar Metas Pedidos</button>
               <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Voltar</a>
             </div>
+          </form>
+        </div>
+        <div class="cardx p-4">
+          <div class="h4 mb-1">Configurar Metas Faturamento</div>
+          <div class="text-muted small mb-3">Meta comercial de faturamento para {{ mes_ref }} (Interna e Externa).</div>
+          <form method="post">
+            <input type="hidden" name="acao" value="salvar_metas_faturamento">
+            <input type="hidden" name="mes_ref" value="{{ mes_ref }}">
+            <div class="mb-3">
+              <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
+              <input class="form-control form-control-lg" name="meta_fat_interno" value="{{ format_brl(fat_int) }}">
+            </div>
+            <div class="mb-4">
+              <label class="form-label fw-bold text-success">Meta Equipe EXTERNA (R$)</label>
+              <input class="form-control form-control-lg" name="meta_fat_externo" value="{{ format_brl(fat_ext) }}">
+            </div>
+            <button class="btn btn-primary">Salvar Metas Faturamento</button>
           </form>
         </div>
       </div>
@@ -16803,8 +17952,8 @@ def settings():
         </div>
       </div>
     </div>
-    """, mes_ref=mes_ref, val_int=val_int, val_ext=val_ext, format_brl=format_brl,
-         dia_fechamento=dia_fechamento, d0_fat=d0_fat, d1_fat=d1_fat)
+    """, mes_ref=mes_ref, ped_int=ped_int, ped_ext=ped_ext, fat_int=fat_int, fat_ext=fat_ext,
+         format_brl=format_brl, dia_fechamento=dia_fechamento, d0_fat=d0_fat, d1_fat=d1_fat)
     return render_page("Configurações", body, "dashboard")
 
 @app.route("/importar_orcamentos", methods=["POST"])

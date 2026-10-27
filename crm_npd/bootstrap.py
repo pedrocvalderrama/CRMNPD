@@ -34,8 +34,12 @@ def create_app():
     refresh_runtime_version(legacy)
     try:
         from crm_npd.sync.cdc import iniciar_cdc_em_background
+        from crm_npd.sync.fonte import usando_firebird
 
-        iniciar_cdc_em_background()
+        if usando_firebird():
+            iniciar_cdc_em_background()
+        else:
+            logger.info("modo local: somente SQLite; ouvinte CDC desligado")
     except Exception:
         logger.exception("nao foi possivel iniciar o ouvinte CDC do Sisplan")
     return legacy.app
@@ -45,11 +49,16 @@ def _primeira_carga_fdb(legacy, conn) -> None:
     """Recarrega o FDB se a base for antiga, de outro alvo, ou ainda nao for Firebird.
 
     A copia local de ontem nao serve no servidor: o ouvinte so le log novo.
+    Com CRM_NPD_FONTE=sqlite (run_local.bat) nao abre o Sisplan.
     """
     from crm_npd.repositories.firebird.conexao import descricao_conexao, disponivel
     from crm_npd.sync.cdc import deve_recarregar_na_subida
     from crm_npd.sync.etl import sincronizar_crm
+    from crm_npd.sync.fonte import usando_firebird
 
+    if not usando_firebird():
+        logger.info("modo local: somente SQLite; Sisplan nao sera lido")
+        return
     if not disponivel():
         logger.error("Sisplan indisponivel; configure host/porta/FDB no .env conforme o manual de acesso.")
         return
