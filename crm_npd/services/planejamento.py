@@ -179,7 +179,11 @@ def _avg_purchase_gap(dates: List[date]) -> Optional[float]:
 
 def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, scope: str,
                             growth: Optional[float] = None, scenario_band: Optional[float] = None,
-                            waste_pct: Optional[float] = None, selected_months: Optional[List[int]] = None) -> Dict[str, Any]:
+                            waste_pct: Optional[float] = None, selected_months: Optional[List[int]] = None,
+                            conservative_growth_pct: Optional[float] = None,
+                            probable_growth_pct: Optional[float] = None,
+                            optimistic_growth_pct: Optional[float] = None,
+                            vendor_id: Optional[int] = None) -> Dict[str, Any]:
     """Fonte única para tela e Excel de planejamento.
 
     Trimestre/semestre tratam a janela inteira como sazonalidade: um cliente que comprou
@@ -198,6 +202,16 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
     waste_pct = max(0.0, min(30.0, float(system_waste)))
     waste_factor = 1.0 + waste_pct/100.0
     scope_sql = _analysis_scope_sql(scope, "v")
+    try:
+        vendor_id = int(vendor_id) if vendor_id not in (None, "", 0, "0") else None
+    except Exception:
+        vendor_id = None
+    vendor_sql = "v.id=?" if vendor_id else "1=1"
+    vendor_params: Tuple[Any, ...] = (vendor_id,) if vendor_id else ()
+    vendor_name = None
+    if vendor_id:
+        vrow = conn.execute("SELECT nome FROM vendors WHERE id=?", (vendor_id,)).fetchone()
+        vendor_name = (vrow[0] if vrow else None) or None
     selected_months = sorted({int(m) for m in (selected_months or []) if 1 <= int(m) <= 12})
     if selected_months:
         qmarks = ",".join("?" for _ in selected_months)
@@ -224,9 +238,9 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
                CASE WHEN COALESCE(UPPER(TRIM(v.nome)),'')='SITE' OR COALESCE(UPPER(TRIM(v.tipo)),'')='SITE' THEN 'SITE' ELSE COALESCE(UPPER(TRIM(v.tipo)),'EXTERNO') END time,
                COALESCE(o.grupo_ref,'') grupo, COALESCE(o.medida_ref,'') medida, COALESCE(o.papel_ref,'') papel
         FROM orders o LEFT JOIN customers c ON c.id=o.cliente_id LEFT JOIN vendors v ON v.id=o.vendor_id
-        WHERE {ord_cond} AND {scope_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
+        WHERE {ord_cond} AND {scope_sql} AND {vendor_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
         ORDER BY ano,data,pedido
-    """, ord_params).fetchall()]
+    """, ord_params + vendor_params).fetchall()]
 
     invoices = [dict(r) for r in conn.execute(f"""
         SELECT CAST(strftime('%Y',i.data_emissao) AS INTEGER) ano,
@@ -241,9 +255,9 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
                COALESCE(NULLIF(TRIM(v.nome),''),'—') vendedor,
                CASE WHEN COALESCE(UPPER(TRIM(v.nome)),'')='SITE' OR COALESCE(UPPER(TRIM(v.tipo)),'')='SITE' THEN 'SITE' ELSE COALESCE(UPPER(TRIM(v.tipo)),'EXTERNO') END time
         FROM invoices i LEFT JOIN customers c ON c.id=i.cliente_id LEFT JOIN vendors v ON v.id=i.vendor_id
-        WHERE i.data_emissao IS NOT NULL AND {inv_cond} AND {scope_sql}
+        WHERE i.data_emissao IS NOT NULL AND {inv_cond} AND {scope_sql} AND {vendor_sql}
         ORDER BY ano,data,nf
-    """, inv_params).fetchall()]
+    """, inv_params + vendor_params).fetchall()]
 
     # Histórico completo para frequência / próxima recompra.
     freq_rows = [dict(r) for r in conn.execute(f"""
@@ -251,9 +265,9 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
                COALESCE(NULLIF(TRIM(c.rede_key),''), CASE WHEN c.id IS NOT NULL THEN 'CID:'||c.id ELSE 'NOME:'||UPPER(TRIM(COALESCE(o.cliente_nome_ref,''))) END) cliente_key,
                COALESCE(NULLIF(TRIM(c.rede_nome),''),NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(o.cliente_nome_ref),''),'—') cliente_nome
         FROM orders o LEFT JOIN customers c ON c.id=o.cliente_id LEFT JOIN vendors v ON v.id=o.vendor_id
-        WHERE o.data_emissao IS NOT NULL AND {scope_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
+        WHERE o.data_emissao IS NOT NULL AND {scope_sql} AND {vendor_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
         ORDER BY date(o.data_emissao)
-    """).fetchall()]
+    """, vendor_params).fetchall()]
 
     db_years = [int(r[0]) for r in conn.execute("SELECT DISTINCT CAST(strftime('%Y',data_emissao) AS INTEGER) y FROM orders WHERE data_emissao IS NOT NULL ORDER BY y").fetchall() if r[0]]
 
@@ -309,6 +323,12 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
     probable_growth=max(-0.30,min(0.35,probable_growth))
     conservative_growth=max(-0.40,probable_growth-spread)
     optimistic_growth=min(0.50,probable_growth+spread)
+    if probable_growth_pct is not None:
+        probable_growth = float(probable_growth_pct) / 100.0
+    if conservative_growth_pct is not None:
+        conservative_growth = float(conservative_growth_pct) / 100.0
+    if optimistic_growth_pct is not None:
+        optimistic_growth = float(optimistic_growth_pct) / 100.0
     growth=probable_growth*100.0
     scenario_band=spread*100.0
     growth_factor=1.0+probable_growth
@@ -473,6 +493,10 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
             _k,meta=_legacy()._performance_resolve_orc_vendor(vendors,bycode,o.get('vendedor_id'),o.get('vendedor_nome'))
             tm=str(meta.get('tipo') or '').upper()
             if scope in {'INTERNO','EXTERNO','SITE'} and tm!=scope: continue
+            if vendor_id:
+                try: mid=int(meta.get('id') or 0)
+                except Exception: mid=0
+                if mid!=vendor_id: continue
             if str(o.get('pedido_id') or '').strip() not in {'','0'}: continue
             desc=_legacy().norm(o.get('desc_status') or o.get('status') or '')
             if any(x in desc for x in ['CANCEL','PERD','REPROV']): continue
@@ -489,6 +513,7 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
     min_db_year=min(db_years) if db_years else target_year-5; max_db_year=max(db_years) if db_years else target_year
     return {
         'periodo':periodo,'period_name':period_name,'anchor':anchor,'target_year':target_year,'scope':scope,'selected_months':selected_months,
+        'vendor_id':vendor_id,'vendor_name':vendor_name,
         'growth':growth,'scenario_band':scenario_band,'waste_pct':waste_pct,'source_years':source_years,
         'source_text':' / '.join(map(str,source_years)) if source_years else 'sem histórico anterior suficiente',
         'baseline_value':baseline_value,'forecast_value':forecast_value,'forecast_qty':forecast_qty,'forecast_orders':forecast_orders,'forecast_clients':forecast_clients,

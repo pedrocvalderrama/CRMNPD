@@ -736,8 +736,14 @@ def registrar_rotas(m) -> None:
         if relatorio in {"historico", "planejamento", "consumo"}:
             try: target_year=int(request.args.get("ano") or request.args.get("ano_filtro") or ref.year)
             except Exception: target_year=ref.year
+            vendor_id_export=None
+            try:
+                raw_v=str(request.args.get("vendedor") or "").strip()
+                vendor_id_export=int(raw_v) if raw_v else None
+            except Exception:
+                vendor_id_export=None
             with conectar() as conn:
-                a=_planning_analysis_data(conn,periodo,ref,target_year,scope,selected_months=selected_months)
+                a=_planning_analysis_data(conn,periodo,ref,target_year,scope,selected_months=selected_months,vendor_id=vendor_id_export)
             comp=[[r['year'],r['orders'],r['clients'],r['qty'],r['value'],(r['variation']/100.0 if r['variation'] is not None else None)] for r in sorted(a['year_rows'],key=lambda x:x['year'])]
             expected_rows=[[c['name'],", ".join(map(str,c['years'])),c['recurrence'],c['likely_month_name'],c['projected'],c['target_value'],c['gap'],c['status'],c['frequency'],c['last_purchase'].isoformat() if c['last_purchase'] else '',c['next_purchase'].isoformat() if c['next_purchase'] else ''] for c in a['expected_clients']]
             risk_rows=[[c['name'],c['projected'],c['target_value'],c['gap'],c['status'],c['likely_month_name'],c['frequency']] for c in a['expected_clients'] if c['gap']>0]
@@ -783,7 +789,7 @@ def registrar_rotas(m) -> None:
                 for x in a['top_measures']: consumo_rows.append(["Top medida",x['name'],x['qty'],x['kg'],x['kg']/1000.0 if x['kg'] else 0,x['pct']/100.0])
                 sheets=[{"name":"Consumo","title":"Plano de consumo projetado","headers":["Tipo","Item","Quantidade (un.)","Kg","Toneladas","Participação"],"rows":consumo_rows}]
             metadata=[
-                ("Relatório","Consumo projetado de papel" if relatorio=="consumo" else "Planejamento gerencial"),("Recorte",a['period_name']),("Ano-alvo",target_year),("Time",_analysis_scope_label(scope)),
+                ("Relatório","Consumo projetado de papel" if relatorio=="consumo" else "Planejamento gerencial"),("Recorte",a['period_name']),("Ano-alvo",target_year),("Time",_analysis_scope_label(scope)),("Vendedor",a.get('vendor_name') or "Todos"),
                 ("Realizado",a['actual_target_value']),("Conservador",a['scenarios']['conservative']),("Forecast provável",a['forecast_value']),("Otimista",a['scenarios']['optimistic']),
                 ("Gap potencial",a['revenue_risk']),("Papel projetado kg",a['total_paper_kg']),("Cobertura consumo",f"{a['paper_coverage']:.1f}%"),("Gerado em",datetime.now().strftime('%d/%m/%Y %H:%M'))
             ]
@@ -821,40 +827,120 @@ def registrar_rotas(m) -> None:
         else: anchor=default_target
         try: target_year=int(request.args.get("ano") or anchor.year)
         except Exception: target_year=anchor.year
-        growth = None
-        band = None
-        waste = None
+        def _parse_optional_pct(raw):
+            if raw is None:
+                return None
+            txt = str(raw).strip().replace("%", "").replace(" ", "")
+            if not txt:
+                return None
+            txt = txt.replace(",", ".")
+            try:
+                return float(txt)
+            except Exception:
+                return None
+        tx_cons = _parse_optional_pct(request.args.get("tx_cons"))
+        tx_prov = _parse_optional_pct(request.args.get("tx_prov"))
+        tx_otim = _parse_optional_pct(request.args.get("tx_otim"))
         scope=(request.args.get("escopo") or "TOTAL").strip().upper()
         if scope not in {"TOTAL","INTERNO","EXTERNO","SITE"}: scope="TOTAL"
+        vendor_id=None
+        try:
+            raw_v=str(request.args.get("vendedor") or "").strip()
+            vendor_id=int(raw_v) if raw_v else None
+        except Exception:
+            vendor_id=None
         with conectar() as conn:
-            a=_planning_analysis_data(conn,periodo,anchor,target_year,scope,selected_months=selected_months)
-        chart_rows=sorted(a['year_rows'],key=lambda x:x['year'])
-        sales_chart=bar_chart([str(x['year']) for x in chart_rows],[x['value'] for x in chart_rows],f"{a['period_name']} · histórico de pedidos") if chart_rows else None
+            vendor_sql_select="""
+                SELECT id, nome,
+                       CASE WHEN COALESCE(UPPER(TRIM(nome)),'')='SITE' OR COALESCE(UPPER(TRIM(tipo)),'')='SITE' THEN 'SITE'
+                            ELSE COALESCE(UPPER(TRIM(tipo)),'EXTERNO') END AS tipo
+                FROM vendors
+            """
+            vendor_options=[dict(r) for r in conn.execute(vendor_sql_select + " WHERE COALESCE(ativo,1)=1 AND COALESCE(TRIM(nome),'')<>'' ORDER BY nome").fetchall()]
+            if vendor_id and not any(int(v["id"])==int(vendor_id) for v in vendor_options):
+                extra=conn.execute(vendor_sql_select + " WHERE id=?", (vendor_id,)).fetchone()
+                if extra:
+                    vendor_options.append(dict(extra))
+                    vendor_options.sort(key=lambda x: str(x.get("nome") or "").upper())
+            a=_planning_analysis_data(
+                conn, periodo, anchor, target_year, scope,
+                selected_months=selected_months,
+                conservative_growth_pct=tx_cons,
+                probable_growth_pct=tx_prov,
+                optimistic_growth_pct=tx_otim,
+                vendor_id=vendor_id,
+            )
+        vendor_name=a.get("vendor_name") or ""
+        if vendor_id and not vendor_name:
+            for v in vendor_options:
+                if int(v["id"])==vendor_id:
+                    vendor_name=v.get("nome") or ""
+                    break
+        ano_hoje = date.today().year
+        chart_rows=sorted(
+            [x for x in a['year_rows'] if 1990 <= int(x.get('year') or 0) <= ano_hoje + 1],
+            key=lambda x: x['year'],
+        )
+        sales_chart=bar_chart(
+            [str(x['year']) for x in chart_rows],
+            [x['value'] for x in chart_rows],
+            f"{a['period_name']} · histórico de pedidos",
+            orientation="vertical",
+        ) if chart_rows else None
         year_options=list(range(max(a['max_db_year']+2,target_year+1),a['min_db_year']-1,-1))
-        export_url=url_for('relatorios_exportar',relatorio='planejamento',periodo=periodo,data_base=anchor.isoformat(),ano=target_year,ano_filtro=target_year,meses=','.join(map(str,selected_months)),escopo=scope,conteudo='AMBOS')
+        export_url=url_for('relatorios_exportar',relatorio='planejamento',periodo=periodo,data_base=anchor.isoformat(),ano=target_year,ano_filtro=target_year,meses=','.join(map(str,selected_months)),escopo=scope,conteudo='AMBOS',vendedor=vendor_id or '')
+        clear_filters_url=url_for('analise_historica', ano=today.year, mes=today.month)
         body=render_template_string(r"""
         <div class="page-hero mb-4"><div class="d-flex justify-content-between align-items-start flex-wrap gap-3"><div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Planejamento comercial, financeiro e produção</div><div class="hero-title">Análise Histórica & Forecast</div><div class="hero-sub mt-1">Sazonalidade por mês, trimestre ou semestre sem perder clientes que deslocam a compra dentro da janela. Forecast de vendas, risco e consumo de papel em kg.</div></div><span class="chip"><i class="bi bi-database-check"></i> Histórico desde {{ a.min_db_year }}</span></div></div>
 
-        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4"><div class="small text-muted"><i class="bi bi-calendar3 me-1"></i>{{ a.period_name }} · {{ target_year }} · {{ scope_label }}</div><div class="d-flex gap-2"><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#analysisFilters"><i class="bi bi-funnel me-1"></i>Filtros</button><a class="btn btn-success" href="{{ export_url }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a><a class="btn btn-outline-primary" href="{{ url_for('relatorios') }}" title="Central de relatórios"><i class="bi bi-file-earmark-spreadsheet"></i></a></div></div>
-        <div class="collapse mb-4" id="analysisFilters"><form class="cardx p-4" method="get"><input type="hidden" name="periodo" value="meses"><div class="row g-3">
-          <div class="col-12 col-lg-3"><label class="form-label fw-bold">Ano-alvo</label><select class="form-select" name="ano">{% for y in year_options %}<option value="{{ y }}" {% if y==target_year %}selected{% endif %}>{{ y }}</option>{% endfor %}</select></div>
-          <div class="col-12 col-lg-3"><label class="form-label fw-bold">Time</label><select class="form-select" name="escopo"><option value="TOTAL" {% if scope=='TOTAL' %}selected{% endif %}>Empresa inteira</option><option value="INTERNO" {% if scope=='INTERNO' %}selected{% endif %}>Interno</option><option value="EXTERNO" {% if scope=='EXTERNO' %}selected{% endif %}>Externo</option><option value="SITE" {% if scope=='SITE' %}selected{% endif %}>Site</option></select></div>
-          <div class="col-12 col-lg-6"><label class="form-label fw-bold">Atalhos</label><div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([1,2,3])">1º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([4,5,6])">2º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([7,8,9])">3º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([10,11,12])">4º tri</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([1,2,3,4,5,6])">1º semestre</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([7,8,9,10,11,12])">2º semestre</button><button type="button" class="btn btn-sm btn-light border" onclick="analysisMonths([1,2,3,4,5,6,7,8,9,10,11,12])">Ano todo</button></div></div>
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4"><div class="small text-muted"><i class="bi bi-calendar3 me-1"></i>{{ a.period_name }} · {{ target_year }} · {{ scope_label }}{% if vendor_name %} · {{ vendor_name }}{% endif %}</div><div class="d-flex gap-2"><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#analysisFilters"><i class="bi bi-funnel me-1"></i>Filtros</button><a class="btn btn-success" href="{{ export_url }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a><a class="btn btn-outline-primary" href="{{ url_for('relatorios') }}" title="Central de relatórios"><i class="bi bi-file-earmark-spreadsheet"></i></a></div></div>
+        <div class="collapse mb-4 {% if scope!='TOTAL' or vendor_id %}show{% endif %}" id="analysisFilters"><form class="cardx p-4" method="get"><input type="hidden" name="periodo" value="meses"><div class="row g-3">
+          <div class="col-12 col-md-4"><label class="form-label fw-bold">Ano-alvo</label><select class="form-select" name="ano">{% for y in year_options %}<option value="{{ y }}" {% if y==target_year %}selected{% endif %}>{{ y }}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-4"><label class="form-label fw-bold">Time</label><select class="form-select" name="escopo" id="analysisScope"><option value="TOTAL" {% if scope=='TOTAL' %}selected{% endif %}>Empresa inteira</option><option value="INTERNO" {% if scope=='INTERNO' %}selected{% endif %}>Interno</option><option value="EXTERNO" {% if scope=='EXTERNO' %}selected{% endif %}>Externo</option><option value="SITE" {% if scope=='SITE' %}selected{% endif %}>Site</option></select></div>
+          <div class="col-12 col-md-4"><label class="form-label fw-bold">Vendedor</label><select class="form-select" name="vendedor" id="analysisVendor"><option value="">Todos</option>{% for v in vendor_options %}<option value="{{ v.id }}" data-tipo="{{ v.tipo }}" {% if vendor_id==v.id %}selected{% endif %}>{{ v.nome }}</option>{% endfor %}</select></div>
+          <div class="col-12"><label class="form-label fw-bold">Atalhos</label><div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([1,2,3])">1º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([4,5,6])">2º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([7,8,9])">3º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([10,11,12])">4º tri</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([1,2,3,4,5,6])">1º semestre</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([7,8,9,10,11,12])">2º semestre</button><button type="button" class="btn btn-sm btn-light border" onclick="analysisMonths([1,2,3,4,5,6,7,8,9,10,11,12])">Ano todo</button></div></div>
           <div class="col-12"><label class="form-label fw-bold">Meses que entram na comparação</label><div class="border rounded-3 p-3 bg-light"><div class="row g-2">{% for m,n in months_pt %}<div class="col-4 col-md-2"><label class="form-check d-flex align-items-center gap-2 mb-0"><input class="form-check-input analysis-month" type="checkbox" name="mes" value="{{ m }}" {% if m in selected_months %}checked{% elif not selected_months and m==anchor.month %}checked{% endif %}><span>{{ n[:3] }}</span></label></div>{% endfor %}</div></div><div class="form-text">Você pode marcar qualquer combinação: por exemplo Out + Nov + Dez, ou Jan + Mar + Jul.</div></div>
-          <div class="col-12 d-flex justify-content-end gap-2"><button class="btn btn-primary"><i class="bi bi-check2 me-1"></i>Aplicar filtros</button></div>
+          <div class="col-12 d-flex justify-content-end gap-2"><a class="btn btn-light border" href="{{ clear_filters_url }}"><i class="bi bi-x-circle me-1"></i>Limpar filtros</a><button class="btn btn-primary"><i class="bi bi-check2 me-1"></i>Aplicar filtros</button></div>
+          {% if tx_cons is not none %}<input type="hidden" name="tx_cons" value="{{ '%.1f'|format(tx_cons) }}">{% endif %}
+          {% if tx_prov is not none %}<input type="hidden" name="tx_prov" value="{{ '%.1f'|format(tx_prov) }}">{% endif %}
+          {% if tx_otim is not none %}<input type="hidden" name="tx_otim" value="{{ '%.1f'|format(tx_otim) }}">{% endif %}
         </div></form></div>
-        <script>function analysisMonths(list){const wanted=new Set(list.map(Number));document.querySelectorAll('.analysis-month').forEach(cb=>cb.checked=wanted.has(Number(cb.value)));}</script>
+        <script>
+        function analysisMonths(list){const wanted=new Set(list.map(Number));document.querySelectorAll('.analysis-month').forEach(cb=>cb.checked=wanted.has(Number(cb.value)));}
+        function analysisFilterVendors(clearHidden){
+          const team=(document.getElementById('analysisScope')||{}).value||'TOTAL';
+          const sel=document.getElementById('analysisVendor');
+          if(!sel) return;
+          sel.querySelectorAll('option[data-tipo]').forEach(opt=>{
+            const tipo=(opt.getAttribute('data-tipo')||'').toUpperCase();
+            const nome=(opt.textContent||'').trim().toUpperCase();
+            const isSite=tipo==='SITE'||nome==='SITE';
+            let show=true;
+            if(team==='INTERNO') show=tipo==='INTERNO'&&!isSite;
+            else if(team==='EXTERNO') show=tipo==='EXTERNO'&&!isSite;
+            else if(team==='SITE') show=isSite;
+            opt.hidden=!show;
+            if(clearHidden && !show && opt.selected){ opt.selected=false; sel.value=''; }
+          });
+        }
+        const scopeEl=document.getElementById('analysisScope');
+        if(scopeEl) scopeEl.addEventListener('change', function(){ analysisFilterVendors(true); });
+        analysisFilterVendors(false);
+        </script>
 
-        <div class="section-heading"><div><h2>{{ a.period_name|capitalize }} · alvo {{ target_year }} · {{ scope_label }}</h2><p>Base ponderada {{ a.source_text }}. No trimestre/semestre, a recorrência considera a janela inteira — o cliente pode trocar outubro por novembro e continuar previsto.</p></div></div>
+        <div class="section-heading"><div><h2>{{ a.period_name|capitalize }} · alvo {{ target_year }} · {{ scope_label }}{% if vendor_name %} · {{ vendor_name }}{% endif %}</h2><p>Base ponderada {{ a.source_text }}. No trimestre/semestre, a recorrência considera a janela inteira — o cliente pode trocar outubro por novembro e continuar previsto.</p></div></div>
 
-        <div class="row g-3 mb-4">
-          <div class="col-6 col-xl-2"><div class="stat-card h-100"><div class="stat-label">Realizado</div><div class="stat-value">{{ format_brl(a.actual_target_value) }}</div><div class="stat-sub">ano-alvo no recorte</div></div></div>
-          <div class="col-6 col-xl-2"><div class="stat-card h-100"><div class="stat-label">Conservador</div><div class="stat-value">{{ format_brl(a.scenarios.conservative) }}</div><div class="stat-sub">tendência {{ '%+.1f'|format(a.scenarios.conservative_growth) }}%</div></div></div>
-          <div class="col-6 col-xl-2"><div class="stat-card h-100"><div class="stat-label">Provável</div><div class="stat-value">{{ format_brl(a.scenarios.probable) }}</div><div class="stat-sub">tendência {{ '%+.1f'|format(a.scenarios.probable_growth) }}%</div></div></div>
-          <div class="col-6 col-xl-2"><div class="stat-card h-100"><div class="stat-label">Otimista</div><div class="stat-value">{{ format_brl(a.scenarios.optimistic) }}</div><div class="stat-sub">tendência {{ '%+.1f'|format(a.scenarios.optimistic_growth) }}%</div></div></div>
-          <div class="col-6 col-xl-2"><div class="stat-card h-100"><div class="stat-label">Gap em risco</div><div class="stat-value">{{ format_brl(a.revenue_risk) }}</div><div class="stat-sub">{{ a.pending_clients }} clientes para atacar</div></div></div>
-          <div class="col-6 col-xl-2"><button type="button" class="stat-card h-100 w-100 text-start border-0" data-bs-toggle="modal" data-bs-target="#paperBreakdownModal" style="cursor:pointer"><div class="stat-label">Papel previsto <i class="bi bi-box-arrow-up-right ms-1"></i></div><div class="stat-value">{{ format_num_br(a.total_paper_kg,0) }} kg</div><div class="stat-sub">{{ format_num_br(a.total_paper_kg/1000,2) }} t · clique para ver por gramatura</div></button></div>
-        </div>
+        <form method="get" class="row g-3 mb-4">
+          <input type="hidden" name="periodo" value="meses">
+          <input type="hidden" name="ano" value="{{ target_year }}">
+          <input type="hidden" name="escopo" value="{{ scope }}">
+          {% if vendor_id %}<input type="hidden" name="vendedor" value="{{ vendor_id }}">{% endif %}
+          {% if selected_months %}{% for m in selected_months %}<input type="hidden" name="mes" value="{{ m }}">{% endfor %}{% else %}<input type="hidden" name="mes" value="{{ anchor.month }}">{% endif %}
+          <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Realizado</div><div class="stat-value">{{ format_brl(a.actual_target_value) }}</div><div class="stat-sub">ano-alvo no recorte</div></div></div>
+          <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Conservador</div><div class="stat-value">{{ format_brl(a.scenarios.conservative) }}</div><div class="stat-sub d-flex align-items-center gap-1 mt-2"><span>tendência</span><input type="text" name="tx_cons" class="form-control form-control-sm fw-bold" value="{{ '%.1f'|format(a.scenarios.conservative_growth) }}" inputmode="decimal" style="width:72px" onchange="this.form.submit()"><span>%</span><button class="btn btn-sm btn-light border" title="Aplicar">OK</button></div></div></div>
+          <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Provável</div><div class="stat-value">{{ format_brl(a.scenarios.probable) }}</div><div class="stat-sub d-flex align-items-center gap-1 mt-2"><span>tendência</span><input type="text" name="tx_prov" class="form-control form-control-sm fw-bold" value="{{ '%.1f'|format(a.scenarios.probable_growth) }}" inputmode="decimal" style="width:72px" onchange="this.form.submit()"><span>%</span><button class="btn btn-sm btn-light border" title="Aplicar">OK</button></div></div></div>
+          <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Otimista</div><div class="stat-value">{{ format_brl(a.scenarios.optimistic) }}</div><div class="stat-sub d-flex align-items-center gap-1 mt-2"><span>tendência</span><input type="text" name="tx_otim" class="form-control form-control-sm fw-bold" value="{{ '%.1f'|format(a.scenarios.optimistic_growth) }}" inputmode="decimal" style="width:72px" onchange="this.form.submit()"><span>%</span><button class="btn btn-sm btn-light border" title="Aplicar">OK</button></div></div></div>
+        </form>
 
         <div class="row g-4 mb-4">
           <div class="col-12 col-xl-7"><div class="cardx p-4 h-100"><div class="section-title">Histórico do mesmo {{ periodo_label }}</div><div class="section-sub mb-3">O valor anual compara janelas equivalentes. O detalhamento mensal abaixo mostra onde a venda tende a cair dentro do trimestre/semestre.</div>{% if sales_chart %}<div class="chart-frame"><img class="chart-img" src="data:image/png;base64,{{ sales_chart }}"></div>{% endif %}</div></div>
@@ -868,10 +954,10 @@ def registrar_rotas(m) -> None:
 
         <div class="row g-4 mb-4"><div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="section-title mb-3">Mix previsto de produto</div>{% for r in a.fam_proj %}<div class="mb-3"><div class="d-flex justify-content-between"><b>{{ r.name }}</b><span>{{ format_num_br(r.qty,0) }} un. · {{ '%.1f'|format(r.pct) }}%</span></div><div class="progress mt-1" style="height:7px"><div class="progress-bar" style="width:{{ r.pct }}%"></div></div></div>{% endfor %}</div></div><div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="section-title mb-1">Top 5 medidas mais consumidas</div><div class="section-sub mb-3">Quantidade prevista em unidades na mesma janela sazonal.</div>{% for r in a.top_measures %}<div class="mb-3"><div class="d-flex justify-content-between gap-3"><b>{{ r.name }}</b><span class="text-end">{{ format_num_br(r.qty,0) }} un. · {{ '%.1f'|format(r.pct) }}%{% if r.kg>0 %}<br><small class="text-muted">≈ {{ format_num_br(r.kg,0) }} kg</small>{% endif %}</span></div><div class="progress mt-1" style="height:7px"><div class="progress-bar bg-info" style="width:{{ r.pct }}%"></div></div></div>{% else %}<div class="text-muted">Sem medidas suficientes no histórico-base.</div>{% endfor %}</div></div></div>
 
-        <div class="modal fade" id="paperBreakdownModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Papel previsto por gramatura</h5><div class="small text-muted">Consumo físico estimado para {{ a.period_name }} · {{ target_year }}</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Gramatura</th><th class="text-end">Kg previstos</th><th class="text-end">Toneladas</th><th class="text-end">% do total</th></tr></thead><tbody>{% for r in a.paper_consumption %}<tr><td class="fw-bold">{{ r.gram }}</td><td class="text-end fw-bold">{{ format_num_br(r.kg,0) }} kg</td><td class="text-end">{{ format_num_br(r.ton,3) }} t</td><td class="text-end">{{ '%.1f'|format(r.pct) }}%</td></tr>{% else %}<tr><td colspan="4" class="text-center text-muted py-4">Sem medida e gramatura suficientes para calcular o consumo.</td></tr>{% endfor %}</tbody><tfoot><tr class="fw-bold"><td>Total</td><td class="text-end">{{ format_num_br(a.total_paper_kg,0) }} kg</td><td class="text-end">{{ format_num_br(a.total_paper_kg/1000,3) }} t</td><td class="text-end">100%</td></tr></tfoot></table></div><div class="alert alert-light border mt-3 mb-0">Cobertura da estimativa: <b>{{ '%.1f'|format(a.paper_coverage) }}%</b>. Para compras/financeiro, o Excel de Planejamento também traz essa quebra mês a mês.</div></div><div class="modal-footer"><a class="btn btn-success" href="{{ url_for('relatorios_exportar', relatorio='consumo', periodo=periodo, data_base=anchor.isoformat(), ano=target_year, escopo=scope) }}"><i class="bi bi-file-earmark-excel me-1"></i>Exportar consumo</a><button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div></div></div></div>
+        <div class="modal fade" id="paperBreakdownModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Papel previsto por gramatura</h5><div class="small text-muted">Consumo físico estimado para {{ a.period_name }} · {{ target_year }}</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Gramatura</th><th class="text-end">Kg previstos</th><th class="text-end">Toneladas</th><th class="text-end">% do total</th></tr></thead><tbody>{% for r in a.paper_consumption %}<tr><td class="fw-bold">{{ r.gram }}</td><td class="text-end fw-bold">{{ format_num_br(r.kg,0) }} kg</td><td class="text-end">{{ format_num_br(r.ton,3) }} t</td><td class="text-end">{{ '%.1f'|format(r.pct) }}%</td></tr>{% else %}<tr><td colspan="4" class="text-center text-muted py-4">Sem medida e gramatura suficientes para calcular o consumo.</td></tr>{% endfor %}</tbody><tfoot><tr class="fw-bold"><td>Total</td><td class="text-end">{{ format_num_br(a.total_paper_kg,0) }} kg</td><td class="text-end">{{ format_num_br(a.total_paper_kg/1000,3) }} t</td><td class="text-end">100%</td></tr></tfoot></table></div><div class="alert alert-light border mt-3 mb-0">Cobertura da estimativa: <b>{{ '%.1f'|format(a.paper_coverage) }}%</b>. Para compras/financeiro, o Excel de Planejamento também traz essa quebra mês a mês.</div></div><div class="modal-footer"><a class="btn btn-success" href="{{ url_for('relatorios_exportar', relatorio='consumo', periodo=periodo, data_base=anchor.isoformat(), ano=target_year, escopo=scope, vendedor=vendor_id or '') }}"><i class="bi bi-file-earmark-excel me-1"></i>Exportar consumo</a><button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div></div></div></div>
 
-        <details class="cardx p-4 mb-4"><summary class="fw-bold" style="cursor:pointer"><i class="bi bi-calculator me-2"></i>Como o sistema chegou nesses números?</summary><div class="mt-3 small"><p><b>Forecast:</b> média sazonal ponderada dos até 3 anos anteriores (50% / 30% / 20%). Os três cenários calculam automaticamente a tendência e a dispersão do crescimento observado no mesmo período, sem percentual manual.</p><p><b>Trimestre/Semestre:</b> o cliente é considerado recorrente se comprar em qualquer mês da mesma janela. O “mês provável” usa onde ele concentrou valor nos anos-base.</p><p><b>Risco de receita:</b> valor projetado por cliente menos o realizado no período-alvo, nunca abaixo de zero.</p><p><b>Kg de papel:</b> estimativa geométrica para sacolas/cartuchos com medida L×A×F: área ≈ 2×(L+F)×(A+F); depois × gramatura × quantidade e + {{ '%.1f'|format(a.waste_pct) }}% de margem técnica padronizada. <b>Não substitui ficha técnica/BOM</b>; cobertura atual {{ '%.1f'|format(a.paper_coverage) }}%.</p><p class="mb-0"><b>Fonte:</b> pedidos realizados + faturamento do próprio CRM, time {{ scope_label }}, base {{ a.source_text }}.</p></div></details>
-        """, a=a,periodo=periodo,periodo_label={"dia":"dia","semana":"semana","mes":"mês","trimestre":"trimestre","semestre":"semestre","ano":"ano","meses":"meses selecionados"}.get(periodo,periodo),anchor=anchor,target_year=target_year,year_options=year_options,scope=scope,scope_label=_analysis_scope_label(scope),sales_chart=sales_chart,export_url=export_url,selected_months=selected_months,months_pt=_MONTHS_PT,format_brl=format_brl,format_num_br=format_num_br,request=request,dict=dict)
+        <details class="cardx p-4 mb-4"><summary class="fw-bold" style="cursor:pointer"><i class="bi bi-calculator me-2"></i>Como o sistema chegou nesses números?</summary><div class="mt-3 small"><p><b>Forecast:</b> média sazonal ponderada dos até 3 anos anteriores (50% / 30% / 20%). Os três cenários calculam automaticamente a tendência e a dispersão do crescimento observado no mesmo período, sem percentual manual.</p><p><b>Trimestre/Semestre:</b> o cliente é considerado recorrente se comprar em qualquer mês da mesma janela. O “mês provável” usa onde ele concentrou valor nos anos-base.</p><p><b>Risco de receita:</b> valor projetado por cliente menos o realizado no período-alvo, nunca abaixo de zero.</p><p><b>Kg de papel:</b> estimativa geométrica para sacolas/cartuchos com medida L×A×F: área ≈ 2×(L+F)×(A+F); depois × gramatura × quantidade e + {{ '%.1f'|format(a.waste_pct) }}% de margem técnica padronizada. <b>Não substitui ficha técnica/BOM</b>; cobertura atual {{ '%.1f'|format(a.paper_coverage) }}%.</p><p class="mb-0"><b>Fonte:</b> pedidos realizados + faturamento do próprio CRM, time {{ scope_label }}{% if vendor_name %}, vendedor {{ vendor_name }}{% endif %}, base {{ a.source_text }}.</p></div></details>
+        """, a=a,periodo=periodo,periodo_label={"dia":"dia","semana":"semana","mes":"mês","trimestre":"trimestre","semestre":"semestre","ano":"ano","meses":"meses selecionados"}.get(periodo,periodo),anchor=anchor,target_year=target_year,year_options=year_options,scope=scope,scope_label=_analysis_scope_label(scope),sales_chart=sales_chart,export_url=export_url,clear_filters_url=clear_filters_url,selected_months=selected_months,months_pt=_MONTHS_PT,format_brl=format_brl,format_num_br=format_num_br,request=request,dict=dict,tx_cons=tx_cons,tx_prov=tx_prov,tx_otim=tx_otim,vendor_id=vendor_id,vendor_name=vendor_name,vendor_options=vendor_options)
         return render_page("Análise Histórica",body,"analise_historica")
 
 

@@ -2368,7 +2368,7 @@ def render_page(title: str, body_html: str, active: str) -> str:
                 {"label": "Desempenho", "endpoint": "desempenho", "icon": "bi-graph-up"},
                 {"label": "A Faturar", "endpoint": "a_faturar", "icon": "bi-receipt-cutoff"},
                 {"label": "Análise Histórica", "endpoint": "analise_historica", "icon": "bi-calendar3-range"},
-                {"label": "Relatórios", "endpoint": "relatorios", "icon": "bi-file-earmark-spreadsheet"},
+                {"label": "Orçamentos", "endpoint": "orcamentos_detalhe", "icon": "bi-file-earmark-text"},
             ],
         },
         {
@@ -2378,7 +2378,6 @@ def render_page(title: str, body_html: str, active: str) -> str:
                 {"label": "Funil", "endpoint": "funil", "icon": "bi-kanban"},
                 {"label": "Clientes", "endpoint": "clientes", "icon": "bi-buildings"},
                 {"label": "Tarefas", "endpoint": "tarefas", "icon": "bi-check2-square"},
-                {"label": "Orçamentos", "endpoint": "orcamentos_detalhe", "icon": "bi-file-earmark-text"},
             ],
         },
         {
@@ -2395,6 +2394,7 @@ def render_page(title: str, body_html: str, active: str) -> str:
                 {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
                 {"label": "Site", "endpoint": "site_analytics", "icon": "bi-globe2"},
                 {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
+                {"label": "Relatórios", "endpoint": "relatorios", "icon": "bi-file-earmark-spreadsheet"},
             ],
         },
         {
@@ -2887,13 +2887,19 @@ def _chart_clean_axes(ax, grid_axis="y"):
     ax.tick_params(axis="both", length=0, labelcolor="#718096", labelsize=8.5)
 
 
-def bar_chart(labels: List[str], values: List[float], title: str) -> str:
+def bar_chart(labels: List[str], values: List[float], title: str, orientation: str = "auto") -> str:
     """Comparação categórica. Automaticamente vira horizontal quando há muitas categorias."""
     labels = [str(x or "-") for x in labels]
     values = [float(v or 0) for v in values]
     if not labels:
         return ""
-    horizontal = len(labels) >= 6 or any(len(x) > 12 for x in labels)
+    orient = (orientation or "auto").strip().lower()
+    if orient in {"vertical", "v"}:
+        horizontal = False
+    elif orient in {"horizontal", "h"}:
+        horizontal = True
+    else:
+        horizontal = len(labels) >= 6 or any(len(x) > 12 for x in labels)
     if horizontal:
         pairs = sorted(zip(labels, values), key=lambda x: x[1], reverse=True)[:10]
         labs = [p[0] for p in pairs][::-1]
@@ -7653,6 +7659,79 @@ def dashboard():
         gap_qtd_site = max(0, qtd_ped_site - qtd_fat_site)
         ticket_site = (ped_site / qtd_ped_site) if qtd_ped_site > 0 else 0.0
 
+        fat_equipe_rows = conn.execute("""
+            SELECT
+                v.id AS vendor_id,
+                COALESCE(NULLIF(TRIM(v.nome), ''), 'Sem vendedor') AS nome,
+                COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
+                COALESCE(SUM(i.valor), 0) AS valor,
+                COUNT(*) AS qtd
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
+              AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
+            GROUP BY v.id
+            HAVING COALESCE(SUM(i.valor), 0) > 0
+            ORDER BY valor DESC, nome ASC
+        """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
+        fat_max = float(fat_equipe_rows[0]["valor"] or 0) if fat_equipe_rows else 0.0
+        fat_equipe = []
+        for idx, r in enumerate(fat_equipe_rows, start=1):
+            valor = float(r["valor"] or 0)
+            try:
+                vendor_id = int(r["vendor_id"]) if r["vendor_id"] is not None else None
+            except (TypeError, ValueError):
+                vendor_id = None
+            fat_equipe.append({
+                "rank": idx,
+                "vendor_id": vendor_id,
+                "nome": r["nome"],
+                "tipo": (r["tipo"] or "EXTERNO"),
+                "valor": valor,
+                "qtd": int(r["qtd"] or 0),
+                "pct": (valor / fat_total * 100.0) if fat_total > 0 else 0.0,
+                "bar": (valor / fat_max * 100.0) if fat_max > 0 else 0.0,
+            })
+
+        ped_equipe_rows = conn.execute(f"""
+            SELECT
+                v.id AS vendor_id,
+                COALESCE(NULLIF(TRIM(v.nome), ''), 'Sem vendedor') AS nome,
+                COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
+                COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)),0) AS valor,
+                COUNT(DISTINCT TRIM(COALESCE(o.pedido,''))) AS qtd
+            FROM orders o
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND {sql_pedidos_realizados_excel_cond('o','v')}
+              AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
+              AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
+            GROUP BY v.id
+            HAVING COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)),0) > 0
+            ORDER BY valor DESC, nome ASC
+        """, (d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
+        ped_max = float(ped_equipe_rows[0]["valor"] or 0) if ped_equipe_rows else 0.0
+        ped_equipe_total = sum(float(r["valor"] or 0) for r in ped_equipe_rows)
+        ped_equipe = []
+        for idx, r in enumerate(ped_equipe_rows, start=1):
+            valor = float(r["valor"] or 0)
+            try:
+                vendor_id = int(r["vendor_id"]) if r["vendor_id"] is not None else None
+            except (TypeError, ValueError):
+                vendor_id = None
+            ped_equipe.append({
+                "rank": idx,
+                "vendor_id": vendor_id,
+                "nome": r["nome"],
+                "tipo": (r["tipo"] or "EXTERNO"),
+                "valor": valor,
+                "qtd": int(r["qtd"] or 0),
+                "pct": (valor / ped_equipe_total * 100.0) if ped_equipe_total > 0 else 0.0,
+                "bar": (valor / ped_max * 100.0) if ped_max > 0 else 0.0,
+            })
+
     # --- HTML ---
     body = render_template_string(r"""
     <div class="dash-toolbar">
@@ -7808,13 +7887,46 @@ def dashboard():
         </div>
       </div>
     </div>
+
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-trophy"></i> Faturamento da Equipe</span>
+          <div class="sub">Ranking individual no ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · {{ fat_equipe|length }} vendedor{{ 'es' if fat_equipe|length != 1 else '' }}</div>
+        </div>
+        <div class="text-end">
+          <div class="small text-muted">Total do time</div>
+          <div class="fw-bold" style="color:#0e7490">{{ format_brl(fat_total) }}</div>
+        </div>
+      </div>
+      {% if fat_equipe %}
+      <div class="fat-equipe-list">
+        {% for v in fat_equipe %}
+        {% if v.vendor_id %}<a class="fat-equipe-row" href="{{ url_for('vendedor', vendor_id=v.vendor_id, data_ref=mes_ref, visao='faturamento') }}">{% else %}<div class="fat-equipe-row">{% endif %}
+          <div class="fat-equipe-rank {{ 'top1' if v.rank == 1 else 'top2' if v.rank == 2 else 'top3' if v.rank == 3 else '' }}">{{ v.rank }}</div>
+          <div class="min-width-0">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="fat-equipe-name">{{ v.nome }}</span>
+              <span class="fat-equipe-tipo {{ 'interno' if v.tipo == 'INTERNO' else 'externo' }}">{{ v.tipo }}</span>
+            </div>
+            <div class="fat-equipe-bar" aria-hidden="true"><span style="width:{{ '%.1f'|format(v.bar) }}%"></span></div>
+            <div class="fat-equipe-meta">{{ v.qtd }} nota{{ '' if v.qtd == 1 else 's' }} · {{ '%.1f'|format(v.pct) }}% do time</div>
+          </div>
+          <div class="fat-equipe-val">{{ format_brl(v.valor) }}</div>
+        {% if v.vendor_id %}</a>{% else %}</div>{% endif %}
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="text-muted py-3">Nenhum faturamento de vendedor no ciclo.</div>
+      {% endif %}
+    </div>
     {% endif %}
 
     {% if visao == 'pedidos' %}
-    <div class="dash-block dash-block--ped mb-4">
+    <div class="dash-block dash-block--fat mb-4">
       <div class="dash-block-head">
         <div>
-          <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Vendas &amp; Pedidos</span>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-bag-check"></i> Vendas &amp; Pedidos</span>
           <div class="sub">Mês comercial {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · meta em Settings</div>
         </div>
       </div>
@@ -7867,13 +7979,46 @@ def dashboard():
         </div>
         <div class="col-12 col-xl-4">
           <div class="channel-card site">
-            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#7c3aed;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
-            <div><div class="channel-main" style="color:#7c3aed">{{ format_brl(ped_site) }}</div><div class="small text-muted">realizado em pedidos do canal</div></div>
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
+            <div><div class="channel-main">{{ format_brl(ped_site) }}</div><div class="small text-muted">realizado em pedidos do canal</div></div>
             <div class="channel-status"><span>{{ qtd_ped_site }} pedidos</span><span>{{ qtd_fat_site }} faturados</span><span class="pending">{{ gap_qtd_site }} pendentes</span></div>
             <div class="channel-meta"><div class="box"><div class="label">Faturamento</div><div class="value">{{ format_brl(fat_site) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_site) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site) }}</div></div></div>
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-trophy"></i> Pedidos da Equipe</span>
+          <div class="sub">Ranking individual no mês {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · {{ ped_equipe|length }} vendedor{{ 'es' if ped_equipe|length != 1 else '' }}</div>
+        </div>
+        <div class="text-end">
+          <div class="small text-muted">Total do time</div>
+          <div class="fw-bold" style="color:#0e7490">{{ format_brl(ped_equipe_total) }}</div>
+        </div>
+      </div>
+      {% if ped_equipe %}
+      <div class="fat-equipe-list">
+        {% for v in ped_equipe %}
+        {% if v.vendor_id %}<a class="fat-equipe-row" href="{{ url_for('vendedor', vendor_id=v.vendor_id, data_ref=mes_ref, visao='pedidos') }}">{% else %}<div class="fat-equipe-row">{% endif %}
+          <div class="fat-equipe-rank {{ 'top1' if v.rank == 1 else 'top2' if v.rank == 2 else 'top3' if v.rank == 3 else '' }}">{{ v.rank }}</div>
+          <div class="min-width-0">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="fat-equipe-name">{{ v.nome }}</span>
+              <span class="fat-equipe-tipo {{ 'interno' if v.tipo == 'INTERNO' else 'externo' }}">{{ v.tipo }}</span>
+            </div>
+            <div class="fat-equipe-bar" aria-hidden="true"><span style="width:{{ '%.1f'|format(v.bar) }}%"></span></div>
+            <div class="fat-equipe-meta">{{ v.qtd }} pedido{{ '' if v.qtd == 1 else 's' }} · {{ '%.1f'|format(v.pct) }}% do time</div>
+          </div>
+          <div class="fat-equipe-val">{{ format_brl(v.valor) }}</div>
+        {% if v.vendor_id %}</a>{% else %}</div>{% endif %}
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="text-muted py-3">Nenhum pedido de vendedor no mês.</div>
+      {% endif %}
     </div>
 
     <div class="section-heading"><div><h2>Leitura visual do mês</h2><p>Gráficos compactos, cada um respondendo a uma pergunta diferente.</p></div></div>
@@ -7939,6 +8084,7 @@ def dashboard():
     chart_yoy=chart_yoy, ultimos_pedidos=ultimos_pedidos,
     metrics_orc=metrics_orc, top_medidas_rows=top_medidas_rows, total_pedidos_periodo=total_pedidos_periodo,
     mes_ref=mes_ref, visao=visao,
+    fat_equipe=fat_equipe, ped_equipe=ped_equipe, ped_equipe_total=ped_equipe_total,
     format_brl=format_brl
     )
 
@@ -12688,6 +12834,41 @@ def site_analytics():
     return render_page("Site", body, "site_analytics")
 
 
+def _vendor_month_orders(conn, vendor_id: int, mes_str: str) -> list:
+    """Pedidos do mês-calendário, na mesma regra da tabela Pedidos do mês."""
+    rows = conn.execute(f"""
+        SELECT
+            o.pedido,
+            MAX(date(o.data_emissao)) AS data_emissao,
+            COALESCE(MAX(NULLIF(TRIM(o.cliente_nome_ref),'')), COALESCE(c.fantasia, c.nome, '—')) AS cliente,
+            SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)) AS valor,
+            MAX(COALESCE(o.condicao_entrega,'')) AS condicao_entrega,
+            GROUP_CONCAT(DISTINCT COALESCE(o.grupo_ref,'')) AS grupo_ref,
+            GROUP_CONCAT(DISTINCT COALESCE(o.tipo_item_ref,'')) AS tipo_item_ref,
+            GROUP_CONCAT(DISTINCT COALESCE(o.papel_ref,'')) AS papel_ref,
+            GROUP_CONCAT(DISTINCT COALESCE(o.medida_ref,'')) AS medida_ref
+        FROM orders o
+        LEFT JOIN customers c ON c.id = o.cliente_id
+        LEFT JOIN vendors v2 ON v2.id = o.vendor_id
+        WHERE o.vendor_id = ?
+          AND o.data_emissao IS NOT NULL
+          AND strftime('%Y-%m', date(o.data_emissao)) = ?
+          AND TRIM(COALESCE(o.pedido,'')) <> ''
+          AND {sql_pedidos_realizados_excel_cond('o','v2')}
+        GROUP BY TRIM(COALESCE(o.pedido,''))
+        ORDER BY date(data_emissao) DESC, CAST(o.pedido AS INTEGER) DESC, o.pedido DESC
+    """, (vendor_id, mes_str)).fetchall()
+    pedidos_lista = [dict(p) for p in rows]
+    for p in pedidos_lista:
+        p["familia_produto"] = infer_order_product_family(
+            p.get("grupo_ref", ""),
+            p.get("tipo_item_ref", ""),
+            p.get("papel_ref", ""),
+            p.get("medida_ref", ""),
+        )
+    return pedidos_lista
+
+
 @app.route("/vendedor/<int:vendor_id>")
 @login_required
 def vendedor(vendor_id: int):
@@ -12712,6 +12893,10 @@ def vendedor(vendor_id: int):
         ref_date = date.today().replace(day=1)
     
     mes_str = ref_date.strftime("%Y-%m")
+    visao_raw = (request.args.get("visao") or "geral").strip().lower()
+    visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
+    if request.args.get("ver_pedidos") == "1":
+        visao = "pedidos"
     hoje = date.today()
     
     # DEFINIÇÃO DOS CICLOS
@@ -12749,9 +12934,15 @@ def vendedor(vendor_id: int):
         extra_bonus = float(data_fin.get("extra_bonus", 0) or 0)
         bateu_meta = bool(data_fin.get("bateu_meta"))
         devolucoes_valor = float(data_fin.get("devolucoes_valor", 0) or 0)
-        
-        # Variáveis legadas de contagem (baseadas em notas fiscais)
- # --- B. COMERCIAL (Ciclo 1-31) ---
+        fat_qtd_row = conn.execute("""
+            SELECT COUNT(*) AS qtd FROM invoices
+            WHERE vendor_id=? AND data_emissao IS NOT NULL
+              AND date(data_emissao) BETWEEN date(?) AND date(?)
+        """, (vendor_id, d0_fat.isoformat(), d1_fat.isoformat())).fetchone()
+        fat_qtd = int(fat_qtd_row["qtd"] or 0) if fat_qtd_row else 0
+        ticket_fat = (faturamento / fat_qtd) if fat_qtd else 0.0
+
+        # --- B. COMERCIAL (Ciclo 1-31) ---
         
         # 1. Total Pedidos - mesma regra validada do Dashboard/Excel.
         # Soma VALOR_ITEM por linha válida, não MAX(valor) agrupado por pedido.
@@ -12769,40 +12960,31 @@ def vendedor(vendor_id: int):
         
         pedidos_val = float(row_ped["val"])
         pedidos_qtd = int(row_ped["qtd"])
-        ver_pedidos = request.args.get("ver_pedidos", "0") == "1"
+        ticket_ped = (pedidos_val / pedidos_qtd) if pedidos_qtd else 0.0
+        ped_novo_rows = conn.execute(f"""
+            SELECT
+                TRIM(COALESCE(o.pedido,'')) AS pedido,
+                MAX(COALESCE(o.motivo_pedido,'')) AS motivo_pedido,
+                MAX(COALESCE(o.desc_motivo_pedido,'')) AS desc_motivo_pedido,
+                MAX(COALESCE(o.condicao_entrega,'')) AS condicao_entrega
+            FROM orders o
+            LEFT JOIN vendors v2 ON v2.id = o.vendor_id
+            WHERE o.vendor_id=?
+              AND o.data_emissao IS NOT NULL
+              AND date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND TRIM(COALESCE(o.pedido,'')) <> ''
+              AND {sql_pedidos_realizados_excel_cond('o', 'v2')}
+            GROUP BY TRIM(COALESCE(o.pedido,''))
+        """, (vendor_id, d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
+        pedidos_novos_qtd = 0
+        for r in ped_novo_rows:
+            if f_comissao.condicao_jit_imediato(r["condicao_entrega"]):
+                continue
+            if f_comissao.pedido_sisplan_cliente_novo(r["motivo_pedido"], r["desc_motivo_pedido"]):
+                pedidos_novos_qtd += 1
+        ver_pedidos = visao == "pedidos"
 
-        pedidos_lista = []
-        if ver_pedidos:
-            pedidos_lista = conn.execute(f"""
-                SELECT
-                    o.pedido,
-                    MAX(date(o.data_emissao)) AS data_emissao,
-                    COALESCE(MAX(NULLIF(TRIM(o.cliente_nome_ref),'')), COALESCE(c.fantasia, c.nome, '—')) AS cliente,
-                    SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)) AS valor,
-                    MAX(COALESCE(o.condicao_entrega,'')) AS condicao_entrega,
-                    GROUP_CONCAT(DISTINCT COALESCE(o.grupo_ref,'')) AS grupo_ref,
-                    GROUP_CONCAT(DISTINCT COALESCE(o.tipo_item_ref,'')) AS tipo_item_ref,
-                    GROUP_CONCAT(DISTINCT COALESCE(o.papel_ref,'')) AS papel_ref,
-                    GROUP_CONCAT(DISTINCT COALESCE(o.medida_ref,'')) AS medida_ref
-                FROM orders o
-                LEFT JOIN customers c ON c.id = o.cliente_id
-                LEFT JOIN vendors v2 ON v2.id = o.vendor_id
-                WHERE o.vendor_id = ?
-                  AND o.data_emissao IS NOT NULL
-                  AND strftime('%Y-%m', date(o.data_emissao)) = ?
-                  AND TRIM(COALESCE(o.pedido,'')) <> ''
-                  AND {sql_pedidos_realizados_excel_cond('o','v2')}
-                GROUP BY TRIM(COALESCE(o.pedido,''))
-                ORDER BY date(data_emissao) DESC, CAST(o.pedido AS INTEGER) DESC, o.pedido DESC
-            """, (vendor_id, mes_str)).fetchall()
-            pedidos_lista = [dict(p) for p in pedidos_lista]
-            for p in pedidos_lista:
-                p["familia_produto"] = infer_order_product_family(
-                    p.get("grupo_ref", ""),
-                    p.get("tipo_item_ref", ""),
-                    p.get("papel_ref", ""),
-                    p.get("medida_ref", ""),
-                )
+        pedidos_lista = _vendor_month_orders(conn, vendor_id, mes_str) if visao == "pedidos" else []
 
 
         # 2. Classificação Novo/Repetição/Recuperado — FONTE ÚNICA
@@ -12819,8 +13001,11 @@ def vendedor(vendor_id: int):
              old_meta = conn.execute("SELECT meta_manual FROM metas_vendedores WHERE vendor_id=?", (vendor_id,)).fetchone()
              if old_meta: meta_mensal = float(old_meta["meta_manual"] or 0)
 
+        meta_pedidos = get_goal_history(conn, mes_str, "VENDEDOR_PEDIDOS", vendor_id)
         meta_realizado_pct = (faturamento / meta_mensal * 100.0) if meta_mensal > 0 else 0.0
         meta_variacao_pct = ((faturamento - meta_mensal) / meta_mensal * 100.0) if meta_mensal > 0 else None
+        meta_pedidos_pct = (pedidos_val / meta_pedidos * 100.0) if meta_pedidos > 0 else 0.0
+        falta_para_meta_ped = max(0.0, meta_pedidos - pedidos_val)
 
         # 3. Metas Derivadas (Diária e Semanal) — ciclo 26→25
         dias_uteis_mes = business_days_between(d0_fat, d1_fat)
@@ -12946,74 +13131,117 @@ def vendedor(vendor_id: int):
     <div class="page-hero mb-4">
       <div class="d-flex align-items-end justify-content-between flex-wrap gap-3 position-relative" style="z-index:1">
         <div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Performance individual</div><div class="hero-title">{{ (v['codigo'] ~ ' · ') if v['codigo'] else '' }}{{ v['nome'] }}</div><div class="hero-sub mt-1">Meta de faturamento {{ d0_fat.strftime('%d/%m') }}–{{ d1_fat.strftime('%d/%m') }}</div></div>
-        <div class="d-flex gap-2 align-items-end"><form method="get"><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_str }}" onchange="this.form.submit()"></form><a class="btn btn-outline-light" href="{{ url_for('vendedores') }}">Voltar</a></div>
+        <div class="d-flex gap-2 align-items-end"><form method="get"><input type="hidden" name="visao" value="{{ visao }}"><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_str }}" onchange="this.form.submit()"></form><a class="btn btn-outline-light" href="{{ url_for('vendedores') }}">Voltar</a></div>
       </div>
     </div>
 
-    <div class="row g-3 mb-3">
-      <div class="col-12 col-md-3">
-        <div class="kpi p-3 h-100">
-          <div class="muted">Meta de faturamento</div>
-          <div class="h4 mb-0 fw-bold">{{ format_brl(meta_mensal) }}</div>
-          <div class="small muted">{{ d0_fat.strftime('%d/%m') }} a {{ d1_fat.strftime('%d/%m') }}</div>
-          {% if meta_mensal > 0 %}<div class="small fw-bold {{ 'text-success' if meta_variacao_pct>=0 else 'text-danger' }}">{{ '%.1f'|format(meta_variacao_pct|abs) }}% {{ 'acima' if meta_variacao_pct>=0 else 'abaixo' }} da meta · {{ '%.1f'|format(meta_realizado_pct) }}% realizado</div>{% endif %}
-          {% if user.role in ['admin','gestor'] %}
-          <form method="post" action="{{ url_for('vendedor_meta_hist', vendor_id=v['id']) }}" class="mt-2 d-flex gap-1">
-             <input type="hidden" name="mes_ref" value="{{ mes_str }}">
-             <input type="text" name="meta_valor" class="form-control form-control-sm" placeholder="Definir..." style="width:100px;">
-             <button class="btn btn-sm btn-light border">OK</button>
-          </form>
-          {% endif %}
-        </div>
+    <div class="d-flex align-items-end justify-content-between flex-wrap gap-3 mb-4">
+      <nav class="dash-tabs" aria-label="Visão do vendedor">
+        <a class="{{ 'active' if visao == 'geral' else '' }}" href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, visao='geral') }}">Visão Geral</a>
+        <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, visao='faturamento') }}">Faturamento</a>
+        <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, visao='pedidos') }}">Pedidos</a>
+      </nav>
+      {% if user.role in ['admin','gestor'] %}
+      <div class="d-flex gap-3 align-items-end flex-wrap cardx p-3">
+        <form method="post" action="{{ url_for('vendedor_meta_hist', vendor_id=v['id']) }}" class="d-flex gap-1 align-items-end">
+          <input type="hidden" name="mes_ref" value="{{ mes_str }}">
+          <input type="hidden" name="visao" value="{{ visao }}">
+          <input type="hidden" name="eixo" value="faturamento">
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">META FATURAMENTO</label>
+            <input type="text" name="meta_valor" class="form-control fw-bold" placeholder="{{ format_brl(meta_mensal) if meta_mensal else 'Definir...' }}" style="min-width:150px">
+          </div>
+          <button class="btn btn-light border">OK</button>
+        </form>
+        <form method="post" action="{{ url_for('vendedor_meta_hist', vendor_id=v['id']) }}" class="d-flex gap-1 align-items-end">
+          <input type="hidden" name="mes_ref" value="{{ mes_str }}">
+          <input type="hidden" name="visao" value="{{ visao }}">
+          <input type="hidden" name="eixo" value="pedidos">
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">META PEDIDOS</label>
+            <input type="text" name="meta_valor" class="form-control fw-bold" placeholder="{{ format_brl(meta_pedidos) if meta_pedidos else 'Definir...' }}" style="min-width:150px">
+          </div>
+          <button class="btn btn-light border">OK</button>
+        </form>
       </div>
-    <div class="col-12 col-md-3">
-        <div class="kpi p-3 h-100">
-          <div class="d-flex justify-content-between align-items-start">
-            <div>
-              <div class="muted">Pedidos (mês civil)</div>
-              <div class="h4 mb-0 text-primary fw-bold">{{ format_brl(pedidos_v) }}</div>
-              <div class="small muted">{{ pedidos_n }} pedidos · {{ d0_ped.strftime('%d/%m') }} a {{ d1_ped.strftime('%d/%m') }}</div>
+      {% endif %}
+    </div>
+
+    {% if visao == 'geral' %}
+    <div class="d-flex flex-column gap-4 mb-2 w-100">
+      <div class="w-100">
+      <div class="dash-block dash-block--fat">
+        <div class="dash-block-head">
+          <div>
+            <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
+            <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
+          </div>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, visao='faturamento') }}">Detalhar</a>
+        </div>
+        <div class="row g-3">
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+              <div class="kpi-value">{{ format_brl(meta_mensal) }}</div>
+              <div class="progress mt-2" style="height:7px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if meta_realizado_pct > 100 else meta_realizado_pct }}%"></div></div>
+              <div class="kpi-meta">{{ '%.1f'|format(meta_realizado_pct) }}% atingido</div>
             </div>
-            <div>
-              {% if ver_pedidos %}
-                <a class="btn btn-sm btn-outline-secondary"
-                   href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str) }}">
-                  Ocultar
-                </a>
-              {% else %}
-                <a class="btn btn-sm btn-outline-primary"
-                   href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, ver_pedidos=1) }}">
-                  Ver pedidos
-                </a>
-              {% endif %}
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+              <div class="kpi-value">{{ format_brl(faturamento) }}</div>
+              <div class="kpi-meta">{{ fat_qtd }} notas no ciclo</div>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if falta_para_meta <= 0 else 'Falta faturar' }}</div><div class="icon {{ 'ok' if falta_para_meta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if falta_para_meta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+              <div class="kpi-value">{{ format_brl((faturamento - meta_mensal) if falta_para_meta <= 0 else falta_para_meta) }}</div>
+              <div class="kpi-meta">{{ 'Acima da meta' if falta_para_meta <= 0 else 'Para bater a meta' }}</div>
             </div>
           </div>
         </div>
       </div>
-      <div class="col-12 col-md-3">
-        <div class="kpi p-3 h-100">
-          <div class="muted">Projeção Fechamento</div>
-          <div class="h4 mb-0 text-info fw-bold">{{ format_brl(projecao) }}</div>
-          {% if meta_mensal > 0 %}
-            <div class="small {{ 'text-success' if projecao >= meta_mensal else 'text-danger' }}">
-                {{ "%.1f"|format(projecao / meta_mensal * 100) }}% da meta
+      </div>
+      <div class="w-100">
+      <div class="dash-block dash-block--ped">
+        <div class="dash-block-head">
+          <div>
+            <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Pedidos</span>
+            <div class="sub">Mês {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
+          </div>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('vendedor', vendor_id=v['id'], data_ref=mes_str, visao='pedidos') }}">Detalhar</a>
+        </div>
+        <div class="row g-3">
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+              <div class="kpi-value">{{ format_brl(meta_pedidos) }}</div>
+              <div class="progress mt-2" style="height:7px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if meta_pedidos_pct > 100 else meta_pedidos_pct }}%"></div></div>
+              <div class="kpi-meta">{{ '%.1f'|format(meta_pedidos_pct) }}% atingido</div>
             </div>
-          {% endif %}
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Realizado</div><div class="icon done"><i class="bi bi-cart3"></i></div></div>
+              <div class="kpi-value">{{ format_brl(pedidos_v) }}</div>
+              <div class="kpi-meta">{{ pedidos_n }} pedidos no mês civil</div>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="dash-kpi">
+              <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if falta_para_meta_ped <= 0 else 'Falta vender' }}</div><div class="icon {{ 'ok' if falta_para_meta_ped <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if falta_para_meta_ped <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+              <div class="kpi-value">{{ format_brl((pedidos_v - meta_pedidos) if falta_para_meta_ped <= 0 else falta_para_meta_ped) }}</div>
+              <div class="kpi-meta">{{ 'Acima da meta' if falta_para_meta_ped <= 0 else 'Para bater a meta' }}</div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-12 col-md-3">
-        <div class="kpi p-3 h-100" style="border-left: 4px solid #20c997;">
-            <div class="d-flex justify-content-between">
-                <div class="muted">Comissão do próximo mês</div>
-                <div class="icon" style="height:30px; width:30px; font-size:0.8rem;">$</div>
-            </div>
-            <div class="h4 mb-0 text-success fw-bold">{{ format_brl(comissao) }}</div>
-            <div class="small muted">Base Fat: {{ format_brl(faturamento) }}{% if meta_mensal > 0 %} · {{ '%.1f'|format(meta_realizado_pct) }}% da meta{% endif %}</div>
-            {% if bateu_meta %}<div class="small text-success fw-bold">Meta batida · 1,75%</div>{% endif %}
-        </div>
       </div>
     </div>
-<div class="row g-3 mb-4">
+
+    <div class="row g-3 mb-4">
     <div class="col-12 col-md-4">
         {% if user.role == 'admin' %}<a href="{{ url_for('performance_vendedor_metrica', vendor_id=v['id'], metrica='orcamentos', data_ref=mes_str) }}" class="text-decoration-none text-dark d-block h-100">{% endif %}
         <div class="cardx p-3 bg-white shadow-sm border rounded h-100" {% if user.role == 'admin' %}style="cursor:pointer;"{% endif %}>
@@ -13033,7 +13261,7 @@ def vendedor(vendor_id: int):
         {% if user.role == 'admin' %}</a>{% endif %}
     </div>
     <div class="col-12 col-md-4">
-        <a href="{{ url_for('performance_vendedor_metrica', vendor_id=v['id'], metrica='orcamentos', data_ref=mes_str) if user.role == 'admin' else url_for('orcamentos_detalhe', data_ref=mes_ref) }}" class="text-decoration-none text-dark d-block h-100">
+        <a href="{{ url_for('performance_vendedor_metrica', vendor_id=v['id'], metrica='orcamentos', data_ref=mes_str) if user.role == 'admin' else url_for('orcamentos_detalhe', data_ref=mes_str) }}" class="text-decoration-none text-dark d-block h-100">
         <div class="cardx p-3 bg-white shadow-sm border rounded h-100" style="cursor:pointer;">
             <div class="small text-muted fw-bold">VALOR EM ORÇAMENTOS</div>
             <div class="h4 mb-0">{{ format_brl(metrics_orc['valor_total']) }}</div>
@@ -13042,56 +13270,6 @@ def vendedor(vendor_id: int):
         </a>
     </div>
 </div>
-        
-    <div class="row g-2 mb-3">
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate">Meta Diária</div>
-                <div class="h5 mb-0 fw-bold">{{ format_brl(meta_diaria) }}</div>
-            </div>
-        </div>
-
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate">Meta Semanal</div>
-                <div class="h5 mb-0 fw-bold">{{ format_brl(meta_semanal) }}</div>
-            </div>
-        </div>
-
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate" title="Quanto vender por dia p/ bater a meta">Necessário/Dia</div>
-                <div class="h5 mb-0 fw-bold {{ 'text-danger' if nec_dia > meta_diaria else 'text-success' }}">
-                    {{ format_brl(nec_dia) }}
-                </div>
-            </div>
-        </div>
-
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate">Carteira</div>
-                <div class="d-flex gap-2 mt-1" style="font-size:0.9rem">
-                    <div><span class="text-success fw-bold">{{ novo }}</span> <small>Novos</small></div>
-                    <div><span class="text-warning fw-bold">{{ rep }}</span> <small>Rec.</small></div>
-                    {% if recuperados %}<div title="Subconjunto dos recorrentes que voltou após passar do intervalo mediano de recompra"><span class="text-primary fw-bold">{{ recuperados }}</span> <small>Recup.</small></div>{% endif %}
-                </div>
-            </div>
-        </div>
-
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate">Clientes Atrasados</div>
-                <div class="h5 mb-0 fw-bold text-warning">{{ atrasados_qtd }}</div>
-            </div>
-        </div>
-
-        <div class="col-6 col-lg-2">
-            <div class="kpi p-2 h-100">
-                <div class="muted small text-truncate">Média Atraso</div>
-                <div class="h5 mb-0 fw-bold">{{ atraso_med|int }} dias</div>
-            </div>
-        </div>
-    </div>
 
     <div class="vendor-dashboard">
     <div class="row g-4">
@@ -13102,76 +13280,75 @@ def vendedor(vendor_id: int):
         <div class="viz-card h-100"><div class="viz-head"><div><div class="viz-title">Histórico anual</div><div class="viz-sub">Comparativo mensal do faturamento contra o ano anterior.</div></div></div><div class="viz-body vendor-chart-wide">{% if chart_yoy %}<img src="data:image/png;base64,{{ chart_yoy }}">{% else %}<div class="muted py-4 text-center">Sem dados.</div>{% endif %}</div></div>
       </div>
     </div>
-    <div class="row g-4 mt-1">
-      <div class="col-12 col-xl-6">
-        <div class="viz-card h-100"><div class="viz-head"><div><div class="viz-title">Top clientes / redes</div><div class="viz-sub">Ranking do mês por valor realizado, sem comprimir os nomes.</div></div></div><div class="viz-body vendor-chart-rank">{% if topc_bar %}<img src="data:image/png;base64,{{ topc_bar }}">{% else %}<div class="muted py-4 text-center">Sem dados.</div>{% endif %}</div></div>
+    </div>
+    {% endif %}
+
+    {% if visao == 'faturamento' %}
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
+          <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
+        </div>
       </div>
-      <div class="col-12 col-xl-6">
-        <div class="cardx p-3 h-100">
-          <div class="d-flex justify-content-between align-items-center mb-3">
-            <div>
-              <div class="h6 mb-0">Top Clientes / Redes</div>
-              <div class="muted small">Pedidos do mês consolidados por identidade comercial</div>
-            </div>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Faturamento</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+            <div class="kpi-value">{{ format_brl(meta_mensal) }}</div>
+            <div class="progress mt-2" style="height:8px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if meta_realizado_pct > 100 else meta_realizado_pct }}%"></div></div>
+            <div class="kpi-meta">{{ '%.1f'|format(meta_realizado_pct) }}% atingido</div>
           </div>
-      
-          {% if top_entities %}
-            <div class="d-flex flex-column gap-2">
-              {% for r in top_entities %}
-                <div class="border rounded-3 p-2 px-3 bg-white">
-                  <div class="d-flex justify-content-between align-items-start gap-3">
-                    <div>
-                      <div class="fw-semibold">{{ r['nome_exibicao'] }}</div>
-                      <div class="small text-muted d-flex flex-wrap gap-2 mt-1">
-                        <span class="badge rounded-pill
-                          {% if r['identity_tipo'] == 'GRUPO' %}text-bg-primary
-                          {% elif r['identity_tipo'] == 'REDE' %}text-bg-info
-                          {% else %}text-bg-light border text-dark
-                          {% endif %}">
-                          {{ r['identity_tipo'] }}
-                        </span>
-                        <span class="badge rounded-pill text-bg-{{ r['score_cor'] }}">
-                          {{ r['score_faixa'] }} · {{ r['score_label'] }}
-                        </span>
-                        
-                        <span class="badge rounded-pill text-bg-{{ r['prioridade_cor'] }}">
-                          {{ r['prioridade'] }}
-                        </span>
-      
-                        <span class="badge rounded-pill {{ r['badge_class'] }} customer-status-badge"
-                              style="cursor:context-menu"
-                              data-identity-key="{{ r['identity_key'] }}"
-                              data-identity-nome="{{ r['nome_exibicao'] }}"
-                              data-is-novo="{{ 1 if r['badge'] == 'NOVO' else 0 }}"
-                              data-can-set-novo="{{ 1 if user and user.get('role') in ['admin','gestor'] else 0 }}"
-                              title="Botão direito para ações">
-                          {{ r['badge'] }}
-                        </span>
-                        <span>{{ r['pedidos_qtd'] }} pedido(s)</span>
-                      </div>
-                    </div>
-      
-                    <div class="text-end">
-                      <div class="fw-bold text-primary">{{ format_brl(r['valor']) }}</div>
-                      {% if r['cliente_id'] %}
-                        <a href="{{ url_for('cliente_360', cliente_id=r['cliente_id']) }}"
-                           class="btn btn-sm btn-light border mt-1">
-                          Perfil
-                        </a>
-                      {% endif %}
-                    </div>
-                  </div>
-                </div>
-              {% endfor %}
-            </div>
-          {% else %}
-            <div class="muted text-center py-4">Nenhum movimento no período.</div>
-          {% endif %}
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total Faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+            <div class="kpi-value">{{ format_brl(faturamento) }}</div>
+            <div class="kpi-meta">{{ fat_qtd }} notas no ciclo de faturamento</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if falta_para_meta <= 0 else 'Falta faturar' }}</div><div class="icon {{ 'ok' if falta_para_meta <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if falta_para_meta <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+            <div class="kpi-value">{{ format_brl((faturamento - meta_mensal) if falta_para_meta <= 0 else falta_para_meta) }}</div>
+            <div class="kpi-meta">{{ 'Acima da meta de faturamento' if falta_para_meta <= 0 else 'Valor necessário para bater a meta' }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Projeção fechamento</div><div class="icon warn"><i class="bi bi-graph-up-arrow"></i></div></div>
+            <div class="kpi-value">{{ format_brl(projecao) }}</div>
+            {% if meta_mensal > 0 %}
+            <div class="kpi-meta {{ 'text-success' if projecao >= meta_mensal else 'text-danger' }}">{{ "%.1f"|format(projecao / meta_mensal * 100) }}% da meta</div>
+            {% else %}
+            <div class="kpi-meta">Ritmo do ciclo financeiro</div>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Ticket médio</div><div class="icon warn"><i class="bi bi-receipt"></i></div></div>
+            <div class="kpi-value">{{ format_brl(ticket_fat) }}</div>
+            <div class="kpi-meta">Valor médio por nota no ciclo</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi" style="border-left:4px solid #20c997;">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Comissão do próximo mês</div><div class="icon ok"><i class="bi bi-currency-dollar"></i></div></div>
+            <div class="kpi-value text-success">{{ format_brl(comissao) }}</div>
+            <div class="kpi-meta">Base Fat: {{ format_brl(faturamento) }}{% if meta_mensal > 0 %} · {{ '%.1f'|format(meta_realizado_pct) }}% da meta{% endif %}</div>
+            {% if bateu_meta %}<div class="small text-success fw-bold mt-1">Meta batida · 1,75%</div>{% endif %}
+          </div>
         </div>
       </div>
     </div>
+    <div class="row g-4 mb-4">
+      <div class="col-12">
+        <div class="viz-card h-100"><div class="viz-head"><div><div class="viz-title">Histórico anual</div><div class="viz-sub">Comparativo mensal do faturamento contra o ano anterior.</div></div></div><div class="viz-body vendor-chart-wide">{% if chart_yoy %}<img src="data:image/png;base64,{{ chart_yoy }}">{% else %}<div class="muted py-4 text-center">Sem dados.</div>{% endif %}</div></div>
+      </div>
     </div>
-
     <div class="cardx p-3 mt-4">
       <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
         <div class="h6 mb-0">Extrato de Comissão (Ciclo 26→25)</div>
@@ -13233,32 +13410,6 @@ def vendedor(vendor_id: int):
           </tbody>
         </table>
       </div>
-                                  
-      <div id="menuContextoCliente"
-           style="display:none; position:absolute; z-index:99999; min-width:240px; background:#fff; border:1px solid #ddd; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.15); overflow:hidden;">
-        <a href="#" id="ctxCriarFilial" class="d-block px-3 py-2 text-decoration-none text-dark border-bottom">
-          Criar filial para este cliente
-        </a>
-        <a href="#" id="ctxAdicionarFilial" class="d-block px-3 py-2 text-decoration-none text-dark">
-          Adicionar a uma filial existente
-        </a>
-      </div>                              
-    
-      <div id="menuContextoStatusCliente"
-           style="display:none; position:absolute; z-index:100000; min-width:240px; background:#fff; border:1px solid #ddd; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.15); overflow:hidden;">
-        <button type="button" id="ctxMoverRecompra" class="w-100 text-start px-3 py-2 border-0 bg-white border-bottom">
-          Mudar para carteira
-        </button>
-        <button type="button" id="ctxMoverNovo" class="w-100 text-start px-3 py-2 border-0 bg-white">
-          Mudar para novo
-        </button>
-      </div>
-
-      <form id="ctxStatusForm" method="POST" style="display:none;">
-        <input type="hidden" name="status_novo" id="ctxStatusNovo">
-        <input type="hidden" name="identity_nome" id="ctxIdentityNome">
-        <input type="hidden" name="next" id="ctxNext">
-      </form>
 
       {% if devolucoes_valor %}
         <div class="alert alert-warning mt-3 mb-0 py-2">Devoluções no ciclo: <b>{{ format_brl(devolucoes_valor) }}</b>. Esse valor <b>não reduz</b> a base da comissão; fica visível para o gestor decidir.</div>
@@ -13269,13 +13420,137 @@ def vendedor(vendor_id: int):
         <div class="alert alert-success mt-3 mb-0 py-2">Bônus de 1% sobre o que passou de R$ 100 mil no ciclo: <b>{{ format_brl(extra_bonus) }}</b></div>
       {% endif %}
     </div>
-    {% if ver_pedidos %}
+    {% endif %}
+
+    {% if visao == 'pedidos' %}
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-bag-check"></i> Pedidos</span>
+          <div class="sub">Mês comercial {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
+        </div>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Pedidos</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
+            <div class="kpi-value">{{ format_brl(meta_pedidos) }}</div>
+            <div class="progress mt-2" style="height:8px"><div class="progress-bar dash-bar-meta" style="width:{{ 100 if meta_pedidos_pct > 100 else meta_pedidos_pct }}%"></div></div>
+            <div class="kpi-meta">{{ '%.1f'|format(meta_pedidos_pct) }}% atingido</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total realizado</div><div class="icon done"><i class="bi bi-cart3"></i></div></div>
+            <div class="kpi-value">{{ format_brl(pedidos_v) }}</div>
+            <div class="kpi-meta">{{ pedidos_n }} pedido{{ '' if pedidos_n == 1 else 's' }} no mês</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">{{ 'Meta superada' if falta_para_meta_ped <= 0 else 'Falta vender' }}</div><div class="icon {{ 'ok' if falta_para_meta_ped <= 0 else 'warn' }}"><i class="bi {{ 'bi-check-lg' if falta_para_meta_ped <= 0 else 'bi-exclamation-lg' }}"></i></div></div>
+            <div class="kpi-value">{{ format_brl((pedidos_v - meta_pedidos) if falta_para_meta_ped <= 0 else falta_para_meta_ped) }}</div>
+            <div class="kpi-meta">{{ 'Acima da meta de pedidos' if falta_para_meta_ped <= 0 else 'Valor necessário para bater a meta' }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="row g-3 mt-0">
+        <div class="col-12 col-md-6">
+          <div class="dash-kpi">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Ticket médio</div><div class="icon warn"><i class="bi bi-receipt"></i></div></div>
+            <div class="kpi-value">{{ format_brl(ticket_ped) }}</div>
+            <div class="kpi-meta">Valor médio por pedido no mês</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="dash-kpi" style="border-left:4px solid #20c997;">
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Pedidos novos</div><div class="icon ok"><i class="bi bi-person-plus"></i></div></div>
+            <div class="kpi-value text-success">{{ pedidos_novos_qtd }}</div>
+            <div class="kpi-meta">{% if pedidos_n %}{{ pedidos_novos_qtd }} de {{ pedidos_n }} pedido{{ '' if pedidos_n == 1 else 's' }} · primeira compra{% else %}Nenhum pedido no mês{% endif %}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="vendor-dashboard">
+    <div class="row g-4">
+      <div class="col-12">
+        <div class="viz-card h-100"><div class="viz-head"><div><div class="viz-title">Ritmo diário</div><div class="viz-sub">Pedidos e faturamento dia a dia no mês selecionado.</div></div></div><div class="viz-body vendor-chart-wide">{% if evo %}<img src="data:image/png;base64,{{ evo }}">{% else %}<div class="muted py-4 text-center">Sem dados.</div>{% endif %}</div></div>
+      </div>
+    </div>
+    <div class="row g-4 mt-1">
+      <div class="col-12 col-xl-6">
+        <div class="viz-card h-100"><div class="viz-head"><div><div class="viz-title">Top clientes / redes</div><div class="viz-sub">Ranking do mês por valor realizado, sem comprimir os nomes.</div></div></div><div class="viz-body vendor-chart-rank">{% if topc_bar %}<img src="data:image/png;base64,{{ topc_bar }}">{% else %}<div class="muted py-4 text-center">Sem dados.</div>{% endif %}</div></div>
+      </div>
+      <div class="col-12 col-xl-6">
+        <div class="cardx p-3 h-100">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <div class="h6 mb-0">Top Clientes / Redes</div>
+              <div class="muted small">Pedidos do mês consolidados por identidade comercial</div>
+            </div>
+          </div>
+          {% if top_entities %}
+            <div class="d-flex flex-column gap-2">
+              {% for r in top_entities %}
+                <div class="border rounded-3 p-2 px-3 bg-white">
+                  <div class="d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                      <div class="fw-semibold">{{ r['nome_exibicao'] }}</div>
+                      <div class="small text-muted d-flex flex-wrap gap-2 mt-1">
+                        <span class="badge rounded-pill
+                          {% if r['identity_tipo'] == 'GRUPO' %}text-bg-primary
+                          {% elif r['identity_tipo'] == 'REDE' %}text-bg-info
+                          {% else %}text-bg-light border text-dark
+                          {% endif %}">
+                          {{ r['identity_tipo'] }}
+                        </span>
+                        <span class="badge rounded-pill text-bg-{{ r['score_cor'] }}">
+                          {{ r['score_faixa'] }} · {{ r['score_label'] }}
+                        </span>
+                        <span class="badge rounded-pill text-bg-{{ r['prioridade_cor'] }}">
+                          {{ r['prioridade'] }}
+                        </span>
+                        <span class="badge rounded-pill {{ r['badge_class'] }} customer-status-badge"
+                              style="cursor:context-menu"
+                              data-identity-key="{{ r['identity_key'] }}"
+                              data-identity-nome="{{ r['nome_exibicao'] }}"
+                              data-is-novo="{{ 1 if r['badge'] == 'NOVO' else 0 }}"
+                              data-can-set-novo="{{ 1 if user and user.get('role') in ['admin','gestor'] else 0 }}"
+                              title="Botão direito para ações">
+                          {{ r['badge'] }}
+                        </span>
+                        <span>{{ r['pedidos_qtd'] }} pedido(s)</span>
+                      </div>
+                    </div>
+                    <div class="text-end">
+                      <div class="fw-bold text-primary">{{ format_brl(r['valor']) }}</div>
+                      {% if r['cliente_id'] %}
+                        <a href="{{ url_for('cliente_360', cliente_id=r['cliente_id']) }}"
+                           class="btn btn-sm btn-light border mt-1">
+                          Perfil
+                        </a>
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="muted text-center py-4">Nenhum movimento no período.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    </div>
     <div class="cardx p-3 mt-4">
-      <div class="d-flex justify-content-between align-items-center mb-3">
+      <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
         <div>
           <div class="h5 mb-0">Pedidos do mês</div>
           <div class="small muted">Lista dos pedidos que compõem o realizado comercial</div>
         </div>
+        <a class="btn btn-sm btn-success" href="{{ url_for('vendedor_pedidos_excel', vendor_id=v['id'], data_ref=mes_str) }}">
+          <i class="bi bi-file-earmark-excel me-1"></i>Excel
+        </a>
       </div>
 
       <div class="table-responsive">
@@ -13308,6 +13583,32 @@ def vendedor(vendor_id: int):
       </div>
     </div>
     {% endif %}
+
+    <div id="menuContextoCliente"
+         style="display:none; position:absolute; z-index:99999; min-width:240px; background:#fff; border:1px solid #ddd; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.15); overflow:hidden;">
+      <a href="#" id="ctxCriarFilial" class="d-block px-3 py-2 text-decoration-none text-dark border-bottom">
+        Criar filial para este cliente
+      </a>
+      <a href="#" id="ctxAdicionarFilial" class="d-block px-3 py-2 text-decoration-none text-dark">
+        Adicionar a uma filial existente
+      </a>
+    </div>
+
+    <div id="menuContextoStatusCliente"
+         style="display:none; position:absolute; z-index:100000; min-width:240px; background:#fff; border:1px solid #ddd; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.15); overflow:hidden;">
+      <button type="button" id="ctxMoverRecompra" class="w-100 text-start px-3 py-2 border-0 bg-white border-bottom">
+        Mudar para carteira
+      </button>
+      <button type="button" id="ctxMoverNovo" class="w-100 text-start px-3 py-2 border-0 bg-white">
+        Mudar para novo
+      </button>
+    </div>
+
+    <form id="ctxStatusForm" method="POST" style="display:none;">
+      <input type="hidden" name="status_novo" id="ctxStatusNovo">
+      <input type="hidden" name="identity_nome" id="ctxIdentityNome">
+      <input type="hidden" name="next" id="ctxNext">
+    </form>
 <script>
 (function(){
     const menuFilial = document.getElementById("menuContextoCliente");
@@ -13383,10 +13684,11 @@ def vendedor(vendor_id: int):
 })();
 </script>
     """, 
-   v=v, mes_str=mes_str, user=user, format_brl=format_brl,
+   visao=visao, v=v, mes_str=mes_str, user=user, format_brl=format_brl,
     d0_ped=d0_ped, d1_ped=d1_ped, d0_fat=d0_fat, d1_fat=d1_fat,
-    meta_mensal=meta_mensal, meta_diaria=meta_diaria, meta_semanal=meta_semanal, meta_realizado_pct=meta_realizado_pct, meta_variacao_pct=meta_variacao_pct,
-    pedidos_v=pedidos_val, pedidos_n=pedidos_qtd,
+    meta_mensal=meta_mensal, meta_pedidos=meta_pedidos, meta_diaria=meta_diaria, meta_semanal=meta_semanal, meta_realizado_pct=meta_realizado_pct, meta_variacao_pct=meta_variacao_pct,
+    meta_pedidos_pct=meta_pedidos_pct, pedidos_v=pedidos_val, pedidos_n=pedidos_qtd, ticket_ped=ticket_ped, pedidos_novos_qtd=pedidos_novos_qtd, fat_qtd=fat_qtd, ticket_fat=ticket_fat,
+    falta_para_meta=falta_para_meta, falta_para_meta_ped=falta_para_meta_ped,
     projecao=projecao, comissao=comissao, faturamento=faturamento,
     novo=novo_count, rep=rep_count, recuperados=recuperado_count,
     evo=evo, topc_bar=topc_bar, lines=lines, extra_bonus=extra_bonus,
@@ -13462,6 +13764,85 @@ def vendedor_comissao_excel(vendor_id: int):
                 "Status", "JIT IMEDIATO", "Valor base", "%", "Valor comissão",
                 "Associação Nacional",
             ],
+            "rows": rows,
+        }],
+    )
+
+
+@app.route("/vendedor/<int:vendor_id>/pedidos.xlsx")
+@login_required
+def vendedor_pedidos_excel(vendor_id: int):
+    """Exporta a tabela Pedidos do mês da aba Pedidos do vendedor."""
+    from crm_npd.services.relatorios import _xlsx_response
+
+    user = get_current_user()
+    if user and user.get("role") not in ["admin", "gestor"]:
+        with conectar() as _pc:
+            _own_vendor = get_user_vendor_id(_pc, user)
+        if _own_vendor and _own_vendor > 0 and int(vendor_id) != int(_own_vendor):
+            flash("Acesso negado.", "warning")
+            return redirect(url_for("vendedor", vendor_id=int(_own_vendor), visao="pedidos"))
+
+    data_ref_str = request.args.get("data_ref", "")
+    try:
+        if data_ref_str:
+            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date()
+        else:
+            ref_date = date.today().replace(day=1)
+    except Exception:
+        ref_date = date.today().replace(day=1)
+
+    mes_str = ref_date.strftime("%Y-%m")
+    d0_ped = date(ref_date.year, ref_date.month, 1)
+    if ref_date.month == 12:
+        d1_ped = date(ref_date.year, 12, 31)
+    else:
+        d1_ped = date(ref_date.year, ref_date.month + 1, 1) - timedelta(days=1)
+
+    with conectar() as conn:
+        v = conn.execute("SELECT * FROM vendors WHERE id=?", (vendor_id,)).fetchone()
+        if not v:
+            flash("Vendedor não encontrado.", "warning")
+            return redirect(url_for("vendedores"))
+        pedidos_lista = _vendor_month_orders(conn, vendor_id, mes_str)
+
+    nome = (v["nome"] or v["codigo"] or f"vendedor_{vendor_id}").strip()
+    tipo = (v["tipo"] or "").strip() or "—"
+    rows = []
+    total = 0.0
+    for p in pedidos_lista:
+        valor = float(p.get("valor") or 0)
+        total += valor
+        data_raw = str(p.get("data_emissao") or "").strip()
+        data_val = data_raw
+        try:
+            data_val = datetime.strptime(data_raw[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+        rows.append([
+            data_val,
+            p.get("pedido") or "",
+            p.get("cliente") or "",
+            p.get("familia_produto") or "Sem produto",
+            valor,
+        ])
+    metadata = [
+        ("Vendedor", nome),
+        ("Canal", tipo),
+        ("Mês", mes_str),
+        ("Período", f"{d0_ped.strftime('%d/%m/%Y')} a {d1_ped.strftime('%d/%m/%Y')}"),
+        ("Pedidos", len(rows)),
+        ("Valor pedidos", total),
+    ]
+    filename = f"pedidos_{v['codigo'] or vendor_id}_{mes_str}"
+    return _xlsx_response(
+        filename,
+        f"CRM NPD · Pedidos do mês · {nome}",
+        metadata,
+        [{
+            "name": "Pedidos",
+            "title": f"Pedidos do mês · {nome} · {d0_ped.strftime('%d/%m/%Y')} a {d1_ped.strftime('%d/%m/%Y')}",
+            "headers": ["Data", "Pedido", "Cliente", "Produto", "Valor"],
             "rows": rows,
         }],
     )
@@ -18190,15 +18571,19 @@ def vendedor_meta_hist(vendor_id):
     
     mes = request.form.get("mes_ref")
     valor = parse_br_money(request.form.get("meta_valor"))
+    visao_raw = (request.form.get("visao") or "geral").strip().lower()
+    visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
+    eixo = (request.form.get("eixo") or "faturamento").strip().lower()
+    tipo = "VENDEDOR_PEDIDOS" if eixo == "pedidos" else "VENDEDOR"
     
     if mes and valor > 0:
         with conectar() as conn:
             ensure_goals_table(conn)
-            set_goal_history(conn, mes, "VENDEDOR", valor, entity_id=vendor_id)
+            set_goal_history(conn, mes, tipo, valor, entity_id=vendor_id)
             conn.commit()
-        flash("Meta individual atualizada.", "success")
+        flash("Meta de pedidos atualizada." if tipo == "VENDEDOR_PEDIDOS" else "Meta de faturamento atualizada.", "success")
         
-    return redirect(url_for("vendedor", vendor_id=vendor_id, data_ref=mes))
+    return redirect(url_for("vendedor", vendor_id=vendor_id, data_ref=mes, visao=visao))
 
 
 # -----------------------------
