@@ -574,6 +574,7 @@ def _gravar_liquidez(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
 
 
 _CDC_LOTE_IN = 200
+_RE_SUFIXO_ITEM = re.compile(r"^(.+)[-/](\d{1,4})$")
 
 
 def _chaves_norm(valores) -> list[str]:
@@ -585,6 +586,21 @@ def _chaves_norm(valores) -> list[str]:
             continue
         vistos.add(chave)
         saida.append(chave)
+    return saida
+
+
+def _chaves_com_documento_pai(valores) -> list[str]:
+    """Item do log (FATURA-seq / NUMERO/seq) tambem busca o documento pai."""
+    saida = _chaves_norm(valores)
+    vistos = set(saida)
+    for chave in list(saida):
+        match = _RE_SUFIXO_ITEM.match(chave)
+        if not match:
+            continue
+        pai = (match.group(1) or "").strip()
+        if pai and pai not in vistos:
+            vistos.add(pai)
+            saida.append(pai)
     return saida
 
 
@@ -614,7 +630,7 @@ def recarregar_pedidos(conn: sqlite3.Connection, numeros) -> int:
     """Apaga e regrava so os pedidos cujos numeros mudaram no Sisplan."""
     from crm_npd import legacy_monolith as m
 
-    chaves = _chaves_norm(numeros)
+    chaves = _chaves_com_documento_pai(numeros)
     if not chaves:
         return 0
     rows = _select_in(CRM_PEDIDOS, "P.NUMERO", chaves)
@@ -631,8 +647,8 @@ def recarregar_faturamento(conn: sqlite3.Connection, *, faturas=None, pedidos=No
     """Apaga e regrava NFs (e DEMO/entrada) das chaves que o CDC viu."""
     from crm_npd import legacy_monolith as m
 
-    fats = _chaves_norm(faturas)
-    peds = _chaves_norm(pedidos)
+    fats = _chaves_com_documento_pai(faturas)
+    peds = _chaves_com_documento_pai(pedidos)
     if not fats and not peds:
         return 0
     rows: list[dict] = []

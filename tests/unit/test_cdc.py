@@ -22,7 +22,7 @@ from crm_npd.sync.cdc import (
     extrair_chave_documento,
     snapshot_desatualizado,
 )
-from crm_npd.sync.etl import _rotulo_status_os
+from crm_npd.sync.etl import _chaves_com_documento_pai, _rotulo_status_os
 
 
 def test_chave_pedido_numero_e_ped_num() -> None:
@@ -33,6 +33,7 @@ def test_chave_pedido_numero_e_ped_num() -> None:
 
 def test_chave_fatura_e_os() -> None:
     assert extrair_chave_documento("FATURA = 01135942") == "01135942"
+    assert extrair_chave_documento("FATURA = 004487002-4-3") == "004487002-4-3"
     assert extrair_chave_documento("NOTAFISCAL = 660751") == "660751"
     assert extrair_chave_documento("OS = 10422") == "10422"
     assert extrair_chave_documento("22689") == "22689"
@@ -79,7 +80,23 @@ def test_anexar_and_respeita_where_existente() -> None:
     assert "WHERE O.NUMERO" in sem_where.upper()
     fat = anexar_and(CRM_FATURAMENTO, in_trim("N.FATURA", 1))
     assert "AND TRIM(COALESCE(N.FATURA" in fat.upper()
-    assert in_trim("P.NUMERO", 3) == "TRIM(COALESCE(P.NUMERO, '')) IN (?,?,?)"
+    assert in_trim("P.NUMERO", 3) == (
+        "TRIM(COALESCE(P.NUMERO, '')) IN "
+        "(CAST(? AS VARCHAR(40)),CAST(? AS VARCHAR(40)),CAST(? AS VARCHAR(40)))"
+    )
+
+
+def test_chave_de_item_tambem_busca_o_documento_pai() -> None:
+    chaves = _chaves_com_documento_pai(
+        ["004487002-4-3", "01165642/1", "22977", "0045940024"]
+    )
+    assert "004487002-4-3" in chaves
+    assert "004487002-4" in chaves
+    assert "01165642/1" in chaves
+    assert "01165642" in chaves
+    assert "22977" in chaves
+    assert "0045940024" in chaves
+    assert "004487002" not in chaves
 
 
 def test_base_de_ontem_pede_carga_completa() -> None:

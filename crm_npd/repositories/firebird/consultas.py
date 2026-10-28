@@ -392,9 +392,13 @@ def anexar_and(sql: str, clausula: str) -> str:
 
 
 def in_trim(coluna: str, quantidade: int) -> str:
-    """Clausula IN parametrizada, com TRIM para VARCHAR do Sisplan."""
+    """Clausula IN parametrizada, com TRIM para VARCHAR do Sisplan.
+
+    O CAST do parametro evita o erro do fdb quando o log traz chave de item
+    maior que a coluna (ex.: FATURA CHAR(12) e valor '004487002-4-3').
+    """
     n = max(0, int(quantidade or 0))
-    marcas = ",".join("?" for _ in range(n))
+    marcas = ",".join("CAST(? AS VARCHAR(40))" for _ in range(n))
     return f"TRIM(COALESCE({coluna}, '')) IN ({marcas})"
 
 
