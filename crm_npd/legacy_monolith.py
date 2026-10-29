@@ -2887,12 +2887,21 @@ def _chart_clean_axes(ax, grid_axis="y"):
     ax.tick_params(axis="both", length=0, labelcolor="#718096", labelsize=8.5)
 
 
-def bar_chart(labels: List[str], values: List[float], title: str, orientation: str = "auto") -> str:
+def bar_chart(labels: List[str], values: List[float], title: str, orientation: str = "auto", money: bool = True) -> str:
     """Comparação categórica. Automaticamente vira horizontal quando há muitas categorias."""
     labels = [str(x or "-") for x in labels]
     values = [float(v or 0) for v in values]
     if not labels:
         return ""
+    def _bar_label(v: float, vmax: float) -> str:
+        if money:
+            return _short_money(v) if vmax >= 1000 else f"{v:,.0f}".replace(",", ".")
+        av = abs(float(v or 0))
+        if av >= 1_000_000:
+            return f"{v/1_000_000:.1f} mi".replace(".", ",")
+        if av >= 1_000:
+            return f"{v/1_000:.1f} mil".replace(".", ",")
+        return f"{v:,.0f}".replace(",", ".")
     orient = (orientation or "auto").strip().lower()
     if orient in {"vertical", "v"}:
         horizontal = False
@@ -2911,8 +2920,7 @@ def bar_chart(labels: List[str], values: List[float], title: str, orientation: s
         vmax = max(vals) if vals else 1
         ax.set_xlim(0, vmax * 1.28 if vmax > 0 else 1)
         for b, v in zip(bars, vals):
-            label = _short_money(v) if max(vals or [0]) >= 1000 else f"{v:,.0f}".replace(",", ".")
-            ax.text(v + vmax*.018, b.get_y()+b.get_height()/2, label, va="center", ha="left", fontsize=8.5, fontweight="bold", color="#21364f")
+            ax.text(v + vmax*.018, b.get_y()+b.get_height()/2, _bar_label(v, max(vals or [0])), va="center", ha="left", fontsize=8.5, fontweight="bold", color="#21364f")
     else:
         fig, ax = plt.subplots(figsize=(8.4, 4.0))
         bars = ax.bar(labels, values, color="#3b82f6", edgecolor="none", width=.58)
@@ -2920,8 +2928,7 @@ def bar_chart(labels: List[str], values: List[float], title: str, orientation: s
         vmax=max(values) if values else 1
         ax.set_ylim(0, vmax*1.18 if vmax>0 else 1)
         for b, v in zip(bars, values):
-            label = _short_money(v) if vmax >= 1000 else f"{v:,.0f}".replace(",", ".")
-            ax.text(b.get_x()+b.get_width()/2, v+vmax*.025, label, ha="center", va="bottom", fontsize=8.5, fontweight="bold", color="#21364f")
+            ax.text(b.get_x()+b.get_width()/2, v+vmax*.025, _bar_label(v, vmax), ha="center", va="bottom", fontsize=8.5, fontweight="bold", color="#21364f")
     fig.patch.set_facecolor("#f8fbff")
     ax.set_facecolor("#f8fbff")
     plt.tight_layout(pad=.7)
@@ -2958,16 +2965,25 @@ def regional_value_distribution_chart(data_by_uf: Dict[str, float]) -> str:
     if len(items)>10:
         outros=sum(v for _,v in items[10:])
         if outros>0: top.append(("DEMAIS",outros))
-    labels=[x[0] for x in top][::-1]; values=[x[1] for x in top][::-1]
-    fig_h=max(4.3,.46*len(labels)+1)
-    fig,ax=plt.subplots(figsize=(8.8,fig_h))
-    bars=ax.barh(labels,values,color="#3b82f6",edgecolor="none",height=.6)
-    _chart_clean_axes(ax,"x")
+    labels=[x[0] for x in top]
+    values=[x[1] for x in top]
+    fig,ax=plt.subplots(figsize=(9.4,8.2))
+    bars=ax.bar(labels,values,color="#3b82f6",edgecolor="none",width=.68)
+    _chart_clean_axes(ax,"y")
     vmax=max(values) if values else 1
-    ax.set_xlim(0,vmax*1.38)
+    ax.set_ylim(0,vmax*1.22)
+    ax.tick_params(axis="x", labelsize=11)
+    ax.tick_params(axis="y", labelsize=10)
     for bar,val in zip(bars,values):
         pct=val/total*100
-        ax.text(val+vmax*.02,bar.get_y()+bar.get_height()/2,f"{_short_money(val)}  ·  {pct:.1f}%",va="center",ha="left",fontsize=8.5,fontweight="bold",color="#20364f")
+        if val < vmax * 0.08:
+            continue
+        ax.text(
+            bar.get_x()+bar.get_width()/2,
+            val+vmax*.025,
+            f"{_short_money(val)}\n{pct:.1f}%",
+            ha="center", va="bottom", fontsize=10.5, fontweight="bold", color="#20364f",
+        )
     fig.patch.set_facecolor("#f8fbff"); ax.set_facecolor("#f8fbff")
     plt.tight_layout(pad=.8)
     return fig_to_base64(fig)
@@ -2979,13 +2995,15 @@ def regional_conversion_chart(rows: List[dict], title: str) -> str:
     rows=sorted(rows,key=lambda r:float(r.get("taxa") or 0))
     labels=[str(r.get("uf") or "").upper() for r in rows]
     rates=[float(r.get("taxa") or 0) for r in rows]
-    fig,ax=plt.subplots(figsize=(6.8,max(2.8,.52*len(rows)+.6)))
-    bars=ax.barh(labels,rates,color="#3b82f6",edgecolor="none",height=.56)
+    fig,ax=plt.subplots(figsize=(7.8,max(4.0,.82*len(rows)+1.1)))
+    bars=ax.barh(labels,rates,color="#3b82f6",edgecolor="none",height=.58)
     _chart_clean_axes(ax,"x")
     ax.set_xlim(0,105)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.tick_params(axis="x", labelsize=9)
     for bar,r,rate in zip(bars,rows,rates):
         conv=int(r.get("convertidos") or 0); total=int(r.get("total") or 0)
-        ax.text(min(rate+2,101),bar.get_y()+bar.get_height()/2,f"{rate:.1f}%  ·  {conv}/{total}",va="center",ha="left",fontsize=8.5,fontweight="bold",color="#20364f")
+        ax.text(min(rate+2,101),bar.get_y()+bar.get_height()/2,f"{rate:.1f}%  ·  {conv}/{total}",va="center",ha="left",fontsize=10.5,fontweight="bold",color="#20364f")
     fig.patch.set_facecolor("#f8fbff"); ax.set_facecolor("#f8fbff")
     plt.tight_layout(pad=.7)
     return fig_to_base64(fig)
@@ -3053,14 +3071,14 @@ def donut_chart(labels: List[str], values: List[float], title: str) -> str:
     }
     fallback=["#3b82f6","#14b8a6","#8b5cf6","#f59e0b","#ef4444","#64748b"]
     colors=[semantic.get(l.upper(),fallback[i%len(fallback)]) for i,l in enumerate(labels)]
-    fig,ax=plt.subplots(figsize=(6.6,4.4))
+    fig,ax=plt.subplots(figsize=(8.6,7.2))
     def pct_fmt(p): return f"{p:.1f}%" if p>=4 else ""
-    wedges,_,autos=ax.pie(values,startangle=90,colors=colors,wedgeprops=dict(width=.28,edgecolor="#f8fbff",linewidth=2),autopct=pct_fmt,pctdistance=.84,textprops=dict(fontsize=8,fontweight="bold",color="#41566f"))
+    wedges,_,autos=ax.pie(values,startangle=90,colors=colors,wedgeprops=dict(width=.28,edgecolor="#f8fbff",linewidth=2),autopct=pct_fmt,pctdistance=.84,textprops=dict(fontsize=11,fontweight="bold",color="#41566f"))
     total=sum(values)
-    ax.text(0,.06,f"{int(total)}",ha="center",va="center",fontsize=29,fontweight="900",color="#10233d")
+    ax.text(0,.06,f"{int(total)}",ha="center",va="center",fontsize=40,fontweight="900",color="#10233d")
     center_label="Orçamentos" if "fase" in title.lower() or "orça" in title.lower() else "Pedidos"
-    ax.text(0,-.14,center_label,ha="center",va="center",fontsize=9,color="#718096",fontweight="bold")
-    ax.legend(wedges,labels,loc="lower center",bbox_to_anchor=(.5,-.12),ncol=2,frameon=False,fontsize=7.8,handlelength=1.5,columnspacing=1.2)
+    ax.text(0,-.14,center_label,ha="center",va="center",fontsize=12,color="#718096",fontweight="bold")
+    ax.legend(wedges,labels,loc="lower center",bbox_to_anchor=(.5,-.08),ncol=2,frameon=False,fontsize=10,handlelength=1.5,columnspacing=1.2)
     fig.patch.set_facecolor("#f8fbff"); ax.set_facecolor("#f8fbff")
     plt.tight_layout(pad=.7)
     return fig_to_base64(fig)
@@ -7263,6 +7281,51 @@ def home():
 # -------------------------------------------------------------------------
 # FUNÇÃO dashboard
 # -------------------------------------------------------------------------
+@app.route("/dashboard/metas", methods=["POST"])
+@login_required
+def dashboard_salvar_metas():
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    acao = (request.form.get("acao") or "salvar_metas_pedidos").strip()
+    mes_post = (request.form.get("mes_ref") or date.today().strftime("%Y-%m")).strip()
+    data_ref = (request.form.get("data_ref") or mes_post).strip()
+    fat_de = (request.form.get("fat_de") or "").strip()
+    fat_ate = (request.form.get("fat_ate") or "").strip()
+    visao_raw = (request.form.get("visao") or "geral").strip().lower()
+    visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
+
+    with conectar() as conn:
+        ensure_goals_table(conn)
+        if acao == "salvar_metas_faturamento":
+            set_meta_equipe(
+                conn,
+                mes_post,
+                "faturamento",
+                parse_br_money(request.form.get("meta_fat_interno", "0")),
+                parse_br_money(request.form.get("meta_fat_externo", "0")),
+            )
+            flash(f"Metas de faturamento de {mes_post} atualizadas.", "success")
+        else:
+            set_meta_equipe(
+                conn,
+                mes_post,
+                "pedidos",
+                parse_br_money(request.form.get("meta_ped_interno", request.form.get("meta_interno", "0"))),
+                parse_br_money(request.form.get("meta_ped_externo", request.form.get("meta_externo", "0"))),
+            )
+            flash(f"Metas de pedidos de {mes_post} atualizadas.", "success")
+        conn.commit()
+
+    kwargs = {"data_ref": data_ref, "visao": visao}
+    if fat_de and fat_ate:
+        kwargs["fat_de"] = fat_de
+        kwargs["fat_ate"] = fat_ate
+    return redirect(url_for("dashboard", **kwargs))
+
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -7274,25 +7337,48 @@ def dashboard():
     
     # --- 1. DATAS ---
     data_ref_str = request.args.get("data_ref", "")
+    fat_de_arg = (request.args.get("fat_de") or "").strip()
+    fat_ate_arg = (request.args.get("fat_ate") or "").strip()
     ver_pedidos = request.args.get("ver_pedidos", "0") == "1"
     visao_raw = (request.args.get("visao") or "geral").strip().lower()
     visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
 
+    hoje = date.today()
     try:
         if data_ref_str:
-            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date()
+            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date().replace(day=1)
         else:
             # CORREÇÃO: Força o dia 1 para alinhar com o seletor de mês.
             # Assim, mesmo que seja dia 30, ele pega o ciclo correto do mês atual.
-            ref_date = date.today().replace(day=1)
-    except:
-        ref_date = date.today().replace(day=1)
+            ref_date = hoje.replace(day=1)
+    except Exception:
+        ref_date = hoje.replace(day=1)
 
-    hoje = date.today()
-    # Ciclo Financeiro (configurável)
-    d0_fat, d1_fat = periodo_ciclo_25_24_que_contem_hoje(ref_date)
-    # Ciclo Comercial (1-31)
+    def _iso_date(valor: str):
+        try:
+            s = (valor or "").strip()[:10]
+            if len(s) == 10:
+                return datetime.strptime(s, "%Y-%m-%d").date()
+        except Exception:
+            pass
+        return None
+
+    # Pedidos e faturamento padrão do dashboard: 1º ao último dia do mês escolhido.
     d0_ped, d1_ped = periodo_mes_calendario(ref_date)
+    fat_de_dt = _iso_date(fat_de_arg)
+    fat_ate_dt = _iso_date(fat_ate_arg)
+    data_fat_custom = bool(fat_de_dt and fat_ate_dt)
+    if data_fat_custom:
+        if fat_de_dt > fat_ate_dt:
+            fat_de_dt, fat_ate_dt = fat_ate_dt, fat_de_dt
+        d0_fat, d1_fat = fat_de_dt, fat_ate_dt
+        fat_ref = d1_fat.replace(day=1)
+    else:
+        fat_ref = ref_date
+        d0_fat, d1_fat = d0_ped, d1_ped
+    fat_mes_ref = fat_ref.strftime("%Y-%m")
+    fat_de_str = d0_fat.isoformat()
+    fat_ate_str = d1_fat.isoformat()
 
     with conectar() as conn:
         ensure_vendor_type_column(conn)
@@ -7360,7 +7446,7 @@ def dashboard():
         mes_ref = ref_date.strftime("%Y-%m")
 
         meta_ped_int, meta_ped_ext = get_meta_equipe(conn, mes_ref, "pedidos")
-        meta_fat_int, meta_fat_ext = get_meta_equipe(conn, mes_ref, "faturamento")
+        meta_fat_int, meta_fat_ext = get_meta_equipe(conn, fat_mes_ref, "faturamento")
 
         # Pedidos: se equipe vazia, tenta soma das metas individuais / meta global legada.
         if (meta_ped_int + meta_ped_ext) == 0:
@@ -7732,6 +7818,13 @@ def dashboard():
                 "bar": (valor / ped_max * 100.0) if ped_max > 0 else 0.0,
             })
 
+    def dash_url(visao_dest: str) -> str:
+        kw = {"data_ref": mes_ref, "visao": visao_dest}
+        if data_fat_custom:
+            kw["fat_de"] = fat_de_str
+            kw["fat_ate"] = fat_ate_str
+        return url_for("dashboard", **kw)
+
     # --- HTML ---
     body = render_template_string(r"""
     <div class="dash-toolbar">
@@ -7745,12 +7838,16 @@ def dashboard():
       </div>
       <div class="d-flex align-items-end gap-3 flex-wrap">
         <nav class="dash-tabs" aria-label="Visão do dashboard">
-          <a class="{{ 'active' if visao == 'geral' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='geral') }}">Visão Geral</a>
-          <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Faturamento</a>
-          <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_for('dashboard', data_ref=mes_ref, visao='pedidos') }}">Pedidos</a>
+          <a class="{{ 'active' if visao == 'geral' else '' }}" href="{{ dash_url('geral') }}">Visão Geral</a>
+          <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ dash_url('faturamento') }}">Faturamento</a>
+          <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ dash_url('pedidos') }}">Pedidos</a>
         </nav>
         <form class="d-flex gap-2 align-items-end cardx p-3" method="get">
           <input type="hidden" name="visao" value="{{ visao }}">
+          {% if data_fat_custom %}
+          <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
+          <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+          {% endif %}
           <div><label class="form-label small fw-bold text-muted mb-0">MÊS REF</label><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()"></div>
         </form>
       </div>
@@ -7763,9 +7860,27 @@ def dashboard():
           <div class="dash-block-head">
             <div>
               <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
-              <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
+              <div class="sub">{% if data_fat_custom %}Período pedido{% else %}Padrão (mês calendário){% endif %}: {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
             </div>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Detalhar</a>
+            <div class="d-flex gap-2 align-items-end flex-wrap">
+              <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
+                <input type="hidden" name="visao" value="{{ visao }}">
+                <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+                <div>
+                  <label class="form-label small fw-bold text-muted mb-0">DE</label>
+                  <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
+                </div>
+                <div>
+                  <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
+                  <input type="date" name="fat_ate" class="form-control form-control-sm fw-bold" value="{{ fat_ate_str }}" required>
+                </div>
+                <button class="btn btn-sm btn-primary">Aplicar</button>
+              </form>
+              {% if data_fat_custom %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao=visao) }}">Padrão</a>
+              {% endif %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ dash_url('faturamento') }}">Detalhar</a>
+            </div>
           </div>
           <div class="row g-3">
             <div class="col-12 col-md-4">
@@ -7800,7 +7915,7 @@ def dashboard():
               <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Pedidos</span>
               <div class="sub">Mês {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
             </div>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='pedidos') }}">Detalhar</a>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ dash_url('pedidos') }}">Detalhar</a>
           </div>
           <div class="row g-3">
             <div class="col-12 col-md-4">
@@ -7830,6 +7945,58 @@ def dashboard():
           </div>
         </div>
       </div>
+      <div class="row g-3">
+        <div class="col-12 col-xl-6">
+          <div class="cardx p-4 h-100">
+            <div class="h5 mb-1">Configurar Metas Pedidos</div>
+            <div class="text-muted small mb-3">Meta comercial de pedidos para {{ mes_ref }} (Interna e Externa).</div>
+            <form method="post" action="{{ url_for('dashboard_salvar_metas') }}">
+              <input type="hidden" name="acao" value="salvar_metas_pedidos">
+              <input type="hidden" name="mes_ref" value="{{ mes_ref }}">
+              <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+              <input type="hidden" name="visao" value="{{ visao }}">
+              {% if data_fat_custom %}
+              <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
+              <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+              {% endif %}
+              <div class="mb-3">
+                <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
+                <input class="form-control form-control-lg" name="meta_ped_interno" value="{{ format_brl(meta_ped_int) }}">
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-bold text-success">Meta Equipe EXTERNA (R$)</label>
+                <input class="form-control form-control-lg" name="meta_ped_externo" value="{{ format_brl(meta_ped_ext) }}">
+              </div>
+              <button class="btn btn-primary">Salvar Metas Pedidos</button>
+            </form>
+          </div>
+        </div>
+        <div class="col-12 col-xl-6">
+          <div class="cardx p-4 h-100">
+            <div class="h5 mb-1">Configurar Metas Faturamento</div>
+            <div class="text-muted small mb-3">Meta comercial de faturamento para {{ fat_mes_ref }} (Interna e Externa).</div>
+            <form method="post" action="{{ url_for('dashboard_salvar_metas') }}">
+              <input type="hidden" name="acao" value="salvar_metas_faturamento">
+              <input type="hidden" name="mes_ref" value="{{ fat_mes_ref }}">
+              <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+              <input type="hidden" name="visao" value="{{ visao }}">
+              {% if data_fat_custom %}
+              <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
+              <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+              {% endif %}
+              <div class="mb-3">
+                <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
+                <input class="form-control form-control-lg" name="meta_fat_interno" value="{{ format_brl(meta_fat_int) }}">
+              </div>
+              <div class="mb-3">
+                <label class="form-label fw-bold text-success">Meta Equipe EXTERNA (R$)</label>
+                <input class="form-control form-control-lg" name="meta_fat_externo" value="{{ format_brl(meta_fat_ext) }}">
+              </div>
+              <button class="btn btn-primary">Salvar Metas Faturamento</button>
+            </form>
+          </div>
+        </div>
+      </div>
     </div>
     {% endif %}
 
@@ -7838,8 +8005,24 @@ def dashboard():
       <div class="dash-block-head">
         <div>
           <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
-          <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · meta em Settings</div>
+          <div class="sub">{% if data_fat_custom %}Período pedido{% else %}Padrão (mês calendário){% endif %}: {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
         </div>
+        <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
+          <input type="hidden" name="visao" value="faturamento">
+          <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">DE</label>
+            <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
+          </div>
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
+            <input type="date" name="fat_ate" class="form-control form-control-sm fw-bold" value="{{ fat_ate_str }}" required>
+          </div>
+          <button class="btn btn-sm btn-primary">Aplicar</button>
+          {% if data_fat_custom %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Padrão</a>
+          {% endif %}
+        </form>
       </div>
       <div class="row g-3 mb-3">
         <div class="col-12 col-md-4">
@@ -8083,7 +8266,9 @@ def dashboard():
     top_clientes_chart=top_clientes_chart, top_medidas_chart=top_medidas_chart,
     chart_yoy=chart_yoy, ultimos_pedidos=ultimos_pedidos,
     metrics_orc=metrics_orc, top_medidas_rows=top_medidas_rows, total_pedidos_periodo=total_pedidos_periodo,
-    mes_ref=mes_ref, visao=visao,
+    mes_ref=mes_ref, visao=visao, fat_mes_ref=fat_mes_ref, data_fat_custom=data_fat_custom,
+    fat_de_str=fat_de_str, fat_ate_str=fat_ate_str,
+    dash_url=dash_url,
     fat_equipe=fat_equipe, ped_equipe=ped_equipe, ped_equipe_total=ped_equipe_total,
     format_brl=format_brl
     )
@@ -9274,8 +9459,17 @@ def orcamentos_detalhe():
             for k in SISPLAN_STAGE_ORDER if stage_acc[k]["qtd"] > 0
         ]
         chart_status = donut_chart([r["label"] for r in stage_rows], [r["qtd"] for r in stage_rows], "Fases comerciais") if stage_rows else None
-        top_status_rows = list(stats_rows[:8])
-        status_restantes = max(0, len(stats_rows) - len(top_status_rows))
+        _codigos_finalizados = {"19", "21", "28", "29", "33"}
+        stats_ativos = []
+        status_finalizados_rows = []
+        for r in stats_rows:
+            nome = str(r.get("status_nome") or "").strip().upper()
+            if codigo_status_os(nome) in _codigos_finalizados or "PEDIDO APROVADO" in nome:
+                status_finalizados_rows.append(r)
+            else:
+                stats_ativos.append(r)
+        top_status_rows = list(stats_ativos[:8])
+        status_restantes = max(0, len(stats_ativos) - len(top_status_rows))
 
         # Uma única agregação regional alimenta os três gráficos. Além de mais
         # rápido, a conversão passa a ser taxa real (convertidos / total), e não
@@ -9328,6 +9522,20 @@ def orcamentos_detalhe():
       .orcamentos-hero .dropdown{position:relative;z-index:1080}
       .orcamentos-hero .seller-dropdown-menu{z-index:1090;min-width:290px;max-width:min(92vw,380px);max-height:min(360px,60vh);overflow-y:auto;overflow-x:hidden}
       @media(max-width:700px){.orcamentos-hero .seller-dropdown-menu{left:0!important;right:auto!important;min-width:min(290px,88vw)}}
+      .orcamentos-status-stack{display:flex;flex-direction:column;gap:1.5rem;height:auto}
+      .orcamentos-status-stack .viz-card{height:auto;overflow:visible;flex-shrink:0}
+      .orcamentos-chart-row{align-items:stretch}
+      .orcamentos-chart-row > [class*="col-xl-7"]{display:flex}
+      .orcamentos-chart-slot{display:flex;width:100%;min-height:0}
+      .orcamentos-chart-row .viz-card--fill{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;width:100%}
+      .orcamentos-chart-row .viz-card--fill .viz-head,
+      .orcamentos-chart-row .viz-card--fill > .d-flex{flex-shrink:0}
+      .orcamentos-chart-row .viz-card--fill .viz-body{flex:1 1 0!important;min-height:0!important;height:auto!important;display:flex;align-items:center;justify-content:center;padding:4px 8px 8px}
+      .orcamentos-chart-row .viz-card--fill .viz-body img{width:100%!important;max-width:100%!important;height:100%!important;max-height:100%!important;object-fit:contain}
+      @media(min-width:1200px){
+        .orcamentos-chart-slot{position:relative;height:100%;min-height:100%}
+        .orcamentos-chart-row .viz-card--fill{position:absolute;inset:0;flex:none;height:auto}
+      }
     </style>
     <div class="page-hero orcamentos-hero mb-4">
       <div class="d-flex justify-content-between align-items-end flex-wrap gap-3 position-relative" style="z-index:1">
@@ -9361,43 +9569,64 @@ def orcamentos_detalhe():
       <div class="col-12 col-md-4"><div class="stat-card h-100"><div class="stat-label">Valor total criado</div><div class="stat-value text-primary">{{ format_brl(resumo_valores.valor_total_criado) }}</div><div class="stat-sub">Potencial bruto gerado no período</div></div></div>
     </div>
 
-    <div class="row g-4 mb-4 align-items-stretch">
+    <div class="row g-4 mb-4 orcamentos-chart-row">
       <div class="col-12 col-xl-7">
-        <div class="viz-card">
+        <div class="orcamentos-chart-slot">
+        <div class="viz-card viz-card--fill">
           <div class="viz-head"><div><div class="viz-title">Distribuição por etapa comercial</div><div class="viz-sub">Micro-status do Sisplan agrupados em etapas que fazem sentido para gestão.</div></div><span class="chip">{{ total_orc }} orçamentos</span></div>
           <div class="viz-body">{% if chart_status %}<img src="data:image/png;base64,{{ chart_status }}">{% else %}<div class="text-muted">Sem dados no período.</div>{% endif %}</div>
           <div class="d-flex flex-wrap gap-2 mt-3">
             {% for st in stage_rows %}<span class="chip">{{ st.label }} · <b>{{ st.qtd }}</b></span>{% endfor %}
           </div>
         </div>
+        </div>
       </div>
       <div class="col-12 col-xl-5">
-        <div class="viz-card">
-          <div class="viz-head"><div><div class="viz-title">Status Sisplan mais frequentes</div><div class="viz-sub">Dado bruto preservado para auditoria e filtro detalhado.</div></div></div>
-          <div class="mini-status-list">
-            {% for s in top_status_rows %}
-              {% set pct = (s.qtd / total_orc * 100) if total_orc > 0 else 0 %}
-              <a href="{{ url_for('orcamentos_detalhe', data_ref=data_ref, status_filtro=s.status_nome) }}{% for nome in vendedores_selecionados %}&vendedor_nome={{ nome|urlencode }}{% endfor %}" class="text-decoration-none">
-                <div class="mini-status-row"><div><div class="mini-status-name">{{ s.status_nome }}</div><div class="mini-status-meta">{{ '%.1f'|format(pct) }}% do período · {{ format_brl(s.valor_status or 0) }}</div></div><div class="mini-status-value">{{ s.qtd }}<small>propostas</small></div></div>
-              </a>
-            {% endfor %}
+        <div class="orcamentos-status-stack">
+          <div class="viz-card">
+            <div class="viz-head"><div><div class="viz-title">Status Orçamentos Ativos</div><div class="viz-sub">Status Sisplan das propostas ativas e convertidas, para filtro detalhado.</div></div></div>
+            <div class="mini-status-list">
+              {% for s in top_status_rows %}
+                {% set pct = (s.qtd / total_orc * 100) if total_orc > 0 else 0 %}
+                <a href="{{ url_for('orcamentos_detalhe', data_ref=data_ref, status_filtro=s.status_nome) }}{% for nome in vendedores_selecionados %}&vendedor_nome={{ nome|urlencode }}{% endfor %}" class="text-decoration-none">
+                  <div class="mini-status-row"><div><div class="mini-status-name">{{ s.status_nome }}</div><div class="mini-status-meta">{{ '%.1f'|format(pct) }}% do período · {{ format_brl(s.valor_status or 0) }}</div></div><div class="mini-status-value">{{ s.qtd }}<small>propostas</small></div></div>
+                </a>
+              {% else %}
+                <div class="text-muted small py-2">Nenhum status ativo no período.</div>
+              {% endfor %}
+            </div>
+            {% if status_restantes > 0 %}<div class="small text-muted mt-3 text-center">+ {{ status_restantes }} status menos frequentes disponíveis na tabela abaixo.</div>{% endif %}
           </div>
-          {% if status_restantes > 0 %}<div class="small text-muted mt-3 text-center">+ {{ status_restantes }} status menos frequentes disponíveis na tabela abaixo.</div>{% endif %}
+          <div class="viz-card">
+            <div class="viz-head"><div><div class="viz-title">Status Orçamentos Finalizados</div><div class="viz-sub">Pedido aprovado, 21 cancelado, 28 contato futuro, 29 sem retorno e 33 perdido por preço.</div></div></div>
+            <div class="mini-status-list">
+              {% for s in status_finalizados_rows %}
+                {% set pct = (s.qtd / total_orc * 100) if total_orc > 0 else 0 %}
+                <a href="{{ url_for('orcamentos_detalhe', data_ref=data_ref, status_filtro=s.status_nome) }}{% for nome in vendedores_selecionados %}&vendedor_nome={{ nome|urlencode }}{% endfor %}" class="text-decoration-none">
+                  <div class="mini-status-row"><div><div class="mini-status-name">{{ s.status_nome }}</div><div class="mini-status-meta">{{ '%.1f'|format(pct) }}% do período · {{ format_brl(s.valor_status or 0) }}</div></div><div class="mini-status-value">{{ s.qtd }}<small>propostas</small></div></div>
+                </a>
+              {% else %}
+                <div class="text-muted small py-2">Nenhum orçamento finalizado no período.</div>
+              {% endfor %}
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="row g-4 mb-4">
+    <div class="row g-4 mb-4 orcamentos-chart-row">
       <div class="col-12 col-xl-7">
-        <div class="viz-card">
+        <div class="orcamentos-chart-slot">
+        <div class="viz-card viz-card--fill">
           <div class="viz-head"><div><div class="viz-title">Distribuição financeira por estado</div><div class="viz-sub">Ranking por valor de orçamentos criados no período.</div></div></div>
           <div class="viz-body">{% if chart_distribuicao_uf %}<img src="data:image/png;base64,{{ chart_distribuicao_uf }}">{% else %}<div class="text-muted">Sem dados de UF no período.</div>{% endif %}</div>
+        </div>
         </div>
       </div>
       <div class="col-12 col-xl-5">
         <div class="d-flex flex-column gap-4 h-100">
-          <div class="viz-card flex-fill"><div class="viz-head"><div><div class="viz-title">Melhores taxas por UF</div><div class="viz-sub">Conversão real: pedidos ÷ orçamentos. Amostra mínima aplicada.</div></div></div><div class="viz-body" style="min-height:220px">{% if chart_regioes_altas %}<img src="data:image/png;base64,{{ chart_regioes_altas }}">{% endif %}</div></div>
-          <div class="viz-card flex-fill"><div class="viz-head"><div><div class="viz-title">UFs com maior oportunidade</div><div class="viz-sub">Menores taxas entre regiões com amostra relevante.</div></div></div><div class="viz-body" style="min-height:220px">{% if chart_regioes_baixas %}<img src="data:image/png;base64,{{ chart_regioes_baixas }}">{% endif %}</div></div>
+          <div class="viz-card flex-fill"><div class="viz-head"><div><div class="viz-title">Melhores taxas por UF</div><div class="viz-sub">Conversão real: pedidos ÷ orçamentos. Amostra mínima aplicada.</div></div></div><div class="viz-body" style="min-height:280px">{% if chart_regioes_altas %}<img src="data:image/png;base64,{{ chart_regioes_altas }}">{% endif %}</div></div>
+          <div class="viz-card flex-fill"><div class="viz-head"><div><div class="viz-title">UFs com maior oportunidade</div><div class="viz-sub">Menores taxas entre regiões com amostra relevante.</div></div></div><div class="viz-body" style="min-height:280px">{% if chart_regioes_baixas %}<img src="data:image/png;base64,{{ chart_regioes_baixas }}">{% endif %}</div></div>
         </div>
       </div>
     </div>
@@ -9448,7 +9677,7 @@ def orcamentos_detalhe():
     </div>
     """, rows=rows, d0=d0, d1=d1, data_ref=data_ref, format_brl=format_brl, 
        chart_distribuicao_uf=chart_distribuicao_uf, chart_regioes_altas=chart_regioes_altas, chart_regioes_baixas=chart_regioes_baixas,
-       stats_rows=stats_rows, stage_rows=stage_rows, top_status_rows=top_status_rows, status_restantes=status_restantes, total_orc=total_orc, chart_status=chart_status, 
+       stats_rows=stats_rows, stage_rows=stage_rows, top_status_rows=top_status_rows, status_finalizados_rows=status_finalizados_rows, status_restantes=status_restantes, total_orc=total_orc, chart_status=chart_status, 
        status_filtro=status_filtro, vendedor_filtro=vendedor_filtro, vendedores_selecionados=vendedores_selecionados, lista_vendedores=lista_vendedores,
        resumo_valores=resumo_valores)
 
@@ -16414,8 +16643,8 @@ def funil():
       {% for stage in board_stages %}<div class="pipeline-col"><div class="pipeline-head"><div class="pipeline-name"><i class="bi {{ stage_icons[stage] }} me-1"></i>{{ stage_labels[stage] }}</div><div><span class="pipeline-count">{{ board[stage]|length }}</span></div></div>
       {% for r in board[stage] %}<div class="deal-card">
         <a class="text-decoration-none" href="{{ url_for('orcamento_detalhe', numero=r.numero, origem='funil', data_ref=data_ref) }}" title="Abrir orçamento detalhado">
-          <div class="d-flex justify-content-between align-items-start gap-2"><div class="min-w-0"><div class="deal-name">#{{ r.numero or '—' }} · {{ r.cliente_exibir }}</div><div class="deal-company">{{ r.desc_status or 'SEM STATUS' }}</div></div>{% if r.dias_aberto>=14 %}<span class="stale-badge">{{ r.dias_aberto }}d</span>{% endif %}</div>
-          <div class="d-flex justify-content-between align-items-end mt-3"><div><div class="deal-value">{{ format_brl(r.valor_total or 0) }}</div><div class="deal-meta">{{ r.probabilidade }}% estimado · {{ r.vendedor_nome or 'Sem vendedor' }}</div></div></div>
+          <div class="d-flex justify-content-between align-items-start gap-2"><div class="min-w-0 flex-grow-1"><div class="deal-name">#{{ r.numero or '—' }} · {{ r.cliente_exibir }}</div><div class="deal-company">{{ r.desc_status or 'SEM STATUS' }}</div></div>{% if r.dias_aberto>=14 %}<span class="stale-badge">{{ r.dias_aberto }}d</span>{% endif %}</div>
+          <div class="d-flex justify-content-between align-items-end mt-3 min-w-0"><div class="min-w-0"><div class="deal-value">{{ format_brl(r.valor_total or 0) }}</div><div class="deal-meta">{{ r.probabilidade }}% estimado · {{ r.vendedor_nome or 'Sem vendedor' }}</div></div></div>
           <div class="deal-meta mt-2"><i class="bi bi-calendar3 me-1"></i>{{ r.data_inicio or '—' }}{% if r.tipo_contato %} · {{ r.tipo_contato }}{% endif %}</div>
         </a>
       </div>{% else %}<div class="text-center py-4 small text-muted"><i class="bi bi-inbox"></i><br>Nenhuma oportunidade</div>{% endfor %}

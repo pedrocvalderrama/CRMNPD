@@ -395,26 +395,27 @@
 
     /* Pipeline */
     .pipeline-wrap{overflow-x:auto;padding-bottom:8px}
-    .pipeline-board{display:grid;grid-template-columns:repeat(5,minmax(250px,1fr));gap:12px;min-width:1320px;align-items:start}
-    .pipeline-col{background:#eef2f7;border:1px solid #e3e9f1;border-radius:15px;padding:10px;min-height:240px}
+    .pipeline-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start}
+    .pipeline-col{background:#eef2f7;border:1px solid #e3e9f1;border-radius:15px;padding:10px;min-height:240px;min-width:0;overflow:hidden}
     .pipeline-col.drag-over{outline:2px dashed var(--crm-primary);outline-offset:-4px;background:#eef4ff}
-    .pipeline-head{display:flex;align-items:center;justify-content:space-between;padding:5px 4px 10px;gap:8px}
-    .pipeline-name{font-size:11px;text-transform:uppercase;letter-spacing:.075em;font-weight:850;color:#53657a}
-    .pipeline-count{font-size:10px;font-weight:800;background:#fff;border:1px solid #dae2ec;border-radius:999px;padding:2px 7px;color:#6c7e92}
-    .deal-card{background:#fff;border:1px solid #e1e7ef;border-radius:13px;padding:12px;margin-bottom:9px;box-shadow:0 3px 10px rgba(25,45,75,.05);cursor:grab;transition:.15s ease}
+    .pipeline-head{display:flex;align-items:center;justify-content:space-between;padding:5px 4px 10px;gap:8px;min-width:0}
+    .pipeline-name{font-size:11px;text-transform:uppercase;letter-spacing:.075em;font-weight:850;color:#53657a;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .pipeline-count{font-size:10px;font-weight:800;background:#fff;border:1px solid #dae2ec;border-radius:999px;padding:2px 7px;color:#6c7e92;flex-shrink:0}
+    .deal-card{background:#fff;border:1px solid #e1e7ef;border-radius:13px;padding:12px;margin-bottom:9px;box-shadow:0 3px 10px rgba(25,45,75,.05);cursor:grab;transition:.15s ease;min-width:0;max-width:100%;overflow:hidden}
+    .deal-card>a{display:block;min-width:0;max-width:100%;overflow:hidden}
     .deal-card:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(25,45,75,.10);border-color:#cfd9e7}
     .deal-card.dragging{opacity:.5}
-    .deal-company{font-size:10px;color:#8a98a9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .deal-name{font-size:13px;font-weight:850;color:#1a2b42;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .deal-company{font-size:10px;color:#8a98a9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .deal-name{font-size:13px;font-weight:850;color:#1a2b42;line-height:1.3;overflow-wrap:anywhere;word-break:break-word;max-width:100%}
     .deal-value{font-size:13px;font-weight:850;color:#274ea9}
-    .deal-meta{font-size:10px;color:#7b899a}
+    .deal-meta{font-size:10px;color:#7b899a;overflow-wrap:anywhere;word-break:break-word}
     .temp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px}
     .temp-QUENTE{background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.35)}
     .temp-MORNO{background:#f59e0b}
     .temp-FRIO{background:#38bdf8}
     .next-overdue{color:#c12b3a!important;font-weight:800}
     .next-today{color:#9a6500!important;font-weight:800}
-    .stale-badge{font-size:9px;background:#fff0f1;color:#b42333;border:1px solid #ffd0d5;border-radius:999px;padding:2px 6px}
+    .stale-badge{font-size:9px;background:#fff0f1;color:#b42333;border:1px solid #ffd0d5;border-radius:999px;padding:2px 6px;flex-shrink:0;white-space:nowrap}
 
     /* Timeline */
     .timeline{position:relative;padding-left:20px}

@@ -177,13 +177,40 @@ def _avg_purchase_gap(dates: List[date]) -> Optional[float]:
     return float(statistics.median(gaps))
 
 
+def _auto_growth(year_stats: Dict[int, Dict[str, Any]], key: str, target_year: int) -> Tuple[float, float, float, float]:
+    """Tendência automática da janela sazonal para valor ou quantidade."""
+    growth_samples = []
+    ordered_prior = sorted([y for y in year_stats if y < target_year])
+    for y0, y1 in zip(ordered_prior[:-1], ordered_prior[1:]):
+        v0 = float(year_stats.get(y0, {}).get(key, 0) or 0)
+        v1 = float(year_stats.get(y1, {}).get(key, 0) or 0)
+        if v0 > 0 and v1 >= 0:
+            growth_samples.append(max(-0.40, min(0.50, (v1 / v0) - 1.0)))
+    recent_growth = growth_samples[-3:]
+    if recent_growth:
+        gw = [0.15, 0.30, 0.55][-len(recent_growth):]
+        swg = sum(gw) or 1.0
+        probable_growth = sum(g * w for g, w in zip(recent_growth, gw)) / swg
+        dispersion = statistics.pstdev(recent_growth) if len(recent_growth) > 1 else abs(recent_growth[0]) * 0.35
+        spread = max(0.05, min(0.20, dispersion if dispersion > 0 else 0.05))
+    else:
+        probable_growth = 0.0
+        spread = 0.08
+    probable_growth = max(-0.30, min(0.35, probable_growth))
+    conservative_growth = max(-0.40, probable_growth - spread)
+    optimistic_growth = min(0.50, probable_growth + spread)
+    return probable_growth, conservative_growth, optimistic_growth, spread
+
+
 def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, scope: str,
                             growth: Optional[float] = None, scenario_band: Optional[float] = None,
                             waste_pct: Optional[float] = None, selected_months: Optional[List[int]] = None,
                             conservative_growth_pct: Optional[float] = None,
                             probable_growth_pct: Optional[float] = None,
                             optimistic_growth_pct: Optional[float] = None,
-                            vendor_id: Optional[int] = None) -> Dict[str, Any]:
+                            vendor_id: Optional[int] = None,
+                            metric: Optional[str] = None,
+                            fonte: Optional[str] = None) -> Dict[str, Any]:
     """Fonte única para tela e Excel de planejamento.
 
     Trimestre/semestre tratam a janela inteira como sazonalidade: um cliente que comprou
@@ -192,6 +219,14 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
     """
     periodo = (periodo or "mes").lower()
     scope = (scope or "TOTAL").upper()
+    metric = (metric or "valor").strip().lower()
+    if metric == "faturamento":
+        metric = "valor"
+    if metric not in {"valor", "quantidade"}:
+        metric = "valor"
+    fonte = (fonte or "pedidos").strip().lower()
+    if fonte not in {"pedidos", "faturamento"}:
+        fonte = "pedidos"
     # V5.0: crescimento e amplitude dos cenários são automáticos, calculados pelo histórico
     # da mesma janela sazonal. O usuário não precisa mais escolher percentuais arbitrários.
     try:
@@ -251,6 +286,8 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
                COALESCE(i.produto,'') produto, COALESCE(i.formato,'') formato,
                COALESCE(i.medida_ref,'') medida, COALESCE(i.quantidade,0) quantidade,
                COALESCE(i.valor,0) valor,
+               COALESCE(NULLIF(TRIM(c.rede_key),''), CASE WHEN c.id IS NOT NULL THEN 'CID:'||c.id ELSE 'NOME:'||UPPER(TRIM(COALESCE(i.cliente_nome_ref,''))) END) cliente_key,
+               COALESCE(NULLIF(TRIM(c.rede_nome),''),NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(i.cliente_nome_ref),''),'—') cliente_nome,
                COALESCE(NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(i.cliente_nome_ref),''),'—') cliente,
                COALESCE(NULLIF(TRIM(v.nome),''),'—') vendedor,
                CASE WHEN COALESCE(UPPER(TRIM(v.nome)),'')='SITE' OR COALESCE(UPPER(TRIM(v.tipo)),'')='SITE' THEN 'SITE' ELSE COALESCE(UPPER(TRIM(v.tipo)),'EXTERNO') END time
@@ -259,29 +296,43 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
         ORDER BY ano,data,nf
     """, inv_params + vendor_params).fetchall()]
 
-    # Histórico completo para frequência / próxima recompra.
-    freq_rows = [dict(r) for r in conn.execute(f"""
-        SELECT date(o.data_emissao) data, o.cliente_id, o.vendor_id,
-               COALESCE(NULLIF(TRIM(c.rede_key),''), CASE WHEN c.id IS NOT NULL THEN 'CID:'||c.id ELSE 'NOME:'||UPPER(TRIM(COALESCE(o.cliente_nome_ref,''))) END) cliente_key,
-               COALESCE(NULLIF(TRIM(c.rede_nome),''),NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(o.cliente_nome_ref),''),'—') cliente_nome
-        FROM orders o LEFT JOIN customers c ON c.id=o.cliente_id LEFT JOIN vendors v ON v.id=o.vendor_id
-        WHERE o.data_emissao IS NOT NULL AND {scope_sql} AND {vendor_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
-        ORDER BY date(o.data_emissao)
-    """, vendor_params).fetchall()]
+    sales_rows = invoices if fonte == "faturamento" else orders
 
-    db_years = [int(r[0]) for r in conn.execute("SELECT DISTINCT CAST(strftime('%Y',data_emissao) AS INTEGER) y FROM orders WHERE data_emissao IS NOT NULL ORDER BY y").fetchall() if r[0]]
+    # Histórico completo para frequência / próxima recompra.
+    if fonte == "faturamento":
+        freq_rows = [dict(r) for r in conn.execute(f"""
+            SELECT date(i.data_emissao) data, i.cliente_id, i.vendor_id,
+                   COALESCE(NULLIF(TRIM(c.rede_key),''), CASE WHEN c.id IS NOT NULL THEN 'CID:'||c.id ELSE 'NOME:'||UPPER(TRIM(COALESCE(i.cliente_nome_ref,''))) END) cliente_key,
+                   COALESCE(NULLIF(TRIM(c.rede_nome),''),NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(i.cliente_nome_ref),''),'—') cliente_nome
+            FROM invoices i LEFT JOIN customers c ON c.id=i.cliente_id LEFT JOIN vendors v ON v.id=i.vendor_id
+            WHERE i.data_emissao IS NOT NULL AND {scope_sql} AND {vendor_sql}
+            ORDER BY date(i.data_emissao)
+        """, vendor_params).fetchall()]
+        db_years = [int(r[0]) for r in conn.execute("SELECT DISTINCT CAST(strftime('%Y',data_emissao) AS INTEGER) y FROM invoices WHERE data_emissao IS NOT NULL ORDER BY y").fetchall() if r[0]]
+    else:
+        freq_rows = [dict(r) for r in conn.execute(f"""
+            SELECT date(o.data_emissao) data, o.cliente_id, o.vendor_id,
+                   COALESCE(NULLIF(TRIM(c.rede_key),''), CASE WHEN c.id IS NOT NULL THEN 'CID:'||c.id ELSE 'NOME:'||UPPER(TRIM(COALESCE(o.cliente_nome_ref,''))) END) cliente_key,
+                   COALESCE(NULLIF(TRIM(c.rede_nome),''),NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(o.cliente_nome_ref),''),'—') cliente_nome
+            FROM orders o LEFT JOIN customers c ON c.id=o.cliente_id LEFT JOIN vendors v ON v.id=o.vendor_id
+            WHERE o.data_emissao IS NOT NULL AND {scope_sql} AND {vendor_sql} AND {_legacy().sql_pedidos_realizados_excel_cond('o','v')}
+            ORDER BY date(o.data_emissao)
+        """, vendor_params).fetchall()]
+        db_years = [int(r[0]) for r in conn.execute("SELECT DISTINCT CAST(strftime('%Y',data_emissao) AS INTEGER) y FROM orders WHERE data_emissao IS NOT NULL ORDER BY y").fetchall() if r[0]]
 
     year_stats: Dict[int, Dict[str, Any]] = {}
     clients_map: Dict[str, Dict[str, Any]] = {}
-    for r in orders:
+    for r in sales_rows:
         y=int(r.get('ano') or 0)
         if y <= 0: continue
-        st=year_stats.setdefault(y,{"value":0.0,"qty":0.0,"orders":set(),"clients":set(),"months":defaultdict(float)})
+        st=year_stats.setdefault(y,{"value":0.0,"qty":0.0,"orders":set(),"clients":set(),"months":defaultdict(float),"months_qty":defaultdict(float)})
         st['value'] += float(r.get('valor') or 0); st['qty'] += float(r.get('quantidade') or 0)
         if str(r.get('pedido') or '').strip(): st['orders'].add(str(r.get('pedido')).strip())
-        ckey=str(r.get('cliente_key') or '').strip() or f"NOME:{_legacy().norm(r.get('cliente_nome') or '—')}"
-        st['clients'].add(ckey); st['months'][int(r.get('mes') or 0)] += float(r.get('valor') or 0)
-        c=clients_map.setdefault(ckey,{"name":r.get('cliente_nome') or '—',"years":{},"cliente_id":r.get('cliente_id'),"vendor_id":r.get('vendor_id')})
+        ckey=str(r.get('cliente_key') or '').strip() or f"NOME:{_legacy().norm(r.get('cliente_nome') or r.get('cliente') or '—')}"
+        mes_n=int(r.get('mes') or 0)
+        st['clients'].add(ckey); st['months'][mes_n] += float(r.get('valor') or 0)
+        st['months_qty'][mes_n] += float(r.get('quantidade') or 0)
+        c=clients_map.setdefault(ckey,{"name":r.get('cliente_nome') or r.get('cliente') or '—',"years":{},"cliente_id":r.get('cliente_id'),"vendor_id":r.get('vendor_id')})
         if r.get('cliente_id'): c['cliente_id']=r.get('cliente_id')
         if r.get('vendor_id'): c['vendor_id']=r.get('vendor_id')
         cy=c['years'].setdefault(y,{"value":0.0,"qty":0.0,"orders":set(),"months":defaultdict(float)})
@@ -302,39 +353,24 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
 
     # Tendência automática do mesmo período entre anos. Evita um único salto extremo
     # dominar a projeção e usa maior peso no crescimento mais recente.
-    growth_samples=[]
-    ordered_prior=sorted([y for y in year_stats if y < target_year])
-    for y0,y1 in zip(ordered_prior[:-1], ordered_prior[1:]):
-        v0=float(year_stats.get(y0,{}).get('value',0) or 0); v1=float(year_stats.get(y1,{}).get('value',0) or 0)
-        if v0>0 and v1>=0:
-            growth_samples.append(max(-0.40,min(0.50,(v1/v0)-1.0)))
-    recent_growth=growth_samples[-3:]
-    if recent_growth:
-        gw=[0.55,0.30,0.15][-len(recent_growth):]
-        gw=list(reversed(gw)) if len(recent_growth)>1 else [1.0]
-        # alinhar maior peso ao dado mais recente
-        gw=[0.15,0.30,0.55][-len(recent_growth):]
-        swg=sum(gw) or 1.0
-        probable_growth=sum(g*w for g,w in zip(recent_growth,gw))/swg
-        dispersion=statistics.pstdev(recent_growth) if len(recent_growth)>1 else abs(recent_growth[0])*0.35
-        spread=max(0.05,min(0.20,dispersion if dispersion>0 else 0.05))
-    else:
-        probable_growth=0.0; spread=0.08
-    probable_growth=max(-0.30,min(0.35,probable_growth))
-    conservative_growth=max(-0.40,probable_growth-spread)
-    optimistic_growth=min(0.50,probable_growth+spread)
+    probable_growth, conservative_growth, optimistic_growth, spread = _auto_growth(year_stats, "value", target_year)
+    qty_probable, qty_cons, qty_opt, qty_spread = _auto_growth(year_stats, "qty", target_year)
     if probable_growth_pct is not None:
         probable_growth = float(probable_growth_pct) / 100.0
+        qty_probable = probable_growth
     if conservative_growth_pct is not None:
         conservative_growth = float(conservative_growth_pct) / 100.0
+        qty_cons = conservative_growth
     if optimistic_growth_pct is not None:
         optimistic_growth = float(optimistic_growth_pct) / 100.0
+        qty_opt = optimistic_growth
     growth=probable_growth*100.0
     scenario_band=spread*100.0
     growth_factor=1.0+probable_growth
+    qty_growth_factor=1.0+qty_probable
 
     forecast_value=baseline_value*growth_factor
-    forecast_qty=baseline_qty*growth_factor
+    forecast_qty=baseline_qty*qty_growth_factor
     forecast_orders=baseline_orders*growth_factor
     forecast_clients=baseline_clients*growth_factor
     scenarios={
@@ -345,6 +381,15 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
         'probable_growth': probable_growth*100.0,
         'optimistic_growth': optimistic_growth*100.0,
         'spread': spread*100.0,
+    }
+    scenarios_qty={
+        'conservative': baseline_qty*(1.0+qty_cons),
+        'probable': forecast_qty,
+        'optimistic': baseline_qty*(1.0+qty_opt),
+        'conservative_growth': qty_cons*100.0,
+        'probable_growth': qty_probable*100.0,
+        'optimistic_growth': qty_opt*100.0,
+        'spread': qty_spread*100.0,
     }
 
     # Frequência de compra por identidade comercial.
@@ -405,24 +450,28 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
 
     # Evolução mensal interna da janela (essencial para trimestre/semestre).
     month_forecast=[]
+    month_forecast_qty=[]
     for m in target_months:
         base=sum(float(year_stats.get(y,{}).get('months',{}).get(m,0) or 0)*weights.get(y,0) for y in source_years)
         actual=float(year_stats.get(target_year,{}).get('months',{}).get(m,0) or 0)
         month_forecast.append({'month':m,'name':MONTH_NAME_PT.get(m,str(m)),'baseline':base,'forecast':base*growth_factor,'actual':actual})
+        base_q=sum(float(year_stats.get(y,{}).get('months_qty',{}).get(m,0) or 0)*weights.get(y,0) for y in source_years)
+        actual_q=float(year_stats.get(target_year,{}).get('months_qty',{}).get(m,0) or 0)
+        month_forecast_qty.append({'month':m,'name':MONTH_NAME_PT.get(m,str(m)),'baseline':base_q,'forecast':base_q*qty_growth_factor,'actual':actual_q})
 
     # Produção e consumo físico de papel.
     prod_year_total=defaultdict(float); family_by_year=defaultdict(lambda:defaultdict(float)); gram_qty_by_year=defaultdict(lambda:defaultdict(float))
     measure_qty_by_year=defaultdict(lambda:defaultdict(float)); measure_kg_by_year=defaultdict(lambda:defaultdict(float))
     kg_by_year=defaultdict(float); kg_gram_by_year=defaultdict(lambda:defaultdict(float)); kg_month_by_year=defaultdict(lambda:defaultdict(float)); kg_month_gram_by_year=defaultdict(lambda:defaultdict(lambda:defaultdict(float)))
     eligible_qty=0.0; estimated_qty=0.0
-    for r in invoices:
+    for r in sales_rows:
         y=int(r.get('ano') or 0); m=int(r.get('mes') or 0); q=float(r.get('quantidade') or 0)
         if y<=0: continue
         fam=_production_family(r.get('grupo'),r.get('produto')); gram=_production_grammage(r.get('papel'),r.get('produto'))
         measure=str(r.get('medida') or r.get('formato') or '').strip() or 'Sem medida'
         prod_year_total[y]+=q; family_by_year[y][fam]+=q; gram_qty_by_year[y][gram]+=q; measure_qty_by_year[y][measure]+=q
         if y in source_years and fam in {'Sacolas','Cartuchos','Overbag'}: eligible_qty += max(q,0)
-        est=_estimate_paper_kg(q,r.get('papel'),r.get('produto'),r.get('formato'),r.get('medida'),r.get('grupo'))
+        est=_estimate_paper_kg(q,r.get('papel'),r.get('produto'),r.get('formato') or r.get('medida'),r.get('medida'),r.get('grupo'))
         if est:
             kg=float(est['kg']); glabel=f"{est['gsm']} g"
             kg_by_year[y]+=kg; kg_gram_by_year[y][glabel]+=kg; kg_month_by_year[y][m]+=kg; kg_month_gram_by_year[y][m][glabel]+=kg; measure_kg_by_year[y][measure]+=kg
@@ -517,8 +566,9 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
         'growth':growth,'scenario_band':scenario_band,'waste_pct':waste_pct,'source_years':source_years,
         'source_text':' / '.join(map(str,source_years)) if source_years else 'sem histórico anterior suficiente',
         'baseline_value':baseline_value,'forecast_value':forecast_value,'forecast_qty':forecast_qty,'forecast_orders':forecast_orders,'forecast_clients':forecast_clients,
-        'scenarios':scenarios,'year_rows':year_rows,'expected_clients':expected,'revenue_risk':revenue_risk,'pending_clients':pending_clients,
-        'month_forecast':month_forecast,'prod_forecast_qty':prod_forecast_qty,'fam_proj':fam_proj,'gram_proj':gram_proj,'top_measures':top_measures,
+        'metric':metric,'fonte':fonte,
+        'scenarios':scenarios,'scenarios_qty':scenarios_qty,'year_rows':year_rows,'expected_clients':expected,'revenue_risk':revenue_risk,'pending_clients':pending_clients,
+        'month_forecast':month_forecast,'month_forecast_qty':month_forecast_qty,'prod_forecast_qty':prod_forecast_qty,'fam_proj':fam_proj,'gram_proj':gram_proj,'top_measures':top_measures,
         'paper_consumption':paper_consumption,'monthly_consumption':monthly_consumption,'total_paper_kg':total_paper_kg,'paper_coverage':paper_coverage,
         'actual_target_value':actual_target_value,'actual_target_qty':actual_target_qty,'actual_vs_forecast':actual_vs_forecast,'actual_prod_qty':actual_prod_qty,
         'pipeline_value':pipeline_value,'pipeline_count':pipeline_count,'target_d0':target_d0,'target_d1':target_d1,
