@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     sisplan_cdc_batch: int = 2000
     sisplan_cdc_auto: str = "1"
     sisplan_sync_on_start: str = "stale"
+    ml_sheets_webhook_url: str = (
+        "https://script.google.com/macros/s/"
+        "AKfycbxqYYYGWO8oIy9GULK5EvMH6GIeNjIQLw8NEtflS0gm__rmTTXNwhPeVtJtjGS59eifRA/exec"
+    )
+    ml_sheets_sync_on_start: str = "1"
+    ml_sheets_sync_auto: str = "1"
+    ml_sheets_sync_interval: int = 60
 
 
 def get_settings() -> Settings:
@@ -74,6 +81,10 @@ def aplicar_env() -> Settings:
         "SISPLAN_CDC_BATCH": str(cfg.sisplan_cdc_batch),
         "SISPLAN_CDC_AUTO": cfg.sisplan_cdc_auto,
         "SISPLAN_SYNC_ON_START": cfg.sisplan_sync_on_start,
+        "ML_SHEETS_WEBHOOK_URL": cfg.ml_sheets_webhook_url,
+        "ML_SHEETS_SYNC_ON_START": cfg.ml_sheets_sync_on_start,
+        "ML_SHEETS_SYNC_AUTO": cfg.ml_sheets_sync_auto,
+        "ML_SHEETS_SYNC_INTERVAL": str(cfg.ml_sheets_sync_interval),
     }
     for chave, valor in pares.items():
         if valor and chave not in os.environ:

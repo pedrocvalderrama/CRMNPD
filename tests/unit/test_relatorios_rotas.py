@@ -35,6 +35,8 @@ def test_paginas_novas_existem_e_abrem_com_admin(admin_app_client) -> None:
         "/dashboard/detalhe-pedidos",
         "/dashboard/faturamento.xlsx",
         "/dashboard/pedidos.xlsx",
+        "/importacoes/mercado_livre",
+        "/importacoes/mercado_livre/sync",
         "/analises/historico",
         "/vendedores/inativos",
         "/vendedores/acao/<int:vendor_id>",
@@ -44,6 +46,7 @@ def test_paginas_novas_existem_e_abrem_com_admin(admin_app_client) -> None:
 
     for caminho in (
         "/dashboard",
+        "/importacoes",
         "/relatorios",
         "/a-faturar",
         "/analises/historico",
@@ -66,8 +69,12 @@ def test_dashboard_faturamento_e_pedidos_periodo_com_excel(admin_app_client) -> 
     resp_fat = client.get("/dashboard?visao=faturamento&data_ref=2026-10")
     assert resp_fat.status_code == 200
     html_fat = resp_fat.get_data(as_text=True)
-    assert "SITE / MARKETPLACE" in html_fat
-    assert "Interno, Externo e Site no ciclo financeiro." in html_fat
+    assert "SITE / MARKETPLACE" not in html_fat
+    assert "Mostrar Site" in html_fat
+    assert "Mostrar Mercado Livre" in html_fat
+    assert '<div class="channel-card site">' not in html_fat
+    assert '<div class="channel-card ml">' not in html_fat
+    assert "Interno e Externo no ciclo financeiro." in html_fat
     assert "Faturamento Líquido" in html_fat
     assert "Faturamento Bruto" in html_fat
     assert "Valor Devolvido" in html_fat
@@ -75,6 +82,33 @@ def test_dashboard_faturamento_e_pedidos_periodo_com_excel(admin_app_client) -> 
     assert "Faturamento do Período" in html_fat
     assert "/dashboard/faturamento.xlsx" in html_fat
     assert html_fat.index("Faturamento da Equipe") < html_fat.index("Faturamento do Período")
+
+    resp_fat_site = client.get("/dashboard?visao=faturamento&data_ref=2026-10&mostrar_site=1")
+    assert resp_fat_site.status_code == 200
+    html_fat_site = resp_fat_site.get_data(as_text=True)
+    assert '<div class="channel-card site">' in html_fat_site
+    assert "> SITE</span>" in html_fat_site
+    assert '<div class="channel-card ml">' not in html_fat_site
+    assert "Interno, Externo e Site no ciclo financeiro." in html_fat_site
+
+    resp_fat_ml = client.get("/dashboard?visao=faturamento&data_ref=2026-10&mostrar_ml=1")
+    assert resp_fat_ml.status_code == 200
+    html_fat_ml = resp_fat_ml.get_data(as_text=True)
+    assert '<div class="channel-card site">' not in html_fat_ml
+    assert '<div class="channel-card ml">' in html_fat_ml
+    assert "MERCADO LIVRE" in html_fat_ml
+    assert "modalImportarML" not in html_fat_ml
+    assert "Importar ML" not in html_fat_ml
+    assert "Interno, Externo e Mercado Livre no ciclo financeiro." in html_fat_ml
+
+    resp_fat_ambos = client.get(
+        "/dashboard?visao=faturamento&data_ref=2026-10&mostrar_site=1&mostrar_ml=1"
+    )
+    assert resp_fat_ambos.status_code == 200
+    html_fat_ambos = resp_fat_ambos.get_data(as_text=True)
+    assert '<div class="channel-card site">' in html_fat_ambos
+    assert '<div class="channel-card ml">' in html_fat_ambos
+    assert "Interno, Externo, Site e Mercado Livre no ciclo financeiro." in html_fat_ambos
 
     resp_fat_custom = client.get(
         "/dashboard?visao=faturamento&data_ref=2026-10&fat_de=2026-10-05&fat_ate=2026-10-15"
@@ -87,6 +121,9 @@ def test_dashboard_faturamento_e_pedidos_periodo_com_excel(admin_app_client) -> 
     resp_ped = client.get("/dashboard?visao=pedidos&data_ref=2026-10")
     assert resp_ped.status_code == 200
     html_ped = resp_ped.get_data(as_text=True)
+    assert "SITE / MARKETPLACE" not in html_ped
+    assert "> SITE</span>" in html_ped
+    assert '<div class="channel-card ml">' not in html_ped
     assert "Pedidos do Período" in html_ped
     assert "/dashboard/pedidos.xlsx" in html_ped
     assert "Últimos Pedidos Tirados" not in html_ped
@@ -104,10 +141,23 @@ def test_dashboard_faturamento_e_pedidos_periodo_com_excel(admin_app_client) -> 
         for val in row
         if val is not None
     )
-    assert "Valor Site" in resumo_fat_text
+    assert "Valor Site" not in resumo_fat_text
     assert "Faturamento Bruto" in resumo_fat_text
     assert "Valor Devolvido" in resumo_fat_text
     assert "Faturamento Líquido" in resumo_fat_text
+
+    xlsx_fat_site = client.get(
+        "/dashboard/faturamento.xlsx?data_ref=2026-10&fat_de=2026-10-05&fat_ate=2026-10-15&mostrar_site=1"
+    )
+    assert xlsx_fat_site.status_code == 200
+    wb_fat_site = load_workbook(BytesIO(xlsx_fat_site.data))
+    resumo_fat_site_text = " ".join(
+        str(val)
+        for row in wb_fat_site["Resumo"].iter_rows(values_only=True)
+        for val in row
+        if val is not None
+    )
+    assert "Valor Site" in resumo_fat_site_text
 
     xlsx_ped = client.get(
         "/dashboard/pedidos.xlsx?data_ref=2026-10&ped_de=2026-10-05&ped_ate=2026-10-15"

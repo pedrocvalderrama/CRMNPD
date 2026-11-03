@@ -17,6 +17,7 @@ def create_app():
     legacy = importlib.import_module('crm_npd.legacy_monolith')
     patch_legacy_runtime(legacy)
     legacy.init_db()
+    ml_subida_ok = False
     with legacy.conectar() as conn:
         legacy.ensure_users_schema(conn)
         aplicar_migracoes(conn)
@@ -25,6 +26,7 @@ def create_app():
         except Exception:
             logger.exception("falha ao forcar tipos SITE dos vendedores")
         _primeira_carga_fdb(legacy, conn)
+        ml_subida_ok = _primeira_carga_ml_sheets(conn)
     legacy.ensure_admin_seed()
     registrar_handlers(legacy.app)
     from .web.blueprints import registrar_blueprints
@@ -42,7 +44,28 @@ def create_app():
             logger.info("modo local: somente SQLite; ouvinte CDC desligado")
     except Exception:
         logger.exception("nao foi possivel iniciar o ouvinte CDC do Sisplan")
+    try:
+        from crm_npd.sync.mercado_livre_sheets import iniciar_sync_ml_em_background
+
+        iniciar_sync_ml_em_background(ja_verificou_na_subida=ml_subida_ok)
+    except Exception:
+        logger.exception("nao foi possivel iniciar o ouvinte da planilha notas_ml")
     return legacy.app
+
+
+def _primeira_carga_ml_sheets(conn) -> bool:
+    """Verifica na subida do sistema se entraram notas na planilha `notas_ml`."""
+    try:
+        from crm_npd.sync.mercado_livre_sheets import verificar_planilha_ml_na_subida
+
+        res = verificar_planilha_ml_na_subida(conn)
+        return res is not None
+    except Exception:
+        logger.warning(
+            "verificacao inicial da planilha notas_ml falhou; o ouvinte de 60s tentara novamente",
+            exc_info=True,
+        )
+        return False
 
 
 def _primeira_carga_fdb(legacy, conn) -> None:

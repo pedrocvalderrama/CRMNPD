@@ -40,8 +40,16 @@ if errorlevel 1 (
 )
 
 :sobe
+REM Automacao Mercado Livre (Google Sheets notas_ml):
+REM 1. Verifica as notas assim que o sistema inicia (ML_SHEETS_SYNC_ON_START=1)
+REM 2. Mantem verificacao automatica por Timestamp Log a cada 60 segundos
+if not defined ML_SHEETS_SYNC_ON_START set ML_SHEETS_SYNC_ON_START=1
+if not defined ML_SHEETS_SYNC_AUTO set ML_SHEETS_SYNC_AUTO=1
+if not defined ML_SHEETS_SYNC_INTERVAL set ML_SHEETS_SYNC_INTERVAL=60
+
 echo A primeira subida le o Sisplan so em SELECT e atualiza o CRM. Nada e gravado no ERP.
-echo Pode levar alguns minutos. O ouvinte CDC entra depois.
+echo Mercado Livre (Google Sheets): verifica notas no inicio e monitora Timestamp Log a cada %ML_SHEETS_SYNC_INTERVAL%s.
+echo Pode levar alguns minutos. Os ouvintes CDC entram depois.
 ".venv\Scripts\python.exe" app.py
 echo.
 pause

@@ -459,6 +459,9 @@ def init_db() -> None:
         );
         """)
 
+        from crm_npd.services.mercado_livre import ensure_mercado_livre_table
+        ensure_mercado_livre_table(conn)
+
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_orc_vendedor ON orcamentos(vendedor_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_orc_data ON orcamentos(data_inicio)")
@@ -7422,8 +7425,15 @@ def _query_dashboard_faturamento_periodo(
     d0_fat: date,
     d1_fat: date,
     include_items: bool = False,
+    include_site: bool = False,
+    include_ml: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    nf_rows_raw = conn.execute("""
+    filtro_site_sql = (
+        ""
+        if include_site
+        else "AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE' AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'"
+    )
+    nf_rows_raw = conn.execute(f"""
         SELECT
             MAX(date(i.data_emissao)) AS data_emissao,
             COALESCE(NULLIF(TRIM(i.numero), ''), '-') AS nf,
@@ -7462,6 +7472,7 @@ def _query_dashboard_faturamento_periodo(
         LEFT JOIN vendors v ON v.id = i.vendor_id
         WHERE i.data_emissao IS NOT NULL
           AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+          {filtro_site_sql}
         GROUP BY COALESCE(NULLIF(TRIM(i.numero), ''), 'SEM-NF-' || CAST(i.id AS TEXT)),
                  CASE
                      WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
@@ -7481,7 +7492,7 @@ def _query_dashboard_faturamento_periodo(
 
     item_rows: list[dict] = []
     if include_items:
-        item_rows_raw = conn.execute("""
+        item_rows_raw = conn.execute(f"""
             SELECT
                 date(i.data_emissao) AS data_emissao,
                 COALESCE(NULLIF(TRIM(i.numero), ''), '-') AS nf,
@@ -7517,9 +7528,29 @@ def _query_dashboard_faturamento_periodo(
             LEFT JOIN vendors v ON v.id = i.vendor_id
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              {filtro_site_sql}
             ORDER BY date(i.data_emissao) DESC, nf DESC, i.id DESC
         """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
         item_rows = [dict(r) for r in item_rows_raw]
+
+    if include_ml:
+        from crm_npd.services.mercado_livre import listar_faturamento_mercado_livre_periodo
+
+        ml_nf_rows, ml_item_rows = listar_faturamento_mercado_livre_periodo(
+            conn, d0_fat, d1_fat, include_items=include_items
+        )
+        if ml_nf_rows:
+            nf_rows.extend(ml_nf_rows)
+            nf_rows.sort(
+                key=lambda x: (str(x.get("data_emissao") or ""), str(x.get("nf") or "")),
+                reverse=True,
+            )
+        if include_items and ml_item_rows:
+            item_rows.extend(ml_item_rows)
+            item_rows.sort(
+                key=lambda x: (str(x.get("data_emissao") or ""), str(x.get("nf") or "")),
+                reverse=True,
+            )
 
     return nf_rows, item_rows
 
@@ -7626,6 +7657,8 @@ def dashboard():
     ver_pedidos = request.args.get("ver_pedidos", "0") == "1"
     visao_raw = (request.args.get("visao") or "geral").strip().lower()
     visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
+    mostrar_site = (visao == "faturamento") and (request.args.get("mostrar_site") == "1")
+    mostrar_ml = (visao == "faturamento") and (request.args.get("mostrar_ml") == "1")
 
     dates_ctx = _resolve_dashboard_dates(request.args)
     hoje = dates_ctx["hoje"]
@@ -7683,15 +7716,17 @@ def dashboard():
         fat_int = f_map.get("INTERNO", 0.0)
         fat_ext = f_map.get("EXTERNO", 0.0)
         fat_site_ciclo = f_map.get("SITE", 0.0)
+        fat_site_bruto = fb_map.get("SITE", 0.0)
+        fat_site_devolvido = fd_map.get("SITE", 0.0)
         fat_equipe_total = fat_int + fat_ext
-        fat_total = fat_equipe_total + fat_site_ciclo
-        fat_bruto_total = fb_map.get("INTERNO", 0.0) + fb_map.get("EXTERNO", 0.0) + fb_map.get("SITE", 0.0)
-        fat_devolvido_total = fd_map.get("INTERNO", 0.0) + fd_map.get("EXTERNO", 0.0) + fd_map.get("SITE", 0.0)
+        fat_total = fat_equipe_total
+        fat_bruto_total = fb_map.get("INTERNO", 0.0) + fb_map.get("EXTERNO", 0.0)
+        fat_devolvido_total = fd_map.get("INTERNO", 0.0) + fd_map.get("EXTERNO", 0.0)
 
         qtd_fat_int = q_map.get("INTERNO", 0)
         qtd_fat_ext = q_map.get("EXTERNO", 0)
         qtd_nf_site_ciclo = nf_map.get("SITE", 0)
-        fat_notas_total = nf_map.get("INTERNO", 0) + nf_map.get("EXTERNO", 0) + qtd_nf_site_ciclo
+        fat_notas_total = nf_map.get("INTERNO", 0) + nf_map.get("EXTERNO", 0)
         fat_qtd = qtd_fat_int + qtd_fat_ext
 
         # --- B. PEDIDOS (Mês 1-31) ---
@@ -7942,10 +7977,35 @@ def dashboard():
             return [d.get(f"{k:02d}",0) for k in range(1,13)]
         chart_yoy = line_chart(["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"], [(str(ano-1), gm(ano-1)), (str(ano), gm(ano))], "Comparativo Anual")
 
+        from crm_npd.services.mercado_livre import ensure_mercado_livre_table, resumo_mercado_livre_periodo
+        ensure_mercado_livre_table(conn)
+        ml_fat_ciclo = resumo_mercado_livre_periodo(conn, d0_fat, d1_fat)
+        fat_kpi_liquido = fat_total
+        fat_kpi_bruto = fat_bruto_total
+        fat_kpi_devolvido = fat_devolvido_total
+        fat_kpi_notas = fat_notas_total
+        if mostrar_site:
+            fat_kpi_liquido += fat_site_ciclo
+            fat_kpi_bruto += fat_site_bruto
+            fat_kpi_devolvido += fat_site_devolvido
+            fat_kpi_notas += qtd_nf_site_ciclo
+        if mostrar_ml:
+            fat_kpi_liquido += ml_fat_ciclo["valor_total"]
+            fat_kpi_bruto += ml_fat_ciclo["valor_bruto"]
+            fat_kpi_devolvido += ml_fat_ciclo["valor_devolvido"]
+            fat_kpi_notas += ml_fat_ciclo["qtd_notas"]
+
         # Listas detalhadas do período selecionado para as abas Faturamento e Pedidos
         faturamento_periodo: list[dict] = []
         if visao == "faturamento":
-            faturamento_periodo, _ = _query_dashboard_faturamento_periodo(conn, d0_fat, d1_fat, include_items=False)
+            faturamento_periodo, _ = _query_dashboard_faturamento_periodo(
+                conn,
+                d0_fat,
+                d1_fat,
+                include_items=False,
+                include_site=mostrar_site,
+                include_ml=mostrar_ml,
+            )
 
         pedidos_periodo: list[dict] = []
         if visao == "pedidos":
@@ -8144,16 +8204,46 @@ def dashboard():
     if data_ped_custom:
         fat_padrao_kw["ped_de"] = ped_de_str
         fat_padrao_kw["ped_ate"] = ped_ate_str
+    if mostrar_site:
+        fat_padrao_kw["mostrar_site"] = "1"
+    if mostrar_ml:
+        fat_padrao_kw["mostrar_ml"] = "1"
 
     ped_padrao_kw = {"data_ref": mes_ref}
     if data_fat_custom:
         ped_padrao_kw["fat_de"] = fat_de_str
         ped_padrao_kw["fat_ate"] = fat_ate_str
 
+    base_fat_toggle_kw = {"visao": "faturamento", "data_ref": mes_ref}
+    if data_fat_custom:
+        base_fat_toggle_kw["fat_de"] = fat_de_str
+        base_fat_toggle_kw["fat_ate"] = fat_ate_str
+    if data_ped_custom:
+        base_fat_toggle_kw["ped_de"] = ped_de_str
+        base_fat_toggle_kw["ped_ate"] = ped_ate_str
+
+    toggle_site_kw = dict(base_fat_toggle_kw)
+    if not mostrar_site:
+        toggle_site_kw["mostrar_site"] = "1"
+    if mostrar_ml:
+        toggle_site_kw["mostrar_ml"] = "1"
+    toggle_site_url = url_for("dashboard", **toggle_site_kw)
+
+    toggle_ml_kw = dict(base_fat_toggle_kw)
+    if mostrar_site:
+        toggle_ml_kw["mostrar_site"] = "1"
+    if not mostrar_ml:
+        toggle_ml_kw["mostrar_ml"] = "1"
+    toggle_ml_url = url_for("dashboard", **toggle_ml_kw)
+
     fat_excel_kw = {"data_ref": mes_ref}
     if data_fat_custom:
         fat_excel_kw["fat_de"] = fat_de_str
         fat_excel_kw["fat_ate"] = fat_ate_str
+    if mostrar_site:
+        fat_excel_kw["mostrar_site"] = "1"
+    if mostrar_ml:
+        fat_excel_kw["mostrar_ml"] = "1"
     fat_excel_url = url_for("dashboard_faturamento_excel", **fat_excel_kw)
 
     ped_excel_kw = {"data_ref": mes_ref}
@@ -8188,6 +8278,12 @@ def dashboard():
           {% if data_ped_custom %}
           <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
           <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+          {% endif %}
+          {% if mostrar_site %}
+          <input type="hidden" name="mostrar_site" value="1">
+          {% endif %}
+          {% if mostrar_ml %}
+          <input type="hidden" name="mostrar_ml" value="1">
           {% endif %}
           <div><label class="form-label small fw-bold text-muted mb-0">MÊS REF</label><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()"></div>
         </form>
@@ -8392,26 +8488,40 @@ def dashboard():
           <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt"></i> Faturamento</span>
           <div class="sub">{% if data_fat_custom %}Período pedido{% else %}Padrão (mês calendário){% endif %}: {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
         </div>
-        <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
-          <input type="hidden" name="visao" value="faturamento">
-          <input type="hidden" name="data_ref" value="{{ mes_ref }}">
-          {% if data_ped_custom %}
-          <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
-          <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
-          {% endif %}
-          <div>
-            <label class="form-label small fw-bold text-muted mb-0">DE</label>
-            <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
-          </div>
-          <div>
-            <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
-            <input type="date" name="fat_ate" class="form-control form-control-sm fw-bold" value="{{ fat_ate_str }}" required>
-          </div>
-          <button class="btn btn-sm btn-primary">Aplicar</button>
-          {% if data_fat_custom %}
-          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao='faturamento', **fat_padrao_kw) }}">Padrão</a>
-          {% endif %}
-        </form>
+        <div class="d-flex gap-2 align-items-end flex-wrap">
+          <a class="btn btn-sm {{ 'text-white fw-bold' if mostrar_site else 'btn-outline-secondary' }}" {% if mostrar_site %}style="background:#0e7490;border-color:#0e7490"{% endif %} href="{{ toggle_site_url }}">
+            <i class="bi {{ 'bi-check-square-fill' if mostrar_site else 'bi-square' }} me-1"></i>Mostrar Site
+          </a>
+          <a class="btn btn-sm {{ 'btn-warning fw-bold text-dark' if mostrar_ml else 'btn-outline-secondary' }}" href="{{ toggle_ml_url }}">
+            <i class="bi {{ 'bi-check-square-fill' if mostrar_ml else 'bi-square' }} me-1"></i>Mostrar Mercado Livre
+          </a>
+          <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
+            <input type="hidden" name="visao" value="faturamento">
+            <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+            {% if data_ped_custom %}
+            <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+            <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+            {% endif %}
+            {% if mostrar_site %}
+            <input type="hidden" name="mostrar_site" value="1">
+            {% endif %}
+            {% if mostrar_ml %}
+            <input type="hidden" name="mostrar_ml" value="1">
+            {% endif %}
+            <div>
+              <label class="form-label small fw-bold text-muted mb-0">DE</label>
+              <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
+            </div>
+            <div>
+              <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
+              <input type="date" name="fat_ate" class="form-control form-control-sm fw-bold" value="{{ fat_ate_str }}" required>
+            </div>
+            <button class="btn btn-sm btn-primary">Aplicar</button>
+            {% if data_fat_custom %}
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao='faturamento', **fat_padrao_kw) }}">Padrão</a>
+            {% endif %}
+          </form>
+        </div>
       </div>
       <div class="row g-3 mb-3 dash-kpi-row">
         <div class="col-12 col-md-4">
@@ -8425,18 +8535,18 @@ def dashboard():
         <div class="col-12 col-md-4">
           <div class="dash-kpi">
             <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Faturamento Líquido</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
-            <div class="kpi-value">{{ format_brl(fat_total) }}</div>
+            <div class="kpi-value">{{ format_brl(fat_kpi_liquido) }}</div>
             <div class="kpi-subgrid">
               <div class="kpi-subitem">
                 <div class="kpi-sublabel">Faturamento Bruto</div>
-                <div class="kpi-subval">{{ format_brl(fat_bruto_total) }}</div>
+                <div class="kpi-subval">{{ format_brl(fat_kpi_bruto) }}</div>
               </div>
               <div class="kpi-subitem">
                 <div class="kpi-sublabel">Valor Devolvido</div>
-                <div class="kpi-subval {{ 'devolvido' if fat_devolvido_total > 0 else '' }}">{{ ('- ' if fat_devolvido_total > 0 else '') ~ format_brl(fat_devolvido_total) }}</div>
+                <div class="kpi-subval {{ 'devolvido' if fat_kpi_devolvido > 0 else '' }}">{{ ('- ' if fat_kpi_devolvido > 0 else '') ~ format_brl(fat_kpi_devolvido) }}</div>
               </div>
             </div>
-            <div class="kpi-meta">{{ fat_notas_total }} notas no ciclo de faturamento</div>
+            <div class="kpi-meta">{{ fat_kpi_notas }} notas no ciclo de faturamento</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -8447,9 +8557,12 @@ def dashboard():
           </div>
         </div>
       </div>
-      <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>Interno, Externo e Site no ciclo financeiro.</p></div></div>
+      {% set sub_canais_fat = 'Interno, Externo, Site e Mercado Livre no ciclo financeiro.' if (mostrar_site and mostrar_ml) else ('Interno, Externo e Site no ciclo financeiro.' if mostrar_site else ('Interno, Externo e Mercado Livre no ciclo financeiro.' if mostrar_ml else 'Interno e Externo no ciclo financeiro.')) %}
+      <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>{{ sub_canais_fat }}</p></div></div>
+      {% set n_canais_fat = 2 + (1 if mostrar_site else 0) + (1 if mostrar_ml else 0) %}
+      {% set col_fat_canal = 'col-12 col-md-6 col-xl-3' if n_canais_fat == 4 else ('col-12 col-xl-4' if n_canais_fat == 3 else 'col-12 col-xl-6') %}
       <div class="row g-3 align-items-start">
-        <div class="col-12 col-xl-4">
+        <div class="{{ col_fat_canal }}">
           <div class="channel-card internal">
             <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag internal"><i class="bi bi-people-fill"></i> INTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_int) }}</span></div>
             <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_int) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_int.pct) }}%</div></div>
@@ -8458,7 +8571,7 @@ def dashboard():
             <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_int.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_int.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_int.nec > kpi_fat_int.ideal else 'text-success' }}">{{ format_brl(kpi_fat_int.nec) }}</div></div></div>
           </div>
         </div>
-        <div class="col-12 col-xl-4">
+        <div class="{{ col_fat_canal }}">
           <div class="channel-card external">
             <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag external"><i class="bi bi-person-workspace"></i> EXTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_ext) }}</span></div>
             <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_ext) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_ext.pct) }}%</div></div>
@@ -8467,14 +8580,26 @@ def dashboard():
             <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_ext.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_ext.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_ext.nec > kpi_fat_ext.ideal else 'text-success' }}">{{ format_brl(kpi_fat_ext.nec) }}</div></div></div>
           </div>
         </div>
-        <div class="col-12 col-xl-4">
+        {% if mostrar_site %}
+        <div class="{{ col_fat_canal }}">
           <div class="channel-card site">
-            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_fat.strftime('%Y-%m')) }}">Analisar</a></div>
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_fat.strftime('%Y-%m')) }}">Analisar</a></div>
             <div><div class="channel-main">{{ format_brl(fat_site_ciclo) }}</div><div class="small text-muted">faturado no canal</div></div>
             <div class="channel-status"><span>{{ qtd_nf_site_ciclo }} notas</span><span>{{ qtd_ped_site_ciclo }} pedidos no período</span></div>
             <div class="channel-meta"><div class="box"><div class="label">Pedidos</div><div class="value">{{ format_brl(ped_site_ciclo) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_fat_site_ciclo) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site_ciclo) }}</div></div></div>
           </div>
         </div>
+        {% endif %}
+        {% if mostrar_ml %}
+        <div class="{{ col_fat_canal }}">
+          <div class="channel-card ml">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag ml"><i class="bi bi-bag-check-fill"></i> MERCADO LIVRE</span></div>
+            <div><div class="channel-main">{{ format_brl(ml_fat_ciclo['valor_total']) }}</div><div class="small text-muted">faturado no canal (c/ frete)</div></div>
+            <div class="channel-status"><span>{{ ml_fat_ciclo['qtd_notas'] }} notas</span><span>{{ ml_fat_ciclo['qtd_full'] }} Full</span><span>{{ ml_fat_ciclo['qtd_envios'] }} Envios</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Produtos</div><div class="value">{{ format_brl(ml_fat_ciclo['valor_produtos']) }}</div></div><div class="box"><div class="label">Frete</div><div class="value">{{ format_brl(ml_fat_ciclo['valor_frete']) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ml_fat_ciclo['ticket_medio']) }}</div></div></div>
+          </div>
+        </div>
+        {% endif %}
       </div>
     </div>
 
@@ -8515,7 +8640,7 @@ def dashboard():
       <div class="dash-block-head">
         <div>
           <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt-cutoff"></i> Faturamento do Período</span>
-          <div class="sub">Notas fiscais de {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · {{ faturamento_periodo|length }} registro{{ '' if faturamento_periodo|length == 1 else 's' }} · Total {{ format_brl(fat_total) }}</div>
+          <div class="sub">Notas fiscais de {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · {{ faturamento_periodo|length }} registro{{ '' if faturamento_periodo|length == 1 else 's' }} · Total {{ format_brl(fat_kpi_liquido) }}</div>
         </div>
         <a class="btn btn-sm btn-success" href="{{ fat_excel_url }}">
           <i class="bi bi-file-earmark-excel me-1"></i>Exportar Excel
@@ -8547,10 +8672,12 @@ def dashboard():
               </td>
               <td class="text-nowrap">{{ nf['pedido'] }}</td>
               <td>{% if nf['cliente_id'] %}<a class="text-decoration-none text-dark" href="{{ url_for('cliente_360', cliente_id=nf['cliente_id']) }}">{{ nf['cliente'][:40] }}</a>{% else %}{{ nf['cliente'][:40] }}{% endif %}</td>
-              <td>{% if nf['vendor_id'] and nf['canal'] != 'SITE' %}<a class="text-decoration-none text-dark" href="{{ url_for('vendedor', vendor_id=nf['vendor_id'], data_ref=mes_ref, visao='faturamento') }}">{{ nf['vendedor'] }}</a>{% else %}{{ nf['vendedor'] }}{% endif %}</td>
+              <td>{% if nf['vendor_id'] and nf['canal'] not in ('SITE', 'MERCADO LIVRE') %}<a class="text-decoration-none text-dark" href="{{ url_for('vendedor', vendor_id=nf['vendor_id'], data_ref=mes_ref, visao='faturamento') }}">{{ nf['vendedor'] }}</a>{% else %}{{ nf['vendedor'] }}{% endif %}</td>
               <td>
                 {% if nf['canal'] == 'SITE' %}
                 <span class="badge rounded-pill" style="background:#e0f2fe;color:#0369a1;font-weight:700;">SITE</span>
+                {% elif nf['canal'] == 'MERCADO LIVRE' %}
+                <span class="badge rounded-pill" style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;font-weight:700;">MERCADO LIVRE</span>
                 {% else %}
                 <span class="fat-equipe-tipo {{ 'interno' if nf['canal'] == 'INTERNO' else 'externo' }}">{{ nf['canal'] }}</span>
                 {% endif %}
@@ -8565,7 +8692,7 @@ def dashboard():
             <tr>
               <td colspan="7">Total do período ({{ faturamento_periodo|length }} registro{{ '' if faturamento_periodo|length == 1 else 's' }})</td>
               <td class="text-end text-nowrap">{{ '{:,.0f}'.format(faturamento_periodo|sum(attribute='quantidade')).replace(',', '.') }}</td>
-              <td class="text-end text-nowrap">{{ format_brl(fat_total) }}</td>
+              <td class="text-end text-nowrap">{{ format_brl(fat_kpi_liquido) }}</td>
             </tr>
           </tfoot>
         </table>
@@ -8653,7 +8780,7 @@ def dashboard():
         </div>
         <div class="col-12 col-xl-4">
           <div class="channel-card site">
-            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_ped.strftime('%Y-%m')) }}">Analisar</a></div>
             <div><div class="channel-main">{{ format_brl(ped_site) }}</div><div class="small text-muted">realizado em pedidos do canal</div></div>
             <div class="channel-status"><span>{{ qtd_ped_site }} pedidos</span><span>{{ qtd_fat_site }} faturados</span><span class="pending">{{ gap_qtd_site }} pendentes</span></div>
             <div class="channel-meta"><div class="box"><div class="label">Faturamento</div><div class="value">{{ format_brl(fat_site) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_site) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site) }}</div></div></div>
@@ -8778,6 +8905,10 @@ def dashboard():
     ped_total=ped_total, ped_int=ped_int, ped_ext=ped_ext,
     fat_total=fat_total, fat_int=fat_int, fat_ext=fat_ext,
     fat_bruto_total=fat_bruto_total, fat_devolvido_total=fat_devolvido_total,
+    fat_kpi_liquido=fat_kpi_liquido, fat_kpi_bruto=fat_kpi_bruto,
+    fat_kpi_devolvido=fat_kpi_devolvido, fat_kpi_notas=fat_kpi_notas,
+    mostrar_site=mostrar_site, toggle_site_url=toggle_site_url,
+    mostrar_ml=mostrar_ml, toggle_ml_url=toggle_ml_url, ml_fat_ciclo=ml_fat_ciclo,
     fat_equipe_total=fat_equipe_total, fat_notas_total=fat_notas_total,
     fat_site_ciclo=fat_site_ciclo, qtd_nf_site_ciclo=qtd_nf_site_ciclo,
     ped_site_ciclo=ped_site_ciclo, qtd_ped_site_ciclo=qtd_ped_site_ciclo,
@@ -8824,16 +8955,21 @@ def dashboard_faturamento_excel():
     d1_fat = dates_ctx["d1_fat"]
     fat_de_str = dates_ctx["fat_de_str"]
     fat_ate_str = dates_ctx["fat_ate_str"]
+    include_site = request.args.get("mostrar_site") == "1"
+    include_ml = request.args.get("mostrar_ml") == "1"
     periodo_label = f"{d0_fat.strftime('%d/%m/%Y')} a {d1_fat.strftime('%d/%m/%Y')}"
 
     with conectar() as conn:
         ensure_vendor_type_column(conn)
-        nf_rows, item_rows = _query_dashboard_faturamento_periodo(conn, d0_fat, d1_fat, include_items=True)
+        nf_rows, item_rows = _query_dashboard_faturamento_periodo(
+            conn, d0_fat, d1_fat, include_items=True, include_site=include_site, include_ml=include_ml
+        )
 
     fat_int = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "INTERNO")
     fat_ext = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "EXTERNO")
     fat_site = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "SITE")
-    fat_total = fat_int + fat_ext + fat_site
+    fat_ml = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "MERCADO LIVRE")
+    fat_total = fat_int + fat_ext + fat_site + fat_ml
     fat_bruto = sum(float(r["valor"] or 0.0) for r in item_rows if float(r["valor"] or 0.0) > 0)
     fat_devolvido = sum(abs(float(r["valor"] or 0.0)) for r in item_rows if float(r["valor"] or 0.0) < 0)
 
@@ -8878,12 +9014,17 @@ def dashboard_faturamento_excel():
         ("Itens faturados", str(len(item_rows))),
         ("Valor Interno", fat_int),
         ("Valor Externo", fat_ext),
-        ("Valor Site", fat_site),
+    ]
+    if include_site:
+        metadata.append(("Valor Site", fat_site))
+    if include_ml:
+        metadata.append(("Valor Mercado Livre (c/ frete)", fat_ml))
+    metadata.extend([
         ("Faturamento Bruto", fat_bruto),
         ("Valor Devolvido", -fat_devolvido if fat_devolvido > 0 else 0.0),
         ("Faturamento Líquido", fat_total),
         ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
-    ]
+    ])
     sheets = [
         {
             "name": "Notas Fiscais",
@@ -10921,7 +11062,10 @@ def importacoes():
         flash("Acesso negado.", "warning")
         return redirect(url_for("home"))
 
+    from crm_npd.sync.mercado_livre_sheets import obter_status_sync_ml
+
     with conectar() as conn:
+        ml_status = obter_status_sync_ml(conn)
         rows = conn.execute("""
             SELECT
                 id,
@@ -10946,13 +11090,83 @@ def importacoes():
       </div>
       <div class="d-flex gap-2 flex-wrap">                            
         <a class="btn btn-primary" href="{{ url_for('importar_csv') }}"><i class="bi bi-arrow-repeat me-1"></i>Atualizar Sisplan</a>
-        <a class="btn btn-warning text-white" href="{{ url_for('pendencias_importacao') }}">Pendências de Importação</a>
+        <button type="button" class="btn btn-warning fw-bold text-dark" data-bs-toggle="modal" data-bs-target="#modalImportarMLImportacoes">
+          <i class="bi bi-upload me-1"></i>Importar NF Mercado Livre (.xlsx)
+        </button>
+        <a class="btn btn-outline-warning text-dark" href="{{ url_for('pendencias_importacao') }}">Pendências de Importação</a>
         <form method="post" action="{{ url_for('reprocessar_redes_importacao') }}" onsubmit="return confirm('Deseja reprocessar nomes, redes, matrizes e filiais agora?');">
           <button class="btn btn-outline-success">Reprocessar nomes/redes</button>
         </form>
       </div>
     </div>
+
+    <div class="modal fade" id="modalImportarMLImportacoes" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius:18px;">
+          <form method="post" action="{{ url_for('importar_mercado_livre') }}" enctype="multipart/form-data">
+            <div class="modal-header border-0 pb-0">
+              <h5 class="modal-title fw-bold"><i class="bi bi-bag-check-fill text-warning me-2"></i>Importar NF Mercado Livre</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+              <input type="hidden" name="origem_tela" value="importacoes">
+              <p class="small text-muted mb-3">
+                Selecione o relatório Excel de notas fiscais emitidas pelo Mercado Livre (<code>.xlsx</code>).
+                Notas repetidas são atualizadas automaticamente pela Chave de Acesso (44 dígitos).
+              </p>
+              <label class="form-label fw-bold small">Planilha Mercado Livre (.xlsx)</label>
+              <input type="file" name="arquivo" class="form-control" accept=".xlsx" required>
+            </div>
+            <div class="modal-footer border-0 pt-0">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+              <button type="submit" class="btn btn-warning fw-bold text-dark"><i class="bi bi-upload me-1"></i>Importar planilha</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
     
+
+    <div class="cardx p-3 mb-3" style="border-left:4px solid #eab308;">
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+        <div>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-bold"><i class="bi bi-cloud-check-fill text-warning me-1"></i>Sincronização Automática — Mercado Livre (Google Sheets)</span>
+            {% if ml_status['auto_ativo'] %}
+            <span class="badge text-bg-success">Automático · a cada {{ ml_status['intervalo_s'] }}s</span>
+            {% else %}
+            <span class="badge text-bg-secondary">Manual</span>
+            {% endif %}
+            {% if ml_status['last_status'].startswith('erro:') %}
+            <span class="badge text-bg-danger" title="{{ ml_status['last_status'] }}">Falha na última leitura</span>
+            {% elif ml_status['last_status'] == 'ok' %}
+            <span class="badge text-bg-light border text-success">Conectado</span>
+            {% endif %}
+          </div>
+          <div class="small text-muted mt-1 d-flex gap-3 flex-wrap">
+            <span>Cursor Timestamp Log: <b>{{ ml_status['last_ts'] or 'Aguardando 1ª leitura' }}</b></span>
+            <span>Última checagem: <b>{{ ml_status['last_check_at'] or '-' }}</b></span>
+            <span>Notas ML no banco: <b>{{ ml_status['total_no_banco'] }}</b></span>
+          </div>
+          {% if ml_status['last_status'].startswith('erro:') %}
+          <div class="small text-danger mt-1">{{ ml_status['last_status'] }}</div>
+          {% endif %}
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+          <form method="post" action="{{ url_for('sincronizar_mercado_livre_sheets') }}">
+            <button class="btn btn-sm btn-warning fw-bold text-dark">
+              <i class="bi bi-arrow-clockwise me-1"></i>Sincronizar Agora (Delta)
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('sincronizar_mercado_livre_sheets') }}" onsubmit="return confirm('Reprocessar todas as notas desde o início da planilha Google Sheets?');">
+            <input type="hidden" name="forcar_completo" value="1">
+            <button class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-cloud-arrow-down me-1"></i>Reler Planilha Completa
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <div class="cardx p-3">
       <div class="table-responsive">
@@ -11021,7 +11235,7 @@ def importacoes():
         </table>
       </div>
     </div>
-    """, rows=rows)
+    """, rows=rows, ml_status=ml_status)
 
     return render_page("Importações", body, "importacoes")
 
@@ -11381,6 +11595,9 @@ def excluir_importacao(import_id):
         elif tipo == "ORCAMENTO":
             conn.execute("DELETE FROM orcamentos WHERE import_id=?", (import_id,))
 
+        elif tipo in ("MERCADO_LIVRE", "MERCADO LIVRE"):
+            conn.execute("DELETE FROM mercado_livre_invoices WHERE import_id=?", (import_id,))
+
         else:
             flash(f"Tipo de importação desconhecido: {row['tipo']}", "danger")
             return redirect(url_for("importacoes"))
@@ -11389,6 +11606,82 @@ def excluir_importacao(import_id):
         conn.commit()
 
     flash("Importação excluída com sucesso.", "success")
+    return redirect(url_for("importacoes"))
+
+
+@app.route("/importacoes/mercado_livre", methods=["POST"])
+@login_required
+def importar_mercado_livre():
+    """Recebe planilha .xlsx de notas fiscais do Mercado Livre (apenas Admin/Gestor)."""
+    from crm_npd.services.mercado_livre import importar_planilha_mercado_livre
+
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    origem_tela = (request.form.get("origem_tela") or "importacoes").strip().lower()
+    data_ref_form = (request.form.get("data_ref") or "").strip()
+    arq = request.files.get("arquivo")
+    if not arq or not (arq.filename or "").strip():
+        flash("Selecione um arquivo .xlsx do Mercado Livre.", "warning")
+        if origem_tela == "dashboard":
+            return redirect(url_for("dashboard", visao="faturamento", data_ref=data_ref_form or None))
+        return redirect(url_for("importacoes"))
+
+    try:
+        conteudo = arq.read()
+        with conectar() as conn:
+            res = importar_planilha_mercado_livre(conn, arq.filename, conteudo, now_iso())
+        flash(
+            f"Mercado Livre importado: {res['registros']} nota(s) "
+            f"({res['novos']} nova(s), {res['substituidos']} atualizada(s)) · "
+            f"Total {format_brl(res['valor_total'])}.",
+            "success",
+        )
+        if origem_tela == "dashboard":
+            mes_destino = (res.get("max_data") or "")[:7] or data_ref_form or None
+            return redirect(
+                url_for("dashboard", visao="faturamento", data_ref=mes_destino, mostrar_ml="1")
+            )
+        return redirect(url_for("importacoes"))
+    except Exception as exc:
+        flash(f"Erro ao importar planilha do Mercado Livre: {exc}", "danger")
+        if origem_tela == "dashboard":
+            return redirect(url_for("dashboard", visao="faturamento", data_ref=data_ref_form or None))
+        return redirect(url_for("importacoes"))
+
+
+@app.route("/importacoes/mercado_livre/sync", methods=["POST"])
+@login_required
+def sincronizar_mercado_livre_sheets():
+    """Executa sincronização sob demanda com a planilha Google Sheets `notas_ml`."""
+    from crm_npd.sync.mercado_livre_sheets import sincronizar_planilha_ml_delta
+
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    forcar = request.form.get("forcar_completo") == "1"
+    try:
+        with conectar() as conn:
+            res = sincronizar_planilha_ml_delta(conn, forcar_completo=forcar)
+        if res["novos"] or res["substituidos"] or res["removidos"]:
+            flash(
+                f"Planilha Mercado Livre sincronizada: {res['novos']} nova(s), "
+                f"{res['substituidos']} atualizada(s), {res['removidos']} cancelada(s)/removida(s) "
+                f"· Cursor Timestamp: {res['last_ts'] or '-'}.",
+                "success",
+            )
+        else:
+            flash(
+                f"Planilha Mercado Livre já está em dia (nenhuma nota nova após {res['last_ts'] or 'o início'}).",
+                "info",
+            )
+    except Exception as exc:
+        flash(f"Erro ao sincronizar planilha Google Sheets do Mercado Livre: {exc}", "danger")
+
     return redirect(url_for("importacoes"))
 
 

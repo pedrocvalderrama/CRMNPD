@@ -13,6 +13,8 @@ REM Estas variaveis ganham do .env. O run.bat do servidor continua no padrao da 
 set CRM_NPD_FONTE=sqlite
 set SISPLAN_CDC_AUTO=0
 set SISPLAN_SYNC_ON_START=0
+set ML_SHEETS_SYNC_ON_START=0
+set ML_SHEETS_SYNC_AUTO=0
 set CRM_NPD_HOST=127.0.0.1
 
 if exist "%CD%\crm_npd.db" goto :tem_base
