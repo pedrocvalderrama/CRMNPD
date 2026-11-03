@@ -100,11 +100,12 @@ class LinhaComissao:
         base_pct: Percentual base aplicado.
         bonus_pct: Percentual de bonus aplicado.
         comissao: Valor de comissao da linha.
-        is_novo: Indica se a linha recebeu bonus de cliente novo.
+        is_novo: Indica se a linha recebeu bonus de cliente novo/recuperado (2%).
         is_jit: Indica se a origem e JIT IMEDIATO, que nunca recebe bonus de novo.
         identity_key: Chave da identidade comercial.
         doc_ref: Numero da nota ou do pedido usado como documento de referencia.
-        is_devolucao: Linha de devolucao: aparece no extrato, nao entra na base.
+        is_devolucao: Linha de devolucao: entra negativa descontando base e comissao.
+        is_recuperado: Indica se o bonus de 2% veio de pedido recuperado (motivos 11/13).
     """
 
     data: str
@@ -118,6 +119,7 @@ class LinhaComissao:
     identity_key: str = ""
     doc_ref: str = ""
     is_devolucao: bool = False
+    is_recuperado: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +134,7 @@ class ExtratoComissao:
         rep_count: Linhas classificadas como recompra.
         lines: Detalhamento linha a linha.
         bateu_meta: Se a aliquota de 1,75% esta ativa no ciclo.
-        devolucoes_valor: Soma das devolucoes exibidas, sem abater a base.
+        devolucoes_valor: Soma das devolucoes descontadas na base do ciclo.
     """
 
     faturamento: float = 0.0

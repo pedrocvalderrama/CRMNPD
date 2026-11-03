@@ -539,19 +539,19 @@ def build_vendor_period_mix_map_fast(legacy, conn, d0: date, d1: date):
     """Fonte CANÔNICA e em lote de NOVO / RECORRENTE / RECUPERADO.
 
     Usa FATURAMENTO/INVOICES e a mesma regra do Extrato de Comissão:
-    pedido marcado no Sisplan como primeira compra (MOTIVO 10), override
-    manual e bloqueio de bônus NOVO para JIT IMEDIATO. A Visão do Vendedor
+    pedido marcado no Sisplan como novo/recuperado com bônus (MOTIVOS 10, 11 e 13),
+    override manual e bloqueio de bônus NOVO para JIT IMEDIATO. A Visão do Vendedor
     e a Performance leem exatamente este mesmo serviço.
 
     A contagem é por identidade. Se qualquer nota do ciclo pertencer a um
-    pedido novo (e não for JIT IMEDIATO), a identidade entra como NOVO.
+    pedido novo/11/13 (e não for JIT IMEDIATO), a identidade entra como NOVO.
     """
     if not isinstance(d0, date):
         d0 = date.fromisoformat(str(d0)[:10])
     if not isinstance(d1, date):
         d1 = date.fromisoformat(str(d1)[:10])
     version = _db_version()
-    key = ("vendor_period_mix_sisplan_novo_v2", d0.isoformat(), d1.isoformat())
+    key = ("vendor_period_mix_sisplan_novo_v3", d0.isoformat(), d1.isoformat())
     cached = _vendor_period_mix_cache.get(key, version=version)
     if cached is not None:
         return copy.deepcopy(cached)

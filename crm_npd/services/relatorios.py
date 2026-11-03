@@ -119,17 +119,18 @@ def _safe_excel_name(txt: str) -> str:
 
 def linhas_excel_extrato_comissao(data_fin: dict) -> list[list]:
     """Monta as linhas do Excel do extrato de comissão, na mesma ordem da tela."""
+    from crm_npd.metrics import comissao as f_comissao
+
     rows: list[list] = []
     for linha in data_fin.get("lines") or []:
         is_dev = bool(linha.get("is_devolucao"))
-        if is_dev:
-            status = "DEVOLUÇÃO"
-            aliquota = None
-            comissao = None
-        else:
-            status = "NOVO" if linha.get("is_novo") else "CARTEIRA"
-            aliquota = (float(linha.get("base_pct") or 0) + float(linha.get("bonus_pct") or 0)) / 100.0
-            comissao = float(linha.get("comissao") or 0)
+        status = f_comissao.rotulo_status_linha(
+            is_devolucao=is_dev,
+            is_novo=bool(linha.get("is_novo")),
+            is_recuperado=bool(linha.get("is_recuperado")),
+        )
+        aliquota = (float(linha.get("base_pct") or 0) + float(linha.get("bonus_pct") or 0)) / 100.0
+        comissao = float(linha.get("comissao") or 0)
         rows.append([
             linha.get("data") or "",
             linha.get("doc_ref") or "",

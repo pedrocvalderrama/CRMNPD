@@ -70,13 +70,28 @@ def test_externo_sete_por_cento() -> None:
     assert c.comissao_linha_externo(0) == 0.0
 
 
-def test_pedido_sisplan_primeira_compra() -> None:
+def test_pedido_sisplan_primeira_compra_e_recuperados() -> None:
     assert c.pedido_sisplan_cliente_novo("10 - PEDIDO PRIMEIRA COMPRA") is True
     assert c.pedido_sisplan_cliente_novo("10", "PEDIDO PRIMEIRA COMPRA") is True
+    assert c.pedido_sisplan_cliente_novo("11 - PEDIDO RECUPERADO ARTE NOVA") is True
+    assert c.pedido_sisplan_cliente_novo("11", "PEDIDO RECUPERADO ARTE NOVA") is True
+    assert c.pedido_sisplan_cliente_novo("13 - PEDIDO RECUPERADO ARTE REPETIÇÃO") is True
+    assert c.pedido_sisplan_cliente_novo("13", "PEDIDO RECUPERADO ARTE REPETICAO") is True
     assert c.pedido_sisplan_cliente_novo("01 - ARTE REPETICAO") is False
     assert c.pedido_sisplan_cliente_novo("00 - ARTE NOVA") is False
-    assert c.pedido_sisplan_cliente_novo("11 - PEDIDO RECUPERADO ARTE NOVA") is False
+    assert c.pedido_sisplan_cliente_novo("12 - FINALIZADO") is False
     assert c.pedido_sisplan_cliente_novo("") is False
+
+
+def test_pedido_sisplan_recuperado_tag() -> None:
+    assert c.pedido_sisplan_recuperado("11 - PEDIDO RECUPERADO ARTE NOVA") is True
+    assert c.pedido_sisplan_recuperado("13 - PEDIDO RECUPERADO ARTE REPETIÇÃO") is True
+    assert c.pedido_sisplan_recuperado("10 - PEDIDO PRIMEIRA COMPRA") is False
+    assert c.pedido_sisplan_recuperado("01 - ARTE REPETICAO") is False
+    assert c.rotulo_status_linha(is_novo=True, is_recuperado=True) == "RECUPERADO"
+    assert c.rotulo_status_linha(is_novo=True, is_recuperado=False) == "NOVO"
+    assert c.rotulo_status_linha(is_novo=False, is_recuperado=True) == "CARTEIRA"
+    assert c.rotulo_status_linha(is_devolucao=True, is_novo=True, is_recuperado=True) == "DEVOLUÇÃO"
 
 
 def test_todas_as_notas_do_pedido_novo_ganham_bonus() -> None:
@@ -117,11 +132,22 @@ def test_override_manual_e_jit_imediato_vence() -> None:
     )
 
 
-def test_devolucao_nao_entra_na_base() -> None:
+def test_devolucao_identificacao_e_sinal() -> None:
     assert c.invoice_eh_devolucao(tipo_item_ref="D", valor=-500.0) is True
+    assert c.invoice_eh_devolucao(tipo_item_ref="D", valor=500.0) is True
     assert c.invoice_eh_devolucao(tipo_item_ref="V", valor=100.0) is False
     assert c.invoice_eh_devolucao(tipo_item_ref="DEMO", valor=80.0) is False
     assert c.invoice_eh_devolucao(tipo_item_ref="V", valor=-10.0) is True
+    assert c.valor_assinado_faturamento(tipo_item_ref="D", valor=500.0) == -500.0
+    assert c.valor_assinado_faturamento(tipo_item_ref="D", valor=-500.0) == -500.0
+    assert c.valor_assinado_faturamento(tipo_item_ref="V", valor=100.0) == 100.0
+
+
+def test_devolucao_desconta_pela_regra_do_pedido_ou_ciclo() -> None:
+    assert c.comissao_linha_interno(-1_000.0, is_novo=False, bateu_meta=False) == (1.0, 0.0, -10.0)
+    assert c.comissao_linha_interno(-1_000.0, is_novo=False, bateu_meta=True) == (1.75, 0.0, pytest.approx(-17.5))
+    assert c.comissao_linha_interno(-1_000.0, is_novo=True, bateu_meta=False) == (1.0, 1.0, -20.0)
+    assert c.comissao_linha_interno(-1_000.0, is_novo=True, bateu_meta=True) == (1.75, 0.25, -20.0)
 
 
 def test_extrato_interno_soma_bonus_uma_vez() -> None:
@@ -150,25 +176,27 @@ def test_extrato_interno_meta_batida_sem_bonus_volume() -> None:
     assert extrato.bateu_meta is True
 
 
-def test_extrato_interno_devolucao_nao_abate() -> None:
+def test_extrato_interno_devolucao_abate_base_bonus_e_comissao() -> None:
     linhas = (
-        LinhaComissao(data="2026-09-01", cliente="A", valor=10_000.0, is_novo=False, comissao=100.0, base_pct=1.0, bonus_pct=0.0),
+        LinhaComissao(data="2026-09-01", cliente="A", valor=105_000.0, is_novo=False, comissao=1_050.0, base_pct=1.0, bonus_pct=0.0),
         LinhaComissao(
             data="2026-09-02",
             cliente="A",
-            valor=-2_000.0,
+            valor=-10_000.0,
             is_novo=False,
-            comissao=0.0,
-            base_pct=0.0,
+            comissao=-100.0,
+            base_pct=1.0,
             bonus_pct=0.0,
             is_devolucao=True,
         ),
     )
     extrato = c.montar_extrato_interno(linhas)
-    assert extrato.faturamento == 10_000.0
-    assert extrato.comissao == 100.0
-    assert extrato.devolucoes_valor == -2_000.0
+    assert extrato.faturamento == 95_000.0
+    assert extrato.extra_bonus == 0.0
+    assert extrato.comissao == 950.0
+    assert extrato.devolucoes_valor == -10_000.0
     assert extrato.rep_count == 1
+    assert extrato.novo_count == 0
     assert len(extrato.lines) == 2
 
 
@@ -200,12 +228,28 @@ def test_linhas_excel_extrato_inclui_bonus_e_devolucao() -> None:
                 "cliente": "B",
                 "identity_nome": "B",
                 "is_novo": True,
+                "is_recuperado": False,
                 "is_jit": False,
                 "is_devolucao": False,
                 "valor": 40_000.0,
                 "base_pct": 1.0,
                 "bonus_pct": 1.0,
                 "comissao": 800.0,
+            },
+            {
+                "data": "2026-09-02",
+                "doc_ref": "NF-2B",
+                "pedido": "101B",
+                "cliente": "C",
+                "identity_nome": "C",
+                "is_novo": True,
+                "is_recuperado": True,
+                "is_jit": False,
+                "is_devolucao": False,
+                "valor": 10_000.0,
+                "base_pct": 1.0,
+                "bonus_pct": 1.0,
+                "comissao": 200.0,
             },
             {
                 "data": "2026-09-03",
@@ -217,9 +261,9 @@ def test_linhas_excel_extrato_inclui_bonus_e_devolucao() -> None:
                 "is_jit": False,
                 "is_devolucao": True,
                 "valor": -500.0,
-                "base_pct": 0.0,
+                "base_pct": 1.0,
                 "bonus_pct": 0.0,
-                "comissao": 0.0,
+                "comissao": -5.0,
             },
         ],
     }
@@ -229,7 +273,11 @@ def test_linhas_excel_extrato_inclui_bonus_e_devolucao() -> None:
     assert rows[0][10] == "SIM"
     assert rows[1][5] == "NOVO"
     assert rows[1][8] == pytest.approx(0.02)
-    assert rows[2][5] == "DEVOLUÇÃO"
-    assert rows[2][8] is None
+    assert rows[2][5] == "RECUPERADO"
+    assert rows[2][8] == pytest.approx(0.02)
+    assert rows[2][9] == pytest.approx(200.0)
+    assert rows[3][5] == "DEVOLUÇÃO"
+    assert rows[3][8] == pytest.approx(0.01)
+    assert rows[3][9] == pytest.approx(-5.0)
     assert rows[-1][3].startswith("Bônus")
     assert rows[-1][9] == 200.0

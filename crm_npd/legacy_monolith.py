@@ -5402,7 +5402,7 @@ CRM_RULES_LOCAL = {
     "responsavel": "Para comissão, carteira e atribuição comercial o CRM deve usar RESPONSAVEL/NOME_RESPONSAVEL. REPRESENTANTE só deve ser usado em exceções específicas do canal SITE.",
     "jit": "Pedido JIT/matriz pode contar para meta/pedidos conforme a tela, mas não deve inflar faturamento/comissão de filial. Filial IMEDIATA conta para faturamento/comissão quando aplicável.",
     "carteira": "Transferências manuais de carteira, tarefas, matriz/filial e classificação devem ser persistidas e reaplicadas após excluir/importar CSV novamente.",
-    "novo_recompra": "Cliente novo vem do pedido no Sisplan (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA). JIT IMEDIATO anula. Gestor/admin pode forçar NOVO ou RECOMPRA.",
+    "novo_recompra": "Pedido novo (2% comissão) vem do motivo no Sisplan: 10 (Primeira Compra), 11 (Recuperado Arte Nova) e 13 (Recuperado Arte Repetição). No extrato e Excel, 11 e 13 exibem tag RECUPERADO. JIT IMEDIATO anula. Gestor/admin pode forçar NOVO ou RECOMPRA.",
     "seguranca": "Vendedor só pode consultar sua própria carteira/desempenho. Gestor e admin podem consultar visão ampliada. Comissão de outro vendedor não deve aparecer para usuário comum.",
 }
 
@@ -6284,7 +6284,7 @@ REGRAS IMPORTANTES
 - A atribuição comercial usa RESPONSÁVEL/NOME_RESPONSÁVEL como regra principal. REPRESENTANTE só é usado em exceções do canal SITE.
 - Pedidos JIT/matriz precisam ser tratados para não duplicar meta, faturamento ou comissão. Filial IMEDIATA pode contar conforme a regra comercial já implementada.
 - Transferências manuais de carteira, tarefas e vínculos de matriz/filial devem persistir mesmo após nova importação.
-- Cliente novo vem do pedido no Sisplan (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA). JIT IMEDIATO anula. Overrides auditados quando aplicável.
+- Pedido novo (2% de comissão) vem do pedido no Sisplan: MOTIVO 10 (PEDIDO PRIMEIRA COMPRA), MOTIVO 11 (PEDIDO RECUPERADO ARTE NOVA) e MOTIVO 13 (PEDIDO RECUPERADO ARTE REPETIÇÃO). No extrato e no Excel, motivos 11 e 13 exibem a tag RECUPERADO mantendo 2%. JIT IMEDIATO anula. Overrides auditados quando aplicável.
 - Vendedor comum só pode consultar a própria carteira/desempenho. Gestor/admin podem consultar visão ampliada.
 - Pedidos, faturamento, orçamento e liquidez são dados do Sisplan; não crie números ou fatos que não estejam no contexto fornecido.
 - Oportunidades e Funil NÃO são uma base paralela: são leituras do relatório ORÇAMENTO do Sisplan. Nunca instrua o vendedor a cadastrar lead manualmente.
@@ -7294,6 +7294,8 @@ def dashboard_salvar_metas():
     data_ref = (request.form.get("data_ref") or mes_post).strip()
     fat_de = (request.form.get("fat_de") or "").strip()
     fat_ate = (request.form.get("fat_ate") or "").strip()
+    ped_de = (request.form.get("ped_de") or "").strip()
+    ped_ate = (request.form.get("ped_ate") or "").strip()
     visao_raw = (request.form.get("visao") or "geral").strip().lower()
     visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
 
@@ -7323,7 +7325,292 @@ def dashboard_salvar_metas():
     if fat_de and fat_ate:
         kwargs["fat_de"] = fat_de
         kwargs["fat_ate"] = fat_ate
+    if ped_de and ped_ate:
+        kwargs["ped_de"] = ped_de
+        kwargs["ped_ate"] = ped_ate
     return redirect(url_for("dashboard", **kwargs))
+
+
+def _iso_date_param(valor: str) -> date | None:
+    try:
+        s = (valor or "").strip()[:10]
+        if len(s) == 10:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        pass
+    return None
+
+
+def _fmt_br_date_str(valor: str | None) -> str:
+    s = str(valor or "").strip()[:10]
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
+    return s or "-"
+
+
+def _to_excel_date(valor: str | None):
+    s = str(valor or "").strip()
+    dt = _iso_date_param(s)
+    return dt if dt is not None else s
+
+
+def _resolve_dashboard_dates(args) -> dict:
+    data_ref_str = (args.get("data_ref") or "").strip()
+    fat_de_arg = (args.get("fat_de") or "").strip()
+    fat_ate_arg = (args.get("fat_ate") or "").strip()
+    ped_de_arg = (args.get("ped_de") or "").strip()
+    ped_ate_arg = (args.get("ped_ate") or "").strip()
+
+    hoje = date.today()
+    try:
+        if data_ref_str:
+            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date().replace(day=1)
+        else:
+            ref_date = hoje.replace(day=1)
+    except Exception:
+        ref_date = hoje.replace(day=1)
+
+    d0_mes, d1_mes = periodo_mes_calendario(ref_date)
+
+    fat_de_dt = _iso_date_param(fat_de_arg)
+    fat_ate_dt = _iso_date_param(fat_ate_arg)
+    data_fat_custom = bool(fat_de_dt and fat_ate_dt)
+    if data_fat_custom:
+        if fat_de_dt > fat_ate_dt:
+            fat_de_dt, fat_ate_dt = fat_ate_dt, fat_de_dt
+        d0_fat, d1_fat = fat_de_dt, fat_ate_dt
+        fat_ref = d1_fat.replace(day=1)
+    else:
+        fat_ref = ref_date
+        d0_fat, d1_fat = d0_mes, d1_mes
+
+    ped_de_dt = _iso_date_param(ped_de_arg)
+    ped_ate_dt = _iso_date_param(ped_ate_arg)
+    data_ped_custom = bool(ped_de_dt and ped_ate_dt)
+    if data_ped_custom:
+        if ped_de_dt > ped_ate_dt:
+            ped_de_dt, ped_ate_dt = ped_ate_dt, ped_de_dt
+        d0_ped, d1_ped = ped_de_dt, ped_ate_dt
+        ped_ref = d1_ped.replace(day=1)
+    else:
+        ped_ref = ref_date
+        d0_ped, d1_ped = d0_mes, d1_mes
+
+    return {
+        "hoje": hoje,
+        "ref_date": ref_date,
+        "mes_ref": ref_date.strftime("%Y-%m"),
+        "d0_ped": d0_ped,
+        "d1_ped": d1_ped,
+        "ped_ref": ped_ref,
+        "ped_mes_ref": ped_ref.strftime("%Y-%m"),
+        "data_ped_custom": data_ped_custom,
+        "ped_de_str": d0_ped.isoformat(),
+        "ped_ate_str": d1_ped.isoformat(),
+        "d0_fat": d0_fat,
+        "d1_fat": d1_fat,
+        "fat_ref": fat_ref,
+        "fat_mes_ref": fat_ref.strftime("%Y-%m"),
+        "data_fat_custom": data_fat_custom,
+        "fat_de_str": d0_fat.isoformat(),
+        "fat_ate_str": d1_fat.isoformat(),
+    }
+
+
+def _query_dashboard_faturamento_periodo(
+    conn: sqlite3.Connection,
+    d0_fat: date,
+    d1_fat: date,
+    include_items: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    nf_rows_raw = conn.execute("""
+        SELECT
+            MAX(date(i.data_emissao)) AS data_emissao,
+            COALESCE(NULLIF(TRIM(i.numero), ''), '-') AS nf,
+            CASE
+                WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
+                WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                ELSE 'VENDA'
+            END AS tipo_nf,
+            COALESCE(NULLIF(GROUP_CONCAT(DISTINCT NULLIF(TRIM(i.pedido), '')), ''), '-') AS pedido,
+            MAX(i.cliente_id) AS cliente_id,
+            COALESCE(
+                NULLIF(MAX(TRIM(c.fantasia)), ''),
+                NULLIF(MAX(TRIM(c.nome)), ''),
+                NULLIF(MAX(TRIM(i.cliente_nome_ref)), ''),
+                '-'
+            ) AS cliente,
+            MAX(v.id) AS vendor_id,
+            COALESCE(
+                NULLIF(MAX(TRIM(v.nome)), ''),
+                NULLIF(MAX(TRIM(i.vendor_nome_ref)), ''),
+                '-'
+            ) AS vendedor,
+            CASE
+                WHEN COALESCE(UPPER(TRIM(MAX(v.nome))), '') = 'SITE' OR COALESCE(UPPER(TRIM(MAX(v.tipo))), '') = 'SITE' THEN 'SITE'
+                ELSE COALESCE(UPPER(TRIM(MAX(v.tipo))), 'EXTERNO')
+            END AS canal,
+            COALESCE(
+                NULLIF(GROUP_CONCAT(DISTINCT NULLIF(TRIM(i.grupo_ref), '')), ''),
+                NULLIF(MAX(TRIM(i.produto)), ''),
+                '-'
+            ) AS grupo_produto,
+            COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS quantidade,
+            COALESCE(SUM(COALESCE(i.valor, 0)), 0) AS valor
+        FROM invoices i
+        LEFT JOIN customers c ON c.id = i.cliente_id
+        LEFT JOIN vendors v ON v.id = i.vendor_id
+        WHERE i.data_emissao IS NOT NULL
+          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+        GROUP BY COALESCE(NULLIF(TRIM(i.numero), ''), 'SEM-NF-' || CAST(i.id AS TEXT)),
+                 CASE
+                     WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
+                     WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                     ELSE 'VENDA'
+                 END
+        ORDER BY MAX(date(i.data_emissao)) DESC, nf DESC, MAX(i.id) DESC
+    """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
+
+    nf_rows = []
+    for r in nf_rows_raw:
+        d = dict(r)
+        d["valor"] = float(d.get("valor") or 0.0)
+        d["quantidade"] = float(d.get("quantidade") or 0.0)
+        d["data_fmt"] = _fmt_br_date_str(d.get("data_emissao"))
+        nf_rows.append(d)
+
+    item_rows: list[dict] = []
+    if include_items:
+        item_rows_raw = conn.execute("""
+            SELECT
+                date(i.data_emissao) AS data_emissao,
+                COALESCE(NULLIF(TRIM(i.numero), ''), '-') AS nf,
+                CASE
+                    WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
+                    WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                    ELSE 'VENDA'
+                END AS tipo_nf,
+                COALESCE(NULLIF(TRIM(i.pedido), ''), '') AS pedido,
+                COALESCE(
+                    NULLIF(TRIM(c.fantasia), ''),
+                    NULLIF(TRIM(c.nome), ''),
+                    NULLIF(TRIM(i.cliente_nome_ref), ''),
+                    '-'
+                ) AS cliente,
+                COALESCE(
+                    NULLIF(TRIM(v.nome), ''),
+                    NULLIF(TRIM(i.vendor_nome_ref), ''),
+                    '-'
+                ) AS vendedor,
+                CASE
+                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
+                    ELSE COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+                END AS canal,
+                COALESCE(NULLIF(TRIM(i.grupo_ref), ''), '') AS grupo,
+                COALESCE(NULLIF(TRIM(i.produto), ''), '') AS produto,
+                COALESCE(NULLIF(TRIM(i.formato), ''), NULLIF(TRIM(i.medida_ref), ''), '') AS formato,
+                COALESCE(NULLIF(TRIM(i.papel_ref), ''), '') AS papel,
+                COALESCE(i.quantidade, 0) AS quantidade,
+                COALESCE(i.valor, 0) AS valor
+            FROM invoices i
+            LEFT JOIN customers c ON c.id = i.cliente_id
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+            ORDER BY date(i.data_emissao) DESC, nf DESC, i.id DESC
+        """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
+        item_rows = [dict(r) for r in item_rows_raw]
+
+    return nf_rows, item_rows
+
+
+def _query_dashboard_pedidos_periodo(
+    conn: sqlite3.Connection,
+    d0_ped: date,
+    d1_ped: date,
+    include_items: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    cond = sql_pedidos_realizados_excel_cond("o", "v")
+    ped_rows_raw = conn.execute(f"""
+        SELECT
+            MAX(date(o.data_emissao)) AS data_emissao,
+            COALESCE(NULLIF(TRIM(o.pedido), ''), '-') AS numero,
+            MAX(o.cliente_id) AS cliente_id,
+            COALESCE(
+                NULLIF(MAX(TRIM(c.fantasia)), ''),
+                NULLIF(MAX(TRIM(c.nome)), ''),
+                NULLIF(MAX(TRIM(o.cliente_nome_ref)), ''),
+                '-'
+            ) AS cliente,
+            MAX(v.id) AS vendor_id,
+            COALESCE(
+                NULLIF(MAX(TRIM(v.nome)), ''),
+                NULLIF(MAX(TRIM(o.vendor_nome_ref)), ''),
+                '-'
+            ) AS vend,
+            CASE
+                WHEN COALESCE(UPPER(TRIM(MAX(v.nome))), '') = 'SITE' OR COALESCE(UPPER(TRIM(MAX(v.tipo))), '') = 'SITE' THEN 'SITE'
+                ELSE COALESCE(UPPER(TRIM(MAX(v.tipo))), 'EXTERNO')
+            END AS canal,
+            COALESCE(NULLIF(GROUP_CONCAT(DISTINCT NULLIF(TRIM(o.grupo_ref), '')), ''), '-') AS grupo,
+            COALESCE(NULLIF(GROUP_CONCAT(DISTINCT NULLIF(TRIM(o.medida_ref), '')), ''), '-') AS medida,
+            COALESCE(SUM(COALESCE(o.quantidade, 0)), 0) AS quantidade,
+            COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS valor
+        FROM orders o
+        LEFT JOIN customers c ON c.id = o.cliente_id
+        LEFT JOIN vendors v ON v.id = o.vendor_id
+        WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
+          AND {cond}
+        GROUP BY COALESCE(NULLIF(TRIM(o.pedido), ''), 'SEM-PED-' || CAST(o.id AS TEXT))
+        ORDER BY MAX(date(o.data_emissao)) DESC, CAST(TRIM(COALESCE(o.pedido, '0')) AS INTEGER) DESC, numero DESC
+    """, (d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
+
+    ped_rows = []
+    for r in ped_rows_raw:
+        d = dict(r)
+        d["valor"] = float(d.get("valor") or 0.0)
+        d["quantidade"] = float(d.get("quantidade") or 0.0)
+        d["data_fmt"] = _fmt_br_date_str(d.get("data_emissao"))
+        ped_rows.append(d)
+
+    item_rows: list[dict] = []
+    if include_items:
+        item_rows_raw = conn.execute(f"""
+            SELECT
+                date(o.data_emissao) AS data_emissao,
+                COALESCE(NULLIF(TRIM(o.pedido), ''), '-') AS pedido,
+                COALESCE(
+                    NULLIF(TRIM(c.fantasia), ''),
+                    NULLIF(TRIM(c.nome), ''),
+                    NULLIF(TRIM(o.cliente_nome_ref), ''),
+                    '-'
+                ) AS cliente,
+                COALESCE(
+                    NULLIF(TRIM(v.nome), ''),
+                    NULLIF(TRIM(o.vendor_nome_ref), ''),
+                    '-'
+                ) AS vendedor,
+                CASE
+                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
+                    ELSE COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+                END AS canal,
+                COALESCE(NULLIF(TRIM(o.grupo_ref), ''), '') AS grupo,
+                COALESCE(NULLIF(TRIM(o.produto_ref), ''), '') AS produto,
+                COALESCE(NULLIF(TRIM(o.medida_ref), ''), '') AS medida,
+                COALESCE(NULLIF(TRIM(o.papel_ref), ''), '') AS papel,
+                COALESCE(NULLIF(TRIM(o.desc_motivo_pedido), ''), NULLIF(TRIM(o.motivo_pedido), ''), '') AS motivo,
+                COALESCE(o.quantidade, 0) AS quantidade,
+                COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0) AS valor
+            FROM orders o
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND {cond}
+            ORDER BY date(o.data_emissao) DESC, CAST(TRIM(COALESCE(o.pedido, '0')) AS INTEGER) DESC, o.id ASC
+        """, (d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
+        item_rows = [dict(r) for r in item_rows_raw]
+
+    return ped_rows, item_rows
 
 
 @app.route("/dashboard")
@@ -7336,49 +7623,26 @@ def dashboard():
         return redirect(url_for("home"))
     
     # --- 1. DATAS ---
-    data_ref_str = request.args.get("data_ref", "")
-    fat_de_arg = (request.args.get("fat_de") or "").strip()
-    fat_ate_arg = (request.args.get("fat_ate") or "").strip()
     ver_pedidos = request.args.get("ver_pedidos", "0") == "1"
     visao_raw = (request.args.get("visao") or "geral").strip().lower()
     visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
 
-    hoje = date.today()
-    try:
-        if data_ref_str:
-            ref_date = datetime.strptime(data_ref_str, "%Y-%m").date().replace(day=1)
-        else:
-            # CORREÇÃO: Força o dia 1 para alinhar com o seletor de mês.
-            # Assim, mesmo que seja dia 30, ele pega o ciclo correto do mês atual.
-            ref_date = hoje.replace(day=1)
-    except Exception:
-        ref_date = hoje.replace(day=1)
-
-    def _iso_date(valor: str):
-        try:
-            s = (valor or "").strip()[:10]
-            if len(s) == 10:
-                return datetime.strptime(s, "%Y-%m-%d").date()
-        except Exception:
-            pass
-        return None
-
-    # Pedidos e faturamento padrão do dashboard: 1º ao último dia do mês escolhido.
-    d0_ped, d1_ped = periodo_mes_calendario(ref_date)
-    fat_de_dt = _iso_date(fat_de_arg)
-    fat_ate_dt = _iso_date(fat_ate_arg)
-    data_fat_custom = bool(fat_de_dt and fat_ate_dt)
-    if data_fat_custom:
-        if fat_de_dt > fat_ate_dt:
-            fat_de_dt, fat_ate_dt = fat_ate_dt, fat_de_dt
-        d0_fat, d1_fat = fat_de_dt, fat_ate_dt
-        fat_ref = d1_fat.replace(day=1)
-    else:
-        fat_ref = ref_date
-        d0_fat, d1_fat = d0_ped, d1_ped
-    fat_mes_ref = fat_ref.strftime("%Y-%m")
-    fat_de_str = d0_fat.isoformat()
-    fat_ate_str = d1_fat.isoformat()
+    dates_ctx = _resolve_dashboard_dates(request.args)
+    hoje = dates_ctx["hoje"]
+    ref_date = dates_ctx["ref_date"]
+    mes_ref = dates_ctx["mes_ref"]
+    d0_ped = dates_ctx["d0_ped"]
+    d1_ped = dates_ctx["d1_ped"]
+    ped_mes_ref = dates_ctx["ped_mes_ref"]
+    data_ped_custom = dates_ctx["data_ped_custom"]
+    ped_de_str = dates_ctx["ped_de_str"]
+    ped_ate_str = dates_ctx["ped_ate_str"]
+    d0_fat = dates_ctx["d0_fat"]
+    d1_fat = dates_ctx["d1_fat"]
+    fat_mes_ref = dates_ctx["fat_mes_ref"]
+    data_fat_custom = dates_ctx["data_fat_custom"]
+    fat_de_str = dates_ctx["fat_de_str"]
+    fat_ate_str = dates_ctx["fat_ate_str"]
 
     with conectar() as conn:
         ensure_vendor_type_column(conn)
@@ -7391,26 +7655,43 @@ def dashboard():
         d1_ped.strftime("%Y-%m-%d")
         )
 
-        # --- A. FATURAMENTO (Ciclo configurável) ---
+        # --- A. FATURAMENTO (Ciclo configurável — inclui Interno, Externo e Site) ---
         rows_fat = conn.execute("""
-            SELECT COALESCE(upper(v.tipo), 'EXTERNO') as tipo, 
-                   COALESCE(SUM(i.valor),0) as val, 
-                   COUNT(*) as qtd
-            FROM invoices i LEFT JOIN vendors v ON v.id=i.vendor_id
-            WHERE i.data_emissao IS NOT NULL AND date(i.data_emissao) BETWEEN date(?) AND date(?)
-              AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
-            GROUP BY COALESCE(upper(v.tipo), 'EXTERNO')
+            SELECT
+                CASE
+                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
+                    ELSE COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+                END AS tipo,
+                COALESCE(SUM(i.valor), 0) AS val,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor, 0) > 0 THEN i.valor ELSE 0 END), 0) AS val_bruto,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor, 0) < 0 THEN ABS(i.valor) ELSE 0 END), 0) AS val_devolvido,
+                COUNT(*) AS qtd,
+                COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS nfs
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+            GROUP BY tipo
         """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
-        
-        f_map = {r["tipo"]: r["val"] for r in rows_fat}
-        q_map = {r["tipo"]: r["qtd"] for r in rows_fat}
-        
+
+        f_map = {r["tipo"]: float(r["val"] or 0.0) for r in rows_fat}
+        fb_map = {r["tipo"]: float(r["val_bruto"] or 0.0) for r in rows_fat}
+        fd_map = {r["tipo"]: float(r["val_devolvido"] or 0.0) for r in rows_fat}
+        q_map = {r["tipo"]: int(r["qtd"] or 0) for r in rows_fat}
+        nf_map = {r["tipo"]: int(r["nfs"] or 0) for r in rows_fat}
+
         fat_int = f_map.get("INTERNO", 0.0)
         fat_ext = f_map.get("EXTERNO", 0.0)
-        fat_total = fat_int + fat_ext
+        fat_site_ciclo = f_map.get("SITE", 0.0)
+        fat_equipe_total = fat_int + fat_ext
+        fat_total = fat_equipe_total + fat_site_ciclo
+        fat_bruto_total = fb_map.get("INTERNO", 0.0) + fb_map.get("EXTERNO", 0.0) + fb_map.get("SITE", 0.0)
+        fat_devolvido_total = fd_map.get("INTERNO", 0.0) + fd_map.get("EXTERNO", 0.0) + fd_map.get("SITE", 0.0)
 
         qtd_fat_int = q_map.get("INTERNO", 0)
         qtd_fat_ext = q_map.get("EXTERNO", 0)
+        qtd_nf_site_ciclo = nf_map.get("SITE", 0)
+        fat_notas_total = nf_map.get("INTERNO", 0) + nf_map.get("EXTERNO", 0) + qtd_nf_site_ciclo
         fat_qtd = qtd_fat_int + qtd_fat_ext
 
         # --- B. PEDIDOS (Mês 1-31) ---
@@ -7445,7 +7726,7 @@ def dashboard():
         # --- C. METAS (Histórico Mês a Mês) ---
         mes_ref = ref_date.strftime("%Y-%m")
 
-        meta_ped_int, meta_ped_ext = get_meta_equipe(conn, mes_ref, "pedidos")
+        meta_ped_int, meta_ped_ext = get_meta_equipe(conn, ped_mes_ref, "pedidos")
         meta_fat_int, meta_fat_ext = get_meta_equipe(conn, fat_mes_ref, "faturamento")
 
         # Pedidos: se equipe vazia, tenta soma das metas individuais / meta global legada.
@@ -7534,29 +7815,52 @@ def dashboard():
         # --- E. GRÁFICOS ---
         
         # 1. Evolução Diária
-        dates = []; c = d0_ped
-        while c <= d1_ped: dates.append(c); c += timedelta(days=1)
-        lbls = [d.strftime("%d") for d in dates]
+        dates = []
+        c = d0_ped
+        max_chart_end = min(d1_ped, d0_ped + timedelta(days=120))
+        while c <= max_chart_end:
+            dates.append(c)
+            c += timedelta(days=1)
+        cross_month = (d0_ped.year, d0_ped.month) != (max_chart_end.year, max_chart_end.month) if dates else False
+        lbls = [d.strftime("%d/%m") if cross_month else d.strftime("%d") for d in dates]
         dp_int, dp_ext, dp_tot, df_tot = [], [], [], []
-        
-        for d in dates:
-            rows_day = conn.execute(f"""
-                SELECT COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
+        if dates:
+            rows_days_ped = conn.execute(f"""
+                SELECT date(o.data_emissao) AS dt,
+                       COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
                        COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)),0) AS val
                 FROM orders o
                 LEFT JOIN vendors v ON v.id = o.vendor_id
-                WHERE date(o.data_emissao)=date(?)
+                WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
                   AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
                   AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
                   AND {sql_pedidos_realizados_excel_cond('o','v')}
-                GROUP BY COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
-            """, (d.isoformat(),)).fetchall()
-            dm = {r["tipo"]: r["val"] for r in rows_day}
-            vi = dm.get("INTERNO", 0.0); ve = dm.get("EXTERNO", 0.0)
-            dp_int.append(vi); dp_ext.append(ve); dp_tot.append(vi+ve)
-            
-            vf = conn.execute("SELECT COALESCE(SUM(i.valor),0) FROM invoices i LEFT JOIN vendors v ON v.id=i.vendor_id WHERE date(i.data_emissao)=? AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'", (d.isoformat(),)).fetchone()[0]
-            df_tot.append(float(vf))
+                GROUP BY date(o.data_emissao), COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
+            """, (dates[0].isoformat(), dates[-1].isoformat())).fetchall()
+            ped_by_day: dict[tuple[str, str], float] = {}
+            for r in rows_days_ped:
+                ped_by_day[(str(r["dt"]), str(r["tipo"]))] = float(r["val"] or 0.0)
+
+            rows_days_fat = conn.execute("""
+                SELECT date(i.data_emissao) AS dt,
+                       COALESCE(SUM(i.valor), 0) AS val
+                FROM invoices i
+                LEFT JOIN vendors v ON v.id = i.vendor_id
+                WHERE i.data_emissao IS NOT NULL
+                  AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+                  AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
+                GROUP BY date(i.data_emissao)
+            """, (dates[0].isoformat(), dates[-1].isoformat())).fetchall()
+            fat_by_day = {str(r["dt"]): float(r["val"] or 0.0) for r in rows_days_fat}
+
+            for d in dates:
+                ds = d.isoformat()
+                vi = ped_by_day.get((ds, "INTERNO"), 0.0)
+                ve = ped_by_day.get((ds, "EXTERNO"), 0.0)
+                dp_int.append(vi)
+                dp_ext.append(ve)
+                dp_tot.append(vi + ve)
+                df_tot.append(fat_by_day.get(ds, 0.0))
 
         line_comp = line_chart(lbls, [("Interno", dp_int), ("Externo", dp_ext)], "Evolução Pedidos: Equipes")
         line_tot = line_chart(lbls, [("Pedidos Total", dp_tot), ("Fat Total", df_tot)], "Geral: Pedidos vs Faturamento")
@@ -7638,28 +7942,14 @@ def dashboard():
             return [d.get(f"{k:02d}",0) for k in range(1,13)]
         chart_yoy = line_chart(["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"], [(str(ano-1), gm(ano-1)), (str(ano), gm(ano))], "Comparativo Anual")
 
-        # Feed de últimos pedidos tirados
-        ultimos_pedidos = conn.execute(f"""
-        SELECT 
-            MAX(o.data_emissao) AS data_emissao,
-            o.pedido AS numero,
-            SUM(COALESCE(NULLIF(o.valor_item_ref,0), o.valor, 0)) AS valor,
-            COALESCE(NULLIF(MAX(c.fantasia),''), NULLIF(MAX(c.nome),''), '-') AS cliente,
-            COALESCE(NULLIF(MAX(v.nome),''), '-') AS vend,
-            COALESCE(NULLIF(MAX(o.medida_ref), ''), '-') AS medida
-        FROM orders o
-        LEFT JOIN customers c ON c.id = o.cliente_id
-        LEFT JOIN vendors v ON v.id = o.vendor_id
-        WHERE date(o.data_emissao) BETWEEN ? AND ?
-          AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
-          AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
-          AND {sql_pedidos_realizados_excel_cond('o','v')}
-        GROUP BY o.pedido
-        ORDER BY datetime(MAX(o.data_emissao)) DESC, o.pedido DESC
-        LIMIT 8
-        """,
-        (d0_ped.isoformat(), d1_ped.isoformat())
-        ).fetchall()
+        # Listas detalhadas do período selecionado para as abas Faturamento e Pedidos
+        faturamento_periodo: list[dict] = []
+        if visao == "faturamento":
+            faturamento_periodo, _ = _query_dashboard_faturamento_periodo(conn, d0_fat, d1_fat, include_items=False)
+
+        pedidos_periodo: list[dict] = []
+        if visao == "pedidos":
+            pedidos_periodo, _ = _query_dashboard_pedidos_periodo(conn, d0_ped, d1_ped, include_items=False)
 
         # Comercial: ranking de clientes no período de pedidos
         top_clientes_rows = conn.execute(f"""
@@ -7745,6 +8035,28 @@ def dashboard():
         gap_qtd_site = max(0, qtd_ped_site - qtd_fat_site)
         ticket_site = (ped_site / qtd_ped_site) if qtd_ped_site > 0 else 0.0
 
+        if (d0_fat, d1_fat) == (d0_ped, d1_ped):
+            ped_site_ciclo = ped_site
+            qtd_ped_site_ciclo = qtd_ped_site
+            liq_site_ciclo = liq_site
+        else:
+            site_ped_ciclo_row = conn.execute(f"""
+                SELECT COUNT(*) AS qtd, COALESCE(SUM(v), 0) AS val
+                FROM (
+                    SELECT o.pedido, SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)) AS v
+                    FROM orders o
+                    LEFT JOIN vendors v ON v.id = o.vendor_id
+                    WHERE {sql_site_match('o', join_alias='v')}
+                      AND date(o.data_emissao) BETWEEN date(?) AND date(?)
+                      AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+                    GROUP BY o.pedido
+                ) x
+            """, site_params + (d0_fat.isoformat(), d1_fat.isoformat())).fetchone()
+            qtd_ped_site_ciclo = int((site_ped_ciclo_row["qtd"] if site_ped_ciclo_row else 0) or 0)
+            ped_site_ciclo = float((site_ped_ciclo_row["val"] if site_ped_ciclo_row else 0) or 0)
+            liq_site_ciclo = site_liquidez_total_mes(conn, site_vendor_id, d0_fat, d1_fat)
+        ticket_fat_site_ciclo = (fat_site_ciclo / qtd_nf_site_ciclo) if qtd_nf_site_ciclo > 0 else 0.0
+
         fat_equipe_rows = conn.execute("""
             SELECT
                 v.id AS vendor_id,
@@ -7777,7 +8089,7 @@ def dashboard():
                 "tipo": (r["tipo"] or "EXTERNO"),
                 "valor": valor,
                 "qtd": int(r["qtd"] or 0),
-                "pct": (valor / fat_total * 100.0) if fat_total > 0 else 0.0,
+                "pct": (valor / fat_equipe_total * 100.0) if fat_equipe_total > 0 else 0.0,
                 "bar": (valor / fat_max * 100.0) if fat_max > 0 else 0.0,
             })
 
@@ -7823,7 +8135,32 @@ def dashboard():
         if data_fat_custom:
             kw["fat_de"] = fat_de_str
             kw["fat_ate"] = fat_ate_str
+        if data_ped_custom:
+            kw["ped_de"] = ped_de_str
+            kw["ped_ate"] = ped_ate_str
         return url_for("dashboard", **kw)
+
+    fat_padrao_kw = {"data_ref": mes_ref}
+    if data_ped_custom:
+        fat_padrao_kw["ped_de"] = ped_de_str
+        fat_padrao_kw["ped_ate"] = ped_ate_str
+
+    ped_padrao_kw = {"data_ref": mes_ref}
+    if data_fat_custom:
+        ped_padrao_kw["fat_de"] = fat_de_str
+        ped_padrao_kw["fat_ate"] = fat_ate_str
+
+    fat_excel_kw = {"data_ref": mes_ref}
+    if data_fat_custom:
+        fat_excel_kw["fat_de"] = fat_de_str
+        fat_excel_kw["fat_ate"] = fat_ate_str
+    fat_excel_url = url_for("dashboard_faturamento_excel", **fat_excel_kw)
+
+    ped_excel_kw = {"data_ref": mes_ref}
+    if data_ped_custom:
+        ped_excel_kw["ped_de"] = ped_de_str
+        ped_excel_kw["ped_ate"] = ped_ate_str
+    ped_excel_url = url_for("dashboard_pedidos_excel", **ped_excel_kw)
 
     # --- HTML ---
     body = render_template_string(r"""
@@ -7848,6 +8185,10 @@ def dashboard():
           <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
           <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
           {% endif %}
+          {% if data_ped_custom %}
+          <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+          <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+          {% endif %}
           <div><label class="form-label small fw-bold text-muted mb-0">MÊS REF</label><input type="month" name="data_ref" class="form-control fw-bold" value="{{ mes_ref }}" onchange="this.form.submit()"></div>
         </form>
       </div>
@@ -7866,6 +8207,10 @@ def dashboard():
               <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
                 <input type="hidden" name="visao" value="{{ visao }}">
                 <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+                {% if data_ped_custom %}
+                <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+                <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+                {% endif %}
                 <div>
                   <label class="form-label small fw-bold text-muted mb-0">DE</label>
                   <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
@@ -7877,12 +8222,12 @@ def dashboard():
                 <button class="btn btn-sm btn-primary">Aplicar</button>
               </form>
               {% if data_fat_custom %}
-              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao=visao) }}">Padrão</a>
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao=visao, **fat_padrao_kw) }}">Padrão</a>
               {% endif %}
               <a class="btn btn-sm btn-outline-secondary" href="{{ dash_url('faturamento') }}">Detalhar</a>
             </div>
           </div>
-          <div class="row g-3">
+          <div class="row g-3 dash-kpi-row">
             <div class="col-12 col-md-4">
               <div class="dash-kpi">
                 <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
@@ -7893,9 +8238,19 @@ def dashboard():
             </div>
             <div class="col-12 col-md-4">
               <div class="dash-kpi">
-                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+                <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Faturamento Líquido</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
                 <div class="kpi-value">{{ format_brl(fat_total) }}</div>
-                <div class="kpi-meta">{{ fat_qtd }} notas no ciclo</div>
+                <div class="kpi-subgrid">
+                  <div class="kpi-subitem">
+                    <div class="kpi-sublabel">Faturamento Bruto</div>
+                    <div class="kpi-subval">{{ format_brl(fat_bruto_total) }}</div>
+                  </div>
+                  <div class="kpi-subitem">
+                    <div class="kpi-sublabel">Valor Devolvido</div>
+                    <div class="kpi-subval {{ 'devolvido' if fat_devolvido_total > 0 else '' }}">{{ ('- ' if fat_devolvido_total > 0 else '') ~ format_brl(fat_devolvido_total) }}</div>
+                  </div>
+                </div>
+                <div class="kpi-meta">{{ fat_notas_total }} notas no ciclo</div>
               </div>
             </div>
             <div class="col-12 col-md-4">
@@ -7913,11 +8268,33 @@ def dashboard():
           <div class="dash-block-head">
             <div>
               <span class="dash-pill dash-pill--ped"><i class="bi bi-bag-check"></i> Pedidos</span>
-              <div class="sub">Mês {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
+              <div class="sub">{% if data_ped_custom %}Período selecionado{% else %}Mês{% endif %}: {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }}</div>
             </div>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ dash_url('pedidos') }}">Detalhar</a>
+            <div class="d-flex gap-2 align-items-end flex-wrap">
+              <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
+                <input type="hidden" name="visao" value="{{ visao }}">
+                <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+                {% if data_fat_custom %}
+                <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
+                <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+                {% endif %}
+                <div>
+                  <label class="form-label small fw-bold text-muted mb-0">DE</label>
+                  <input type="date" name="ped_de" class="form-control form-control-sm fw-bold" value="{{ ped_de_str }}" required>
+                </div>
+                <div>
+                  <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
+                  <input type="date" name="ped_ate" class="form-control form-control-sm fw-bold" value="{{ ped_ate_str }}" required>
+                </div>
+                <button class="btn btn-sm btn-primary">Aplicar</button>
+              </form>
+              {% if data_ped_custom %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao=visao, **ped_padrao_kw) }}">Padrão</a>
+              {% endif %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ dash_url('pedidos') }}">Detalhar</a>
+            </div>
           </div>
-          <div class="row g-3">
+          <div class="row g-3 dash-kpi-row">
             <div class="col-12 col-md-4">
               <div class="dash-kpi">
                 <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
@@ -7959,6 +8336,10 @@ def dashboard():
               <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
               <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
               {% endif %}
+              {% if data_ped_custom %}
+              <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+              <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+              {% endif %}
               <div class="mb-3">
                 <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
                 <input class="form-control form-control-lg" name="meta_ped_interno" value="{{ format_brl(meta_ped_int) }}">
@@ -7983,6 +8364,10 @@ def dashboard():
               {% if data_fat_custom %}
               <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
               <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+              {% endif %}
+              {% if data_ped_custom %}
+              <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+              <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
               {% endif %}
               <div class="mb-3">
                 <label class="form-label fw-bold text-primary">Meta Equipe INTERNA (R$)</label>
@@ -8010,6 +8395,10 @@ def dashboard():
         <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
           <input type="hidden" name="visao" value="faturamento">
           <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+          {% if data_ped_custom %}
+          <input type="hidden" name="ped_de" value="{{ ped_de_str }}">
+          <input type="hidden" name="ped_ate" value="{{ ped_ate_str }}">
+          {% endif %}
           <div>
             <label class="form-label small fw-bold text-muted mb-0">DE</label>
             <input type="date" name="fat_de" class="form-control form-control-sm fw-bold" value="{{ fat_de_str }}" required>
@@ -8020,11 +8409,11 @@ def dashboard():
           </div>
           <button class="btn btn-sm btn-primary">Aplicar</button>
           {% if data_fat_custom %}
-          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', data_ref=mes_ref, visao='faturamento') }}">Padrão</a>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao='faturamento', **fat_padrao_kw) }}">Padrão</a>
           {% endif %}
         </form>
       </div>
-      <div class="row g-3 mb-3">
+      <div class="row g-3 mb-3 dash-kpi-row">
         <div class="col-12 col-md-4">
           <div class="dash-kpi">
             <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Faturamento</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
@@ -8035,9 +8424,19 @@ def dashboard():
         </div>
         <div class="col-12 col-md-4">
           <div class="dash-kpi">
-            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Total Faturado</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
+            <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Faturamento Líquido</div><div class="icon done"><i class="bi bi-cash-coin"></i></div></div>
             <div class="kpi-value">{{ format_brl(fat_total) }}</div>
-            <div class="kpi-meta">{{ fat_qtd }} notas no ciclo de faturamento</div>
+            <div class="kpi-subgrid">
+              <div class="kpi-subitem">
+                <div class="kpi-sublabel">Faturamento Bruto</div>
+                <div class="kpi-subval">{{ format_brl(fat_bruto_total) }}</div>
+              </div>
+              <div class="kpi-subitem">
+                <div class="kpi-sublabel">Valor Devolvido</div>
+                <div class="kpi-subval {{ 'devolvido' if fat_devolvido_total > 0 else '' }}">{{ ('- ' if fat_devolvido_total > 0 else '') ~ format_brl(fat_devolvido_total) }}</div>
+              </div>
+            </div>
+            <div class="kpi-meta">{{ fat_notas_total }} notas no ciclo de faturamento</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -8048,9 +8447,9 @@ def dashboard():
           </div>
         </div>
       </div>
-      <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>Interno e Externo no ciclo financeiro.</p></div></div>
-      <div class="row g-3">
-        <div class="col-12 col-xl-6">
+      <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>Interno, Externo e Site no ciclo financeiro.</p></div></div>
+      <div class="row g-3 align-items-start">
+        <div class="col-12 col-xl-4">
           <div class="channel-card internal">
             <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag internal"><i class="bi bi-people-fill"></i> INTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_int) }}</span></div>
             <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_int) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_int.pct) }}%</div></div>
@@ -8059,13 +8458,21 @@ def dashboard():
             <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_int.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_int.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_int.nec > kpi_fat_int.ideal else 'text-success' }}">{{ format_brl(kpi_fat_int.nec) }}</div></div></div>
           </div>
         </div>
-        <div class="col-12 col-xl-6">
+        <div class="col-12 col-xl-4">
           <div class="channel-card external">
             <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag external"><i class="bi bi-person-workspace"></i> EXTERNO</span><span class="small text-muted">Meta {{ format_brl(meta_fat_ext) }}</span></div>
             <div class="d-flex justify-content-between align-items-end gap-3"><div><div class="channel-main">{{ format_brl(fat_ext) }}</div><div class="small text-muted">faturado no ciclo</div></div><div class="h4 fw-bold mb-0">{{ '%.1f'|format(kpi_fat_ext.pct) }}%</div></div>
             <div class="progress mt-3" style="height:7px"><div class="progress-bar dash-bar-canal-ext" style="width:{{ 100 if kpi_fat_ext.pct > 100 else kpi_fat_ext.pct }}%"></div></div>
             <div class="channel-status"><span>{{ qtd_fat_ext }} notas</span></div>
             <div class="channel-meta"><div class="box"><div class="label">Ideal/dia</div><div class="value">{{ format_brl(kpi_fat_ext.ideal) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(kpi_fat_ext.ticket) }}</div></div><div class="box"><div class="label">Nec./dia</div><div class="value {{ 'text-danger' if kpi_fat_ext.nec > kpi_fat_ext.ideal else 'text-success' }}">{{ format_brl(kpi_fat_ext.nec) }}</div></div></div>
+          </div>
+        </div>
+        <div class="col-12 col-xl-4">
+          <div class="channel-card site">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag site"><i class="bi bi-globe2"></i> SITE / MARKETPLACE</span><a class="btn btn-sm" style="background:#0e7490;color:#fff" href="{{ url_for('site_analytics', data_ref=d0_fat.strftime('%Y-%m')) }}">Analisar</a></div>
+            <div><div class="channel-main">{{ format_brl(fat_site_ciclo) }}</div><div class="small text-muted">faturado no canal</div></div>
+            <div class="channel-status"><span>{{ qtd_nf_site_ciclo }} notas</span><span>{{ qtd_ped_site_ciclo }} pedidos no período</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Pedidos</div><div class="value">{{ format_brl(ped_site_ciclo) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ticket_fat_site_ciclo) }}</div></div><div class="box"><div class="label">Liquidez</div><div class="value">{{ format_brl(liq_site_ciclo) }}</div></div></div>
           </div>
         </div>
       </div>
@@ -8079,7 +8486,7 @@ def dashboard():
         </div>
         <div class="text-end">
           <div class="small text-muted">Total do time</div>
-          <div class="fw-bold" style="color:#0e7490">{{ format_brl(fat_total) }}</div>
+          <div class="fw-bold" style="color:#0e7490">{{ format_brl(fat_equipe_total) }}</div>
         </div>
       </div>
       {% if fat_equipe %}
@@ -8103,6 +8510,70 @@ def dashboard():
       <div class="text-muted py-3">Nenhum faturamento de vendedor no ciclo.</div>
       {% endif %}
     </div>
+
+    <div class="dash-block dash-block--fat mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-receipt-cutoff"></i> Faturamento do Período</span>
+          <div class="sub">Notas fiscais de {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · {{ faturamento_periodo|length }} registro{{ '' if faturamento_periodo|length == 1 else 's' }} · Total {{ format_brl(fat_total) }}</div>
+        </div>
+        <a class="btn btn-sm btn-success" href="{{ fat_excel_url }}">
+          <i class="bi bi-file-earmark-excel me-1"></i>Exportar Excel
+        </a>
+      </div>
+      {% if faturamento_periodo %}
+      <div class="table-responsive" style="max-height:560px; overflow:auto;">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead style="position:sticky; top:0; background:#fff; z-index:1;">
+            <tr>
+              <th>Data</th>
+              <th>NF</th>
+              <th>Pedido</th>
+              <th>Cliente</th>
+              <th>Vendedor</th>
+              <th>Canal</th>
+              <th>Grupo / Produto</th>
+              <th class="text-end">Qtd</th>
+              <th class="text-end">Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for nf in faturamento_periodo %}
+            <tr>
+              <td class="muted text-nowrap">{{ nf['data_fmt'] }}</td>
+              <td class="fw-bold text-nowrap">
+                {{ nf['nf'] }}
+                {% if nf['tipo_nf'] == 'DEVOLUÇÃO' %}<span class="badge text-bg-danger ms-1">DEVOLUÇÃO</span>{% elif nf['tipo_nf'] == 'DEMO' %}<span class="badge text-bg-secondary ms-1">DEMO</span>{% endif %}
+              </td>
+              <td class="text-nowrap">{{ nf['pedido'] }}</td>
+              <td>{% if nf['cliente_id'] %}<a class="text-decoration-none text-dark" href="{{ url_for('cliente_360', cliente_id=nf['cliente_id']) }}">{{ nf['cliente'][:40] }}</a>{% else %}{{ nf['cliente'][:40] }}{% endif %}</td>
+              <td>{% if nf['vendor_id'] and nf['canal'] != 'SITE' %}<a class="text-decoration-none text-dark" href="{{ url_for('vendedor', vendor_id=nf['vendor_id'], data_ref=mes_ref, visao='faturamento') }}">{{ nf['vendedor'] }}</a>{% else %}{{ nf['vendedor'] }}{% endif %}</td>
+              <td>
+                {% if nf['canal'] == 'SITE' %}
+                <span class="badge rounded-pill" style="background:#e0f2fe;color:#0369a1;font-weight:700;">SITE</span>
+                {% else %}
+                <span class="fat-equipe-tipo {{ 'interno' if nf['canal'] == 'INTERNO' else 'externo' }}">{{ nf['canal'] }}</span>
+                {% endif %}
+              </td>
+              <td class="small text-muted">{{ nf['grupo_produto'][:36] }}</td>
+              <td class="text-end text-nowrap">{{ '{:,.0f}'.format(nf['quantidade']).replace(',', '.') }}</td>
+              <td class="text-end fw-bold text-nowrap {{ 'text-danger' if nf['valor'] < 0 else '' }}">{{ format_brl(nf['valor']) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot class="table-light fw-bold">
+            <tr>
+              <td colspan="7">Total do período ({{ faturamento_periodo|length }} registro{{ '' if faturamento_periodo|length == 1 else 's' }})</td>
+              <td class="text-end text-nowrap">{{ '{:,.0f}'.format(faturamento_periodo|sum(attribute='quantidade')).replace(',', '.') }}</td>
+              <td class="text-end text-nowrap">{{ format_brl(fat_total) }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {% else %}
+      <div class="text-muted py-3">Nenhum faturamento encontrado no período selecionado.</div>
+      {% endif %}
+    </div>
     {% endif %}
 
     {% if visao == 'pedidos' %}
@@ -8110,10 +8581,30 @@ def dashboard():
       <div class="dash-block-head">
         <div>
           <span class="dash-pill dash-pill--fat"><i class="bi bi-bag-check"></i> Vendas &amp; Pedidos</span>
-          <div class="sub">Mês comercial {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · meta em Settings</div>
+          <div class="sub">{% if data_ped_custom %}Período selecionado{% else %}Mês comercial{% endif %}: {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · meta em Settings</div>
         </div>
+        <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
+          <input type="hidden" name="visao" value="pedidos">
+          <input type="hidden" name="data_ref" value="{{ mes_ref }}">
+          {% if data_fat_custom %}
+          <input type="hidden" name="fat_de" value="{{ fat_de_str }}">
+          <input type="hidden" name="fat_ate" value="{{ fat_ate_str }}">
+          {% endif %}
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">DE</label>
+            <input type="date" name="ped_de" class="form-control form-control-sm fw-bold" value="{{ ped_de_str }}" required>
+          </div>
+          <div>
+            <label class="form-label small fw-bold text-muted mb-0">ATÉ</label>
+            <input type="date" name="ped_ate" class="form-control form-control-sm fw-bold" value="{{ ped_ate_str }}" required>
+          </div>
+          <button class="btn btn-sm btn-primary">Aplicar</button>
+          {% if data_ped_custom %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard', visao='pedidos', **ped_padrao_kw) }}">Padrão</a>
+          {% endif %}
+        </form>
       </div>
-      <div class="row g-3 mb-3 align-items-start">
+      <div class="row g-3 mb-3 dash-kpi-row">
         <div class="col-12 col-md-4">
           <div class="dash-kpi">
             <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Pedidos</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
@@ -8220,31 +8711,63 @@ def dashboard():
     <div class="row mt-4">
       <div class="col-12"><div class="cardx p-4 h-100"><div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2"><div><div class="h6 fw-bold mb-1">Campanha por Medida</div><div class="chart-caption">Tabela completa do período • o gráfico resume Top 5 e Bottom 5 • {{ total_pedidos_periodo }} pedidos</div></div></div>{% if top_medidas_chart %}<div class="mb-3 campaign-chart-wrap"><img class="chart-img campaign-chart-img" src="data:image/png;base64,{{ top_medidas_chart }}"></div><div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr><th>Medida</th><th class="text-end">Pedidos</th><th class="text-end">%</th><th class="text-end">Valor</th></tr></thead><tbody>{% for r in top_medidas_rows %}<tr><td>{{ r['medida'] }}</td><td class="text-end">{{ r['qtd_pedidos'] }}</td><td class="text-end">{{ '%.2f'|format(r['pct_pedidos'] or 0) }}%</td><td class="text-end">{{ format_brl(r['valor_total'] or 0) }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="text-muted">Sem dados.</div>{% endif %}</div></div>
     </div>
-    <div class="row mt-4">
-      <div class="col-12">
-        <div class="cardx p-4">
-          <div class="h6 fw-bold mb-3">Últimos Pedidos Tirados</div>
-          <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0">
-              <thead><tr><th>Data</th><th>Pedido</th><th>Cliente</th><th>Vendedor</th><th>Medida</th><th class="text-end">Valor</th></tr></thead>
-              <tbody>
-                {% for uv in ultimos_pedidos %}
-                <tr>
-                  <td class="muted">{{ uv["data_emissao"][5:] if uv["data_emissao"] else "-" }}</td>
-                  <td class="text-primary fw-bold">{{ uv["numero"] or "-" }}</td>
-                  <td>{{ (uv["cliente"] or "-")[:34] }}</td>
-                  <td>{{ uv["vend"] or "-" }}</td>
-                  <td>{{ uv["medida"] or "-" }}</td>
-                  <td class="text-end fw-bold">{{ format_brl(uv["valor"] or 0) }}</td>
-                </tr>
-                {% else %}
-                <tr><td colspan="6" class="text-center py-3">Sem dados.</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
+    <div class="dash-block dash-block--fat mt-4 mb-4">
+      <div class="dash-block-head">
+        <div>
+          <span class="dash-pill dash-pill--fat"><i class="bi bi-bag-check"></i> Pedidos do Período</span>
+          <div class="sub">Pedidos realizados de {{ d0_ped.strftime('%d/%m/%Y') }} a {{ d1_ped.strftime('%d/%m/%Y') }} · {{ pedidos_periodo|length }} pedido{{ '' if pedidos_periodo|length == 1 else 's' }} · Total {{ format_brl(ped_total) }}</div>
         </div>
+        <a class="btn btn-sm btn-success" href="{{ ped_excel_url }}">
+          <i class="bi bi-file-earmark-excel me-1"></i>Exportar Excel
+        </a>
       </div>
+      {% if pedidos_periodo %}
+      <div class="table-responsive" style="max-height:560px; overflow:auto;">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead style="position:sticky; top:0; background:#fff; z-index:1;">
+            <tr>
+              <th>Data</th>
+              <th>Pedido</th>
+              <th>Cliente</th>
+              <th>Vendedor</th>
+              <th>Canal</th>
+              <th>Medida</th>
+              <th class="text-end">Qtd</th>
+              <th class="text-end">Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in pedidos_periodo %}
+            <tr>
+              <td class="muted text-nowrap">{{ p['data_fmt'] }}</td>
+              <td class="text-primary fw-bold text-nowrap">{{ p['numero'] }}</td>
+              <td>{% if p['cliente_id'] %}<a class="text-decoration-none text-dark" href="{{ url_for('cliente_360', cliente_id=p['cliente_id']) }}">{{ p['cliente'][:40] }}</a>{% else %}{{ p['cliente'][:40] }}{% endif %}</td>
+              <td>{% if p['vendor_id'] and p['canal'] != 'SITE' %}<a class="text-decoration-none text-dark" href="{{ url_for('vendedor', vendor_id=p['vendor_id'], data_ref=mes_ref, visao='pedidos') }}">{{ p['vend'] }}</a>{% else %}{{ p['vend'] }}{% endif %}</td>
+              <td>
+                {% if p['canal'] == 'SITE' %}
+                <span class="badge rounded-pill" style="background:#e0f2fe;color:#0369a1;font-weight:700;">SITE</span>
+                {% else %}
+                <span class="fat-equipe-tipo {{ 'interno' if p['canal'] == 'INTERNO' else 'externo' }}">{{ p['canal'] }}</span>
+                {% endif %}
+              </td>
+              <td class="small">{{ p['medida'][:28] }}</td>
+              <td class="text-end text-nowrap">{{ '{:,.0f}'.format(p['quantidade']).replace(',', '.') }}</td>
+              <td class="text-end fw-bold text-nowrap">{{ format_brl(p['valor']) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot class="table-light fw-bold">
+            <tr>
+              <td colspan="6">Total do período ({{ pedidos_periodo|length }} pedido{{ '' if pedidos_periodo|length == 1 else 's' }})</td>
+              <td class="text-end text-nowrap">{{ '{:,.0f}'.format(pedidos_periodo|sum(attribute='quantidade')).replace(',', '.') }}</td>
+              <td class="text-end text-nowrap">{{ format_brl(ped_total) }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {% else %}
+      <div class="text-muted py-3">Nenhum pedido encontrado no período selecionado.</div>
+      {% endif %}
     </div>
     {% endif %}
     """,
@@ -8254,6 +8777,11 @@ def dashboard():
     meta_fat_total=meta_fat_total, meta_fat_int=meta_fat_int, meta_fat_ext=meta_fat_ext,
     ped_total=ped_total, ped_int=ped_int, ped_ext=ped_ext,
     fat_total=fat_total, fat_int=fat_int, fat_ext=fat_ext,
+    fat_bruto_total=fat_bruto_total, fat_devolvido_total=fat_devolvido_total,
+    fat_equipe_total=fat_equipe_total, fat_notas_total=fat_notas_total,
+    fat_site_ciclo=fat_site_ciclo, qtd_nf_site_ciclo=qtd_nf_site_ciclo,
+    ped_site_ciclo=ped_site_ciclo, qtd_ped_site_ciclo=qtd_ped_site_ciclo,
+    liq_site_ciclo=liq_site_ciclo, ticket_fat_site_ciclo=ticket_fat_site_ciclo,
     kpi_tot=kpi_tot, kpi_int=kpi_int, kpi_ext=kpi_ext,
     kpi_fat_tot=kpi_fat_tot, kpi_fat_int=kpi_fat_int, kpi_fat_ext=kpi_fat_ext,
     diff_val=diff_val, pct_quebra=pct_quebra, pct_realizado=pct_realizado, falta=falta,
@@ -8264,16 +8792,224 @@ def dashboard():
     ped_site=ped_site, fat_site=fat_site, liq_site=liq_site, ticket_site=ticket_site,
     line_comp=line_comp, line_tot=line_tot, top_bar=top_bar, pie_novo=pie_novo, pie_status=pie_status,
     top_clientes_chart=top_clientes_chart, top_medidas_chart=top_medidas_chart,
-    chart_yoy=chart_yoy, ultimos_pedidos=ultimos_pedidos,
+    chart_yoy=chart_yoy, faturamento_periodo=faturamento_periodo, pedidos_periodo=pedidos_periodo,
     metrics_orc=metrics_orc, top_medidas_rows=top_medidas_rows, total_pedidos_periodo=total_pedidos_periodo,
     mes_ref=mes_ref, visao=visao, fat_mes_ref=fat_mes_ref, data_fat_custom=data_fat_custom,
     fat_de_str=fat_de_str, fat_ate_str=fat_ate_str,
+    ped_mes_ref=ped_mes_ref, data_ped_custom=data_ped_custom,
+    ped_de_str=ped_de_str, ped_ate_str=ped_ate_str,
+    fat_padrao_kw=fat_padrao_kw, ped_padrao_kw=ped_padrao_kw,
+    fat_excel_url=fat_excel_url, ped_excel_url=ped_excel_url,
     dash_url=dash_url,
     fat_equipe=fat_equipe, ped_equipe=ped_equipe, ped_equipe_total=ped_equipe_total,
     format_brl=format_brl
     )
 
     return render_page("Dashboard", body, "dashboard")
+
+
+@app.route("/dashboard/faturamento.xlsx")
+@login_required
+def dashboard_faturamento_excel():
+    """Exporta para Excel os faturamentos do período selecionado no Dashboard Admin."""
+    from crm_npd.services.relatorios import _xlsx_response
+
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    dates_ctx = _resolve_dashboard_dates(request.args)
+    d0_fat = dates_ctx["d0_fat"]
+    d1_fat = dates_ctx["d1_fat"]
+    fat_de_str = dates_ctx["fat_de_str"]
+    fat_ate_str = dates_ctx["fat_ate_str"]
+    periodo_label = f"{d0_fat.strftime('%d/%m/%Y')} a {d1_fat.strftime('%d/%m/%Y')}"
+
+    with conectar() as conn:
+        ensure_vendor_type_column(conn)
+        nf_rows, item_rows = _query_dashboard_faturamento_periodo(conn, d0_fat, d1_fat, include_items=True)
+
+    fat_int = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "INTERNO")
+    fat_ext = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "EXTERNO")
+    fat_site = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "SITE")
+    fat_total = fat_int + fat_ext + fat_site
+    fat_bruto = sum(float(r["valor"] or 0.0) for r in item_rows if float(r["valor"] or 0.0) > 0)
+    fat_devolvido = sum(abs(float(r["valor"] or 0.0)) for r in item_rows if float(r["valor"] or 0.0) < 0)
+
+    rows_nf_xlsx = [
+        [
+            _to_excel_date(r.get("data_emissao")),
+            r.get("nf") or "",
+            r.get("tipo_nf") or "VENDA",
+            r.get("pedido") or "",
+            r.get("cliente") or "",
+            r.get("vendedor") or "",
+            r.get("canal") or "",
+            r.get("grupo_produto") or "",
+            float(r.get("quantidade") or 0),
+            float(r.get("valor") or 0),
+        ]
+        for r in nf_rows
+    ]
+    rows_itens_xlsx = [
+        [
+            _to_excel_date(r.get("data_emissao")),
+            r.get("nf") or "",
+            r.get("tipo_nf") or "VENDA",
+            r.get("pedido") or "",
+            r.get("cliente") or "",
+            r.get("vendedor") or "",
+            r.get("canal") or "",
+            r.get("grupo") or "",
+            r.get("produto") or "",
+            r.get("formato") or "",
+            r.get("papel") or "",
+            float(r.get("quantidade") or 0),
+            float(r.get("valor") or 0),
+        ]
+        for r in item_rows
+    ]
+
+    metadata = [
+        ("Relatório", "Faturamento do Dashboard"),
+        ("Período", periodo_label),
+        ("Notas / Registros", str(len(nf_rows))),
+        ("Itens faturados", str(len(item_rows))),
+        ("Valor Interno", fat_int),
+        ("Valor Externo", fat_ext),
+        ("Valor Site", fat_site),
+        ("Faturamento Bruto", fat_bruto),
+        ("Valor Devolvido", -fat_devolvido if fat_devolvido > 0 else 0.0),
+        ("Faturamento Líquido", fat_total),
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
+    ]
+    sheets = [
+        {
+            "name": "Notas Fiscais",
+            "title": f"Faturamento por NF · {periodo_label}",
+            "headers": [
+                "Data", "NF", "Tipo", "Pedido", "Cliente",
+                "Vendedor", "Canal", "Grupo / Produto", "Quantidade", "Valor",
+            ],
+            "rows": rows_nf_xlsx,
+        },
+        {
+            "name": "Itens Faturados",
+            "title": f"Itens Faturados · {periodo_label}",
+            "headers": [
+                "Data", "NF", "Tipo", "Pedido", "Cliente",
+                "Vendedor", "Canal", "Grupo", "Produto", "Formato / Medida",
+                "Papel", "Quantidade", "Valor",
+            ],
+            "rows": rows_itens_xlsx,
+        },
+    ]
+    return _xlsx_response(
+        f"dashboard_faturamento_{fat_de_str}_a_{fat_ate_str}",
+        "CRM NPD · Faturamento do Período",
+        metadata,
+        sheets,
+    )
+
+
+@app.route("/dashboard/pedidos.xlsx")
+@login_required
+def dashboard_pedidos_excel():
+    """Exporta para Excel os pedidos do período selecionado no Dashboard Admin."""
+    from crm_npd.services.relatorios import _xlsx_response
+
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    dates_ctx = _resolve_dashboard_dates(request.args)
+    d0_ped = dates_ctx["d0_ped"]
+    d1_ped = dates_ctx["d1_ped"]
+    ped_de_str = dates_ctx["ped_de_str"]
+    ped_ate_str = dates_ctx["ped_ate_str"]
+    periodo_label = f"{d0_ped.strftime('%d/%m/%Y')} a {d1_ped.strftime('%d/%m/%Y')}"
+
+    with conectar() as conn:
+        ensure_vendor_type_column(conn)
+        ped_rows, item_rows = _query_dashboard_pedidos_periodo(conn, d0_ped, d1_ped, include_items=True)
+
+    ped_int = sum(float(r["valor"] or 0.0) for r in ped_rows if r.get("canal") == "INTERNO")
+    ped_ext = sum(float(r["valor"] or 0.0) for r in ped_rows if r.get("canal") == "EXTERNO")
+    ped_site = sum(float(r["valor"] or 0.0) for r in ped_rows if r.get("canal") == "SITE")
+    ped_total = ped_int + ped_ext + ped_site
+
+    rows_ped_xlsx = [
+        [
+            _to_excel_date(r.get("data_emissao")),
+            r.get("numero") or "",
+            r.get("cliente") or "",
+            r.get("vend") or "",
+            r.get("canal") or "",
+            r.get("grupo") or "",
+            r.get("medida") or "",
+            float(r.get("quantidade") or 0),
+            float(r.get("valor") or 0),
+        ]
+        for r in ped_rows
+    ]
+    rows_itens_xlsx = [
+        [
+            _to_excel_date(r.get("data_emissao")),
+            r.get("pedido") or "",
+            r.get("cliente") or "",
+            r.get("vendedor") or "",
+            r.get("canal") or "",
+            r.get("grupo") or "",
+            r.get("produto") or "",
+            r.get("medida") or "",
+            r.get("papel") or "",
+            r.get("motivo") or "",
+            float(r.get("quantidade") or 0),
+            float(r.get("valor") or 0),
+        ]
+        for r in item_rows
+    ]
+
+    metadata = [
+        ("Relatório", "Pedidos do Dashboard"),
+        ("Período", periodo_label),
+        ("Pedidos", str(len(ped_rows))),
+        ("Itens dos pedidos", str(len(item_rows))),
+        ("Valor Interno", ped_int),
+        ("Valor Externo", ped_ext),
+        ("Valor Site", ped_site),
+        ("Valor Total", ped_total),
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
+    ]
+    sheets = [
+        {
+            "name": "Pedidos",
+            "title": f"Pedidos Realizados · {periodo_label}",
+            "headers": [
+                "Data", "Pedido", "Cliente", "Vendedor",
+                "Canal", "Grupo", "Medida", "Quantidade", "Valor",
+            ],
+            "rows": rows_ped_xlsx,
+        },
+        {
+            "name": "Itens dos Pedidos",
+            "title": f"Itens dos Pedidos · {periodo_label}",
+            "headers": [
+                "Data", "Pedido", "Cliente", "Vendedor",
+                "Canal", "Grupo", "Produto", "Medida",
+                "Papel", "Motivo", "Quantidade", "Valor",
+            ],
+            "rows": rows_itens_xlsx,
+        },
+    ]
+    return _xlsx_response(
+        f"dashboard_pedidos_{ped_de_str}_a_{ped_ate_str}",
+        "CRM NPD · Pedidos do Período",
+        metadata,
+        sheets,
+    )
 
 
 _MESES_PT_CURTO = (
@@ -12456,11 +13192,9 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
 
     total_faturamento = 0.0
     for r in rows:
-        valor = float(r["valor"] or 0)
-        if not f_comissao.invoice_eh_devolucao(
-            tipo_item_ref=r["tipo_item_ref"], valor=valor
-        ):
-            total_faturamento += valor
+        total_faturamento += f_comissao.valor_assinado_faturamento(
+            tipo_item_ref=r["tipo_item_ref"], valor=float(r["valor"] or 0)
+        )
 
     mes_str = d1.strftime("%Y-%m")
     meta = float(get_goal_history(conn, mes_str, "VENDEDOR", vendor_id) or 0.0)
@@ -12476,13 +13210,16 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
     cache_pedido = {}
 
     for r in rows:
-        valor = float(r["valor"] or 0)
+        raw_valor = float(r["valor"] or 0)
         invoice_id = int(r["id"])
         cliente_id = r["cliente_id"]
         pedido = (r["pedido"] or "").strip()
         doc_atual = (r["numero"] or pedido or f"ID:{invoice_id}").strip()
         is_devolucao = f_comissao.invoice_eh_devolucao(
-            tipo_item_ref=r["tipo_item_ref"], valor=valor
+            tipo_item_ref=r["tipo_item_ref"], valor=raw_valor
+        )
+        valor = f_comissao.valor_assinado_faturamento(
+            tipo_item_ref=r["tipo_item_ref"], valor=raw_valor
         )
 
         identity_key = get_customer_identity_key(conn, cliente_id)
@@ -12494,29 +13231,30 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
             )
         ped_info = cache_pedido[pedido]
         is_jit_imediato = f_comissao.condicao_jit_imediato(ped_info["condicao_entrega"])
+        sisplan_recuperado = f_comissao.pedido_sisplan_recuperado(
+            ped_info["motivo_pedido"], ped_info["desc_motivo_pedido"]
+        )
         sisplan_novo = f_comissao.pedido_sisplan_cliente_novo(
             ped_info["motivo_pedido"], ped_info["desc_motivo_pedido"]
         )
-        is_novo = False
-        if not is_devolucao:
-            is_novo = f_comissao.classificar_cliente_novo(
-                pedido_sisplan_novo=sisplan_novo,
-                is_jit_imediato=is_jit_imediato,
-                status_manual=f_comissao.status_manual_de_texto(
-                    get_manual_customer_status(conn, identity_key)
-                ),
-            )
-            base_pct, bonus_pct, comissao_linha = f_comissao.comissao_linha_interno(
-                valor, is_novo=is_novo, bateu_meta=bateu_meta
-            )
-            total_comissao += comissao_linha
-            if is_novo:
-                novo_count += 1
-            else:
-                rep_count += 1
-        else:
-            base_pct, bonus_pct, comissao_linha = 0.0, 0.0, 0.0
+        is_novo = f_comissao.classificar_cliente_novo(
+            pedido_sisplan_novo=sisplan_novo,
+            is_jit_imediato=is_jit_imediato,
+            status_manual=f_comissao.status_manual_de_texto(
+                get_manual_customer_status(conn, identity_key)
+            ),
+        )
+        is_recuperado = bool(is_novo and sisplan_recuperado)
+        base_pct, bonus_pct, comissao_linha = f_comissao.comissao_linha_interno(
+            valor, is_novo=is_novo, bateu_meta=bateu_meta
+        )
+        total_comissao += comissao_linha
+        if is_devolucao:
             total_devolucoes += valor
+        elif is_novo:
+            novo_count += 1
+        else:
+            rep_count += 1
 
         lines.append({
             "data": r["data_emissao"] or "",
@@ -12528,6 +13266,7 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
             "bonus_pct": bonus_pct,
             "comissao": comissao_linha,
             "is_novo": is_novo,
+            "is_recuperado": is_recuperado,
             "is_jit": is_jit_imediato,
             "is_devolucao": is_devolucao,
             "is_anfarma": eh_responsavel_anfarma(r["vendor_nome_ref"]),
@@ -13520,7 +14259,7 @@ def vendedor(vendor_id: int):
           <div class="sub">Ciclo {{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }}</div>
         </div>
       </div>
-      <div class="row g-3 mb-3">
+      <div class="row g-3 mb-3 dash-kpi-row">
         <div class="col-12 col-md-4">
           <div class="dash-kpi">
             <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Meta Faturamento</div><div class="icon meta"><i class="bi bi-bullseye"></i></div></div>
@@ -13585,12 +14324,13 @@ def vendedor(vendor_id: int):
           <i class="bi bi-file-earmark-excel me-1"></i>Excel
         </a>
       </div>
-      <div class="small muted mb-2">{{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · NF de saída + DEMO, sem frete e sem clichê. Devolução não abate.{% if bateu_meta %} Meta batida: 1,75% (novos 2%).{% endif %}</div>
+      <div class="small muted mb-2">{{ d0_fat.strftime('%d/%m/%Y') }} a {{ d1_fat.strftime('%d/%m/%Y') }} · NF de saída + DEMO − devoluções, sem frete e sem clichê.{% if bateu_meta %} Meta batida: 1,75% (novos/recuperados 2%).{% endif %}</div>
       <div class="small mb-3">
         <span class="badge text-bg-light border">Carteira 1%</span>
         <span class="badge text-bg-success">Pedido novo (Sisplan 10) 2%</span>
+        <span class="badge text-bg-primary">Recuperado (Sisplan 11/13) 2%</span>
         <span class="badge text-bg-secondary">JIT IMEDIATO sem bônus</span>
-        <span class="badge text-bg-warning">Devolução visível, não desconta</span>
+        <span class="badge text-bg-warning">Devolução desconta</span>
         <span class="badge text-bg-dark">Associação Nacional (05975)</span>
         {% if bateu_meta %}<span class="badge text-bg-info">Meta batida 1,75%</span>{% endif %}
       </div>
@@ -13612,14 +14352,14 @@ def vendedor(vendor_id: int):
                   {% if l.is_devolucao %}
                     <span class="badge rounded-pill text-bg-warning" style="font-size:0.6rem">DEVOLUÇÃO</span>
                   {% else %}
-                  <span class="badge rounded-pill {{ 'text-bg-success' if l.is_novo else 'text-bg-light border text-dark' }} customer-status-badge"
+                  <span class="badge rounded-pill {{ 'text-bg-primary' if (l.is_novo and l.is_recuperado) else ('text-bg-success' if l.is_novo else 'text-bg-light border text-dark') }} customer-status-badge"
                         style="font-size:0.6rem; cursor:context-menu"
                         data-identity-key="{{ l.identity_key }}"
                         data-identity-nome="{{ l.identity_nome or l.cliente }}"
                         data-is-novo="{{ 1 if l.is_novo else 0 }}"
                         data-can-set-novo="{{ 1 if user and user.get('role') in ['admin','gestor'] else 0 }}"
                         title="Botão direito para ações">
-                    {{ 'NOVO' if l.is_novo else 'CARTEIRA' }}
+                    {{ 'RECUPERADO' if (l.is_novo and l.is_recuperado) else ('NOVO' if l.is_novo else 'CARTEIRA') }}
                   </span>
                   {% endif %}
                   {% if l.is_jit %}
@@ -13630,8 +14370,8 @@ def vendedor(vendor_id: int):
                   {% endif %}
                 </td>
                 <td class="text-end">{{ format_brl(l.valor) }}</td>
-                <td class="text-end text-muted">{% if l.is_devolucao %}—{% else %}{{ "%.2f"|format(l.base_pct + l.bonus_pct) }}%{% endif %}</td>
-                <td class="text-end fw-bold {{ 'text-muted' if l.is_devolucao else 'text-success' }}">{% if l.is_devolucao %}—{% else %}{{ format_brl(l.comissao) }}{% endif %}</td>
+                <td class="text-end text-muted">{{ "%.2f"|format(l.base_pct + l.bonus_pct) }}%</td>
+                <td class="text-end fw-bold {{ 'text-danger' if l.is_devolucao else 'text-success' }}">{{ format_brl(l.comissao) }}</td>
               </tr>
             {% else %}
               <tr><td colspan="7" class="text-center muted py-3">Nenhum faturamento neste ciclo.</td></tr>
@@ -13641,10 +14381,10 @@ def vendedor(vendor_id: int):
       </div>
 
       {% if devolucoes_valor %}
-        <div class="alert alert-warning mt-3 mb-0 py-2">Devoluções no ciclo: <b>{{ format_brl(devolucoes_valor) }}</b>. Esse valor <b>não reduz</b> a base da comissão; fica visível para o gestor decidir.</div>
+        <div class="alert alert-warning mt-3 mb-0 py-2">Devoluções no ciclo: <b>{{ format_brl(devolucoes_valor) }}</b> (já descontadas da base de faturamento e da comissão).</div>
       {% endif %}
       {% if bateu_meta %}
-        <div class="alert alert-info mt-3 mb-0 py-2">Meta batida: todas as notas a <b>1,75%</b>. Pedidos novos continuam a <b>2%</b>. O bônus de 1% sobre o excedente de R$ 100 mil não se aplica.</div>
+        <div class="alert alert-info mt-3 mb-0 py-2">Meta batida: todas as notas a <b>1,75%</b>. Pedidos novos e recuperados (10/11/13) continuam a <b>2%</b>. O bônus de 1% sobre o excedente de R$ 100 mil não se aplica.</div>
       {% elif extra_bonus > 0 %}
         <div class="alert alert-success mt-3 mb-0 py-2">Bônus de 1% sobre o que passou de R$ 100 mil no ciclo: <b>{{ format_brl(extra_bonus) }}</b></div>
       {% endif %}
@@ -13695,7 +14435,7 @@ def vendedor(vendor_id: int):
           <div class="dash-kpi" style="border-left:4px solid #20c997;">
             <div class="d-flex justify-content-between align-items-start"><div class="kpi-label">Pedidos novos</div><div class="icon ok"><i class="bi bi-person-plus"></i></div></div>
             <div class="kpi-value text-success">{{ pedidos_novos_qtd }}</div>
-            <div class="kpi-meta">{% if pedidos_n %}{{ pedidos_novos_qtd }} de {{ pedidos_n }} pedido{{ '' if pedidos_n == 1 else 's' }} · primeira compra{% else %}Nenhum pedido no mês{% endif %}</div>
+            <div class="kpi-meta">{% if pedidos_n %}{{ pedidos_novos_qtd }} de {{ pedidos_n }} pedido{{ '' if pedidos_n == 1 else 's' }} · primeira compra / recuperado{% else %}Nenhum pedido no mês{% endif %}</div>
           </div>
         </div>
       </div>
@@ -18618,8 +19358,7 @@ def route_importar_orcamentos():
 # -----------------------------
 _SQL_FAT_BASE_COMISSAO = """
 CASE
-    WHEN UPPER(TRIM(COALESCE(tipo_item_ref,''))) = 'D' THEN 0
-    WHEN COALESCE(valor, 0) < 0 THEN 0
+    WHEN UPPER(TRIM(COALESCE(tipo_item_ref,''))) = 'D' THEN -ABS(COALESCE(valor, 0))
     ELSE COALESCE(valor, 0)
 END
 """
@@ -18628,7 +19367,7 @@ END
 def _sum_faturamento_comissao(
     conn: sqlite3.Connection, d0: date, d1: date, vendor_id: Optional[int] = None
 ) -> float:
-    """Soma o faturamento da comissão (NF saída + DEMO, sem devolução)."""
+    """Soma o faturamento líquido da comissão (NF saída + DEMO - devolução)."""
     if vendor_id is None:
         row = conn.execute(
             f"""

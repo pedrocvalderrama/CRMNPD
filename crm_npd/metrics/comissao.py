@@ -7,20 +7,24 @@ Regras vigentes, extraidas de ``compute_vendor_commission`` e
 ``linhas_comissao_externo_liquidez`` do monolito:
 
 Vendedor INTERNO
-    Ciclo 26→25 (fechamento dia 25). Base e o faturamento atribuido ao
-    vendedor (NF de saida + DEMO, sem frete e sem cliche). Devolucoes nao
-    diminuem a base; aparecem no extrato para o gestor decidir.
+    Ciclo 26→25 (fechamento dia 25). Base e o faturamento liquido atribuido ao
+    vendedor (NF de saida + DEMO - devolucoes, sem frete e sem cliche).
+    Devolucoes descontam da base de faturamento (inclusive para meta e bonus
+    acima de R$ 100 mil) e da comissao, aplicando a mesma aliquota do pedido/ciclo.
 
     Toda linha valida rende 1%. Se o Sisplan marcou o pedido como cliente
-    novo (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA), todas as notas daquele pedido
-    rendem +1% (2% no total) e entram nos relatorios como pedido novo.
+    novo (MOTIVO 10 — PEDIDO PRIMEIRA COMPRA) ou pedido recuperado (MOTIVO 11 —
+    PEDIDO RECUPERADO ARTE NOVA; MOTIVO 13 — PEDIDO RECUPERADO ARTE REPETICAO),
+    todas as notas daquele pedido rendem +1% (2% no total) e entram nos
+    relatorios como pedido novo. No extrato de comissao e no Excel, os motivos
+    11 e 13 exibem a tag RECUPERADO mantendo os mesmos 2%.
     JIT IMEDIATO (05) anula o bonus de novo, mesmo se o Sisplan disser que e
-    cliente novo, e mesmo com override manual.
+    cliente novo/recuperado, e mesmo com override manual.
 
     A meta e de faturamento do mesmo ciclo da comissao (setembro/2026 =
     26/08 a 25/09). Enquanto nao bate: +1% uma vez sobre o que passar de
     R$ 100 mil. Se bater, o bonus de volume cai; todas as linhas passam a
-    1,75% e os pedidos novos continuam em 2%.
+    1,75% e os pedidos novos/recuperados (10, 11 e 13) continuam em 2%.
 
 Vendedor EXTERNO
     Base e a liquidez efetivamente paga (relatorio 733), a 7%, sem bonus.
@@ -42,7 +46,7 @@ PCT_BASE_INTERNO = 1.0
 #: Percentual de todas as linhas depois que a vendedora bate a meta.
 PCT_BASE_INTERNO_META = 1.75
 
-#: Percentual total das notas de pedido novo (Sisplan MOTIVO 10).
+#: Percentual total das notas de pedido novo ou recuperado (Sisplan MOTIVOS 10, 11 e 13).
 PCT_NOVO = 2.0
 
 #: Percentual adicional por linha de faturamento de cliente novo (antes da meta).
@@ -59,6 +63,24 @@ PCT_BONUS_VOLUME = 0.01
 
 #: Codigo Sisplan em PEDIDO_001.MOTIVO / MENSAGEM_001: PEDIDO PRIMEIRA COMPRA.
 MOTIVO_SISPLAN_PRIMEIRA_COMPRA = "10"
+
+#: Codigo Sisplan em PEDIDO_001.MOTIVO / MENSAGEM_001: PEDIDO RECUPERADO ARTE NOVA.
+MOTIVO_SISPLAN_RECUPERADO_ARTE_NOVA = "11"
+
+#: Codigo Sisplan em PEDIDO_001.MOTIVO / MENSAGEM_001: PEDIDO RECUPERADO ARTE REPETICAO.
+MOTIVO_SISPLAN_RECUPERADO_ARTE_REPETICAO = "13"
+
+#: Codigos Sisplan de pedido recuperado que rendem 2% e contam como novo no CRM.
+MOTIVOS_SISPLAN_RECUPERADO = frozenset({
+    MOTIVO_SISPLAN_RECUPERADO_ARTE_NOVA,
+    MOTIVO_SISPLAN_RECUPERADO_ARTE_REPETICAO,
+})
+
+#: Todos os codigos Sisplan que contam como pedido novo e rendem 2% na comissao.
+MOTIVOS_SISPLAN_NOVO = frozenset({
+    MOTIVO_SISPLAN_PRIMEIRA_COMPRA,
+    *MOTIVOS_SISPLAN_RECUPERADO,
+})
 
 
 def _texto_upper(valor: str | None) -> str:
@@ -77,24 +99,56 @@ def _codigo_motivo(motivo: str | None) -> str:
     return token.split("-", 1)[0]
 
 
+def pedido_sisplan_recuperado(
+    motivo: str | None,
+    desc_motivo: str | None = None,
+) -> bool:
+    """True se o Sisplan marcou o pedido como recuperado (codigos 11 ou 13).
+
+    Abrange ``11 - PEDIDO RECUPERADO ARTE NOVA`` e
+    ``13 - PEDIDO RECUPERADO ARTE REPETICAO``. Esses pedidos recebem os mesmos
+    2% de comissao e contam como novos no CRM, mas sao identificados com a tag
+    ``RECUPERADO`` no extrato de comissao e no Excel.
+
+    Args:
+        motivo: ``PEDIDO_001.MOTIVO`` ou o texto concatenado.
+        desc_motivo: Descricao em ``MENSAGEM_001``, se vier separado.
+
+    Returns:
+        True quando o pedido tem motivo 11 ou 13 (pedido recuperado) no Sisplan.
+    """
+    if _codigo_motivo(motivo) in MOTIVOS_SISPLAN_RECUPERADO:
+        return True
+    blob = " ".join(
+        parte for parte in (_texto_upper(motivo), _texto_upper(desc_motivo)) if parte
+    )
+    return "PEDIDO RECUPERADO" in blob
+
+
 def pedido_sisplan_cliente_novo(
     motivo: str | None,
     desc_motivo: str | None = None,
 ) -> bool:
-    """True se o Sisplan marcou o pedido como cliente novo.
+    """True se o Sisplan marcou o pedido com motivo que conta como novo (2%).
 
-    A fonte oficial e o MOTIVO do pedido: codigo ``10`` —
-    ``PEDIDO PRIMEIRA COMPRA``. Todas as notas daquele pedido herdam o flag.
+    A fonte oficial e o MOTIVO do pedido:
+    - ``10`` — ``PEDIDO PRIMEIRA COMPRA``
+    - ``11`` — ``PEDIDO RECUPERADO ARTE NOVA``
+    - ``13`` — ``PEDIDO RECUPERADO ARTE REPETICAO``
+
+    Todas as notas daquele pedido herdam o flag.
 
     Args:
         motivo: ``PEDIDO_001.MOTIVO`` ou o texto ja concatenado
-            (``10 - PEDIDO PRIMEIRA COMPRA``).
+            (ex.: ``10 - PEDIDO PRIMEIRA COMPRA``).
         desc_motivo: Descricao em ``MENSAGEM_001``, se vier separado.
 
     Returns:
-        True quando o pedido e primeira compra no Sisplan.
+        True quando o pedido conta como novo no Sisplan (motivos 10, 11 ou 13).
     """
-    if _codigo_motivo(motivo) == MOTIVO_SISPLAN_PRIMEIRA_COMPRA:
+    if _codigo_motivo(motivo) in MOTIVOS_SISPLAN_NOVO:
+        return True
+    if pedido_sisplan_recuperado(motivo, desc_motivo):
         return True
     blob = " ".join(
         parte for parte in (_texto_upper(motivo), _texto_upper(desc_motivo)) if parte
@@ -121,18 +175,39 @@ def condicao_jit_imediato(condicao: str | None) -> bool:
 def invoice_eh_devolucao(*, tipo_item_ref: str | None = None, valor: float = 0.0) -> bool:
     """True se a linha de faturamento e devolucao.
 
-    Devolucao nao reduz a base de comissao; so aparece no extrato.
+    Devolucoes entram com valor negativo descontando da base do ciclo e da
+    comissao, pela mesma regra de aliquota do pedido/ciclo.
 
     Args:
         tipo_item_ref: Natureza gravada na invoice (``D`` para devolucao).
         valor: Valor da linha; negativo tambem conta como devolucao.
 
     Returns:
-        True quando a linha nao deve entrar na base de comissao.
+        True quando a linha representa devolucao.
     """
     if _texto_upper(tipo_item_ref) == "D":
         return True
     return float(valor or 0.0) < 0.0
+
+
+def valor_assinado_faturamento(*, tipo_item_ref: str | None = None, valor: float = 0.0) -> float:
+    """Garante valor negativo quando a linha for devolucao.
+
+    No sync do Firebird as devolucoes ja entram negativas em ``invoices``. Esta
+    funcao protege contra importacao avulsa em que ``tipo_item_ref='D'`` venha
+    com sinal positivo, garantindo que devolucao sempre desconte.
+
+    Args:
+        tipo_item_ref: Natureza gravada na invoice (``D`` para devolucao).
+        valor: Valor bruto lido da linha.
+
+    Returns:
+        Valor assinado (negativo se devolucao, original caso contrario).
+    """
+    v = float(valor or 0.0)
+    if invoice_eh_devolucao(tipo_item_ref=tipo_item_ref, valor=v):
+        return -abs(v)
+    return v
 
 
 def status_manual_de_texto(valor: str | None) -> StatusManualCliente | None:
@@ -158,23 +233,23 @@ def classificar_cliente_novo(
     is_jit_imediato: bool,
     status_manual: StatusManualCliente | None = None,
 ) -> bool:
-    """Decide se uma linha de faturamento conta como pedido novo.
+    """Decide se uma linha de faturamento conta como pedido novo (2%).
 
-    Fonte automatica: o Sisplan marca cliente novo no **pedido** (MOTIVO 10).
-    Todas as notas daquele pedido herdam o bonus. O criterio antigo (primeira
-    nota historica da identidade) nao se aplica mais.
+    Fonte automatica: o Sisplan marca cliente novo/recuperado no **pedido**
+    (MOTIVOS 10, 11 e 13). Todas as notas daquele pedido herdam o bonus. O
+    criterio antigo (primeira nota historica da identidade) nao se aplica mais.
 
     A ordem de decisao importa: o override manual sobrepoe o Sisplan, mas
     JIT IMEDIATO anula o bonus em qualquer caso, inclusive contra override.
 
     Args:
-        pedido_sisplan_novo: Se o pedido vinculado esta marcado como
-            primeira compra no Sisplan.
+        pedido_sisplan_novo: Se o pedido vinculado esta marcado com motivo 10,
+            11 ou 13 no Sisplan.
         is_jit_imediato: Se a origem e ``05 - JIT IMEDIATO``.
         status_manual: Override lancado pela gestao, se houver.
 
     Returns:
-        True quando a linha deve receber o bonus de cliente novo.
+        True quando a linha deve receber o bonus de 2% de pedido novo.
     """
     is_novo = bool(pedido_sisplan_novo)
 
@@ -188,15 +263,40 @@ def classificar_cliente_novo(
     return is_novo
 
 
-def bateu_meta_faturamento(faturamento: float, meta: float) -> bool:
-    """True se o faturamento do ciclo atingiu a meta do vendedor.
-
-    A meta lancada para um mes (ex.: setembro/2026) compara com o mesmo
-    numero da comissao: faturamento de 26/08 a 25/09, sem devolucao.
-    Meta zero ou negativa nao conta como batida.
+def rotulo_status_linha(
+    *,
+    is_devolucao: bool = False,
+    is_novo: bool = False,
+    is_recuperado: bool = False,
+) -> str:
+    """Devolve o rotulo exibido no extrato de comissao e na exportacao Excel.
 
     Args:
-        faturamento: Base de comissao do ciclo (NF saida + DEMO, sem D).
+        is_devolucao: Se a linha e devolucao.
+        is_novo: Se a linha recebe a aliquota de 2% (novo ou recuperado 11/13).
+        is_recuperado: Se o pedido veio com motivo 11 ou 13 no Sisplan.
+
+    Returns:
+        ``DEVOLUÇÃO``, ``RECUPERADO``, ``NOVO`` ou ``CARTEIRA``.
+    """
+    if is_devolucao:
+        return "DEVOLUÇÃO"
+    if is_novo and is_recuperado:
+        return "RECUPERADO"
+    if is_novo:
+        return "NOVO"
+    return "CARTEIRA"
+
+
+def bateu_meta_faturamento(faturamento: float, meta: float) -> bool:
+    """True se o faturamento liquido do ciclo atingiu a meta do vendedor.
+
+    A meta lancada para um mes (ex.: setembro/2026) compara com o mesmo
+    numero da comissao: faturamento liquido de 26/08 a 25/09 (ja descontando
+    devolucoes). Meta zero ou negativa nao conta como batida.
+
+    Args:
+        faturamento: Base liquida de comissao do ciclo (NF saida + DEMO - D).
         meta: Meta de faturamento cadastrada para o mes do ciclo.
 
     Returns:
@@ -214,10 +314,13 @@ def comissao_linha_interno(
 ) -> tuple[float, float, float]:
     """Calcula a comissao de uma linha de faturamento de vendedor interno.
 
+    Aceita valores positivos (vendas/DEMO) e negativos (devolucoes), aplicando a
+    mesma regra de aliquota para que devolucoes estornem proporcionalmente.
+
     Args:
-        valor: Valor da linha de nota (positivo; devolucao nao entra aqui).
-        is_novo: Se a linha recebe bonus de cliente novo.
-        bateu_meta: Se a vendedora ja atingiu a meta de faturamento do ciclo.
+        valor: Valor assinado da linha (negativo em devolucoes).
+        is_novo: Se a linha segue a aliquota de 2% (pedido 10, 11 ou 13).
+        bateu_meta: Se a vendedora atingiu a meta de faturamento liquido do ciclo.
 
     Returns:
         Tripla com percentual base, percentual de bonus e valor de comissao.
@@ -239,7 +342,7 @@ def comissao_linha_interno(
 
 
 def bonus_volume(faturamento_total: float, *, bateu_meta: bool = False) -> float:
-    """Calcula o bonus por faturamento acima do limite do ciclo.
+    """Calcula o bonus por faturamento liquido acima do limite do ciclo.
 
     Incide apenas sobre o excedente, nao sobre o faturamento inteiro, e e
     somado uma unica vez ao total, nao distribuido entre as linhas. Cai
@@ -247,7 +350,7 @@ def bonus_volume(faturamento_total: float, *, bateu_meta: bool = False) -> float
     as linhas ja sobe para 1,75%.
 
     Args:
-        faturamento_total: Faturamento do vendedor no ciclo (sem devolucao).
+        faturamento_total: Faturamento liquido do vendedor no ciclo.
         bateu_meta: Se True, devolve zero.
 
     Returns:
@@ -268,26 +371,28 @@ def montar_extrato_interno(
 ) -> ExtratoComissao:
     """Consolida as linhas de um vendedor interno em extrato de ciclo.
 
-    Linhas de devolucao entram no detalhe, mas nao na base nem na comissao.
+    Linhas de devolucao entram com valor e comissao negativos, descontando tanto
+    da base de faturamento (incluindo o calculo de bonus > R$ 100 mil) quanto da
+    comissao final, sem inflar a contagem de vendas (``novo_count`` / ``rep_count``).
 
     Args:
         linhas: Linhas de comissao ja classificadas e calculadas.
         bateu_meta: Se a vendedora atingiu a meta; desliga o bonus de volume.
 
     Returns:
-        Extrato com faturamento, comissao total, bonus de volume e contagens.
+        Extrato com faturamento liquido, comissao liquida, bonus e contagens.
     """
     materializadas: tuple[LinhaComissao, ...] = tuple(linhas)
-    base = tuple(linha for linha in materializadas if not linha.is_devolucao)
-    faturamento = sum(linha.valor for linha in base)
-    comissao = sum(linha.comissao for linha in base)
+    saidas = tuple(linha for linha in materializadas if not linha.is_devolucao)
+    faturamento = sum(linha.valor for linha in materializadas)
+    comissao = sum(linha.comissao for linha in materializadas)
     extra = bonus_volume(faturamento, bateu_meta=bateu_meta)
     return ExtratoComissao(
         faturamento=faturamento,
         comissao=comissao + extra,
         extra_bonus=extra,
-        novo_count=sum(1 for linha in base if linha.is_novo),
-        rep_count=sum(1 for linha in base if not linha.is_novo),
+        novo_count=sum(1 for linha in saidas if linha.is_novo),
+        rep_count=sum(1 for linha in saidas if not linha.is_novo),
         lines=materializadas,
         bateu_meta=bateu_meta,
         devolucoes_valor=sum(linha.valor for linha in materializadas if linha.is_devolucao),
@@ -359,7 +464,7 @@ def base_de_calculo(tipo: TipoVendedor) -> str:
         return "liquidez paga (relatorio 733)"
     if tipo is TipoVendedor.SITE:
         return "sem comissao"
-    return "faturamento (NF saida + DEMO, sem frete e sem cliche)"
+    return "faturamento liquido (NF saida + DEMO - devolucoes, sem frete e sem cliche)"
 
 
 def total_comissao(linhas: Sequence[LinhaComissao]) -> float:
