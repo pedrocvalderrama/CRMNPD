@@ -2608,10 +2608,12 @@ def sql_pedidos_realizados_excel_cond(alias: str = "o", join_alias: str = "v") -
     _ = join_alias
     cond_ns = f"UPPER(REPLACE(TRIM(COALESCE({a}.condicao_entrega,'')),' ',''))"
     grupo = f"UPPER(COALESCE({a}.grupo_ref,''))"
+    sit = f"UPPER(TRIM(COALESCE({a}.situacao_pedido,'')))"
     return (
         f"TRIM(COALESCE({a}.pedido,'')) <> '' "
         f"AND {cond_ns} NOT LIKE '%98%JIT%' "
-        f"AND {grupo} NOT LIKE '%CLICHES%'"
+        f"AND {grupo} NOT LIKE '%CLICHES%' "
+        f"AND {sit} <> 'CANCELADO'"
     )
 
 

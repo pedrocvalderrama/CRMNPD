@@ -50,6 +50,7 @@ CRM OUTRO/
 
 # Cliente Firebird local (zip + dll). Nao versionar binario.
 vendor/
+*.dll
 
 # Artefatos locais
 *.log

@@ -66,3 +66,4 @@ def test_realizado_inclui_05_jit_imediato() -> None:
     assert "GENERAL LYY" not in sql
     assert "98%JIT" in sql
     assert "CLICHES" in sql
+    assert "CANCELADO" in sql
