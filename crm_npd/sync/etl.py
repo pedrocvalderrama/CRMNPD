@@ -68,7 +68,8 @@ def sincronizar_crm(conn: sqlite3.Connection) -> dict[str, int]:
 
     agora = m.now_iso()
     conn.execute("BEGIN IMMEDIATE")
-    for tabela in ("orders", "invoices", "orcamentos", "liquidez"):
+    conn.execute("DELETE FROM orders WHERE UPPER(TRIM(COALESCE(origem_ref, ''))) <> 'HISTORICO'")
+    for tabela in ("invoices", "orcamentos", "liquidez"):
         conn.execute(f"DELETE FROM {tabela}")
     try:
         conn.execute(
@@ -170,9 +171,9 @@ def sincronizar_pedidos(conn: sqlite3.Connection) -> int:
     pedidos = executar_select_dicts(CRM_PEDIDOS)
     agora = m.now_iso()
     conn.execute("BEGIN IMMEDIATE")
-    conn.execute("DELETE FROM orders")
+    conn.execute("DELETE FROM orders WHERE UPPER(TRIM(COALESCE(origem_ref, ''))) <> 'HISTORICO'")
     cache = m.build_import_entity_cache(conn)
-    n_ped = _gravar_pedidos(conn, m, pedidos, agora, cache)
+    n_ped = _gravar_pedidos(conn, m, pedidos, agora, cache, origem_ref="SISPLAN")
     aplicar_carteira_anfarma(conn)
     m.set_setting(conn, "sisplan_snapshot_synced_at", agora)
     conn.commit()
@@ -253,6 +254,10 @@ def vendedor_faturamento(row: dict) -> str:
 def aplicar_carteira_anfarma(conn: sqlite3.Connection) -> int:
     """Move pedidos e NFs do codigo 05975 para a Joseane, sem apagar a origem."""
     from crm_npd import legacy_monolith as m
+    from crm_npd.db import table_exists
+
+    has_orders = table_exists(conn, "orders")
+    has_invoices = table_exists(conn, "invoices")
 
     joseane_id = m.upsert_vendor(conn, LABEL_JOSEANE)
     if not joseane_id:
@@ -267,41 +272,49 @@ def aplicar_carteira_anfarma(conn: sqlite3.Connection) -> int:
     movidos = 0
     if anfarma_ids:
         marks = ",".join("?" for _ in anfarma_ids)
-        movidos += conn.execute(
-            f"UPDATE orders SET vendor_id=? WHERE vendor_id IN ({marks})",
-            (joseane_id, *anfarma_ids),
-        ).rowcount
-        movidos += conn.execute(
-            f"UPDATE invoices SET vendor_id=? WHERE vendor_id IN ({marks})",
-            (joseane_id, *anfarma_ids),
-        ).rowcount
+        if has_orders:
+            movidos += conn.execute(
+                f"UPDATE orders SET vendor_id=? WHERE vendor_id IN ({marks})",
+                (joseane_id, *anfarma_ids),
+            ).rowcount
+        if has_invoices:
+            movidos += conn.execute(
+                f"UPDATE invoices SET vendor_id=? WHERE vendor_id IN ({marks})",
+                (joseane_id, *anfarma_ids),
+            ).rowcount
     like = "%ASSOCIACAO NACIONAL DE FARMACEUTICOS%"
-    movidos += conn.execute(
-        """
-        UPDATE orders SET vendor_id=?
-        WHERE vendor_id <> ?
-          AND UPPER(COALESCE(vendor_nome_ref,'')) LIKE ?
-        """,
-        (joseane_id, joseane_id, like),
-    ).rowcount
-    movidos += conn.execute(
-        """
-        UPDATE invoices SET vendor_id=?
-        WHERE vendor_id <> ?
-          AND UPPER(COALESCE(vendor_nome_ref,'')) LIKE ?
-        """,
-        (joseane_id, joseane_id, like),
-    ).rowcount
+    if has_orders:
+        movidos += conn.execute(
+            """
+            UPDATE orders SET vendor_id=?
+            WHERE vendor_id <> ?
+              AND UPPER(COALESCE(vendor_nome_ref,'')) LIKE ?
+            """,
+            (joseane_id, joseane_id, like),
+        ).rowcount
+    if has_invoices:
+        movidos += conn.execute(
+            """
+            UPDATE invoices SET vendor_id=?
+            WHERE vendor_id <> ?
+              AND UPPER(COALESCE(vendor_nome_ref,'')) LIKE ?
+            """,
+            (joseane_id, joseane_id, like),
+        ).rowcount
     return int(movidos or 0)
 
 
-def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
+def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict, origem_ref: str = "SISPLAN") -> int:
+    from crm_npd.config import HISTORICO_CORTE
+    corte = (HISTORICO_CORTE or "").strip()
     inserts = []
     for row in rows:
         pedido = _txt(row.get("PEDIDO"))
         if not pedido:
             continue
         data_emissao = _data(row.get("DT_EMISSAO"))
+        if origem_ref == "SISPLAN" and corte and data_emissao and data_emissao < corte:
+            continue
         codigo = _txt(row.get("CODCLI"))
         fantasia = _txt(row.get("FANTASIA")) or _txt(row.get("CLI_NOME"))
         vendor_nome = vendedor_pedido(row)
@@ -353,7 +366,7 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
             condicao or None, is_jit, grupo or None, tipo_item or None, papel or None, preco, valor_item,
             situacao or None, motivo or None, desc_motivo or None, cancelado,
             entrega, produto_codigo or None, produto_ref or None, observacao or None,
-            cidade or None, uf or None,
+            cidade or None, uf or None, origem_ref,
         ))
     if inserts:
         try:
@@ -362,6 +375,8 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
                 conn.execute("ALTER TABLE orders ADD COLUMN cidade TEXT")
             if "uf" not in cols:
                 conn.execute("ALTER TABLE orders ADD COLUMN uf TEXT")
+            if "origem_ref" not in cols:
+                conn.execute("ALTER TABLE orders ADD COLUMN origem_ref TEXT")
         except Exception:
             pass
         conn.executemany(
@@ -373,8 +388,8 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
                 condicao_entrega, is_jit, grupo_ref, tipo_item_ref, papel_ref, preco_ref, valor_item_ref,
                 situacao_pedido, motivo_pedido, desc_motivo_pedido, pedido_cancelado,
                 entrega_pedido, produto_codigo_ref, produto_ref, observacao_ref,
-                cidade, uf
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                cidade, uf, origem_ref
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )
@@ -617,6 +632,19 @@ def _delete_in(conn, tabela: str, coluna: str, chaves: list[str]) -> int:
     return total
 
 
+def _delete_in_pedidos_sisplan(conn, chaves: list[str]) -> int:
+    total = 0
+    for i in range(0, len(chaves), _CDC_LOTE_IN):
+        lote = chaves[i : i + _CDC_LOTE_IN]
+        marcas = ",".join("?" for _ in lote)
+        cur = conn.execute(
+            f"DELETE FROM orders WHERE TRIM(COALESCE(pedido, '')) IN ({marcas}) AND UPPER(TRIM(COALESCE(origem_ref, ''))) <> 'HISTORICO'",
+            lote,
+        )
+        total += int(cur.rowcount or 0)
+    return total
+
+
 def _select_in(sql: str, coluna: str, chaves: list[str]) -> list[dict]:
     linhas: list[dict] = []
     for i in range(0, len(chaves), _CDC_LOTE_IN):
@@ -629,15 +657,21 @@ def _select_in(sql: str, coluna: str, chaves: list[str]) -> list[dict]:
 def recarregar_pedidos(conn: sqlite3.Connection, numeros) -> int:
     """Apaga e regrava so os pedidos cujos numeros mudaram no Sisplan."""
     from crm_npd import legacy_monolith as m
+    from crm_npd.config import HISTORICO_CORTE
 
     chaves = _chaves_com_documento_pai(numeros)
     if not chaves:
         return 0
     rows = _select_in(CRM_PEDIDOS, "P.NUMERO", chaves)
-    _delete_in(conn, "orders", "pedido", chaves)
+    corte = (HISTORICO_CORTE or "").strip()
+    if corte:
+        rows = [r for r in rows if (_data(r.get("DT_EMISSAO")) or "") >= corte]
+    _delete_in_pedidos_sisplan(conn, chaves)
+    if not rows:
+        return 0
     agora = m.now_iso()
     cache = m.build_import_entity_cache(conn)
-    gravadas = _gravar_pedidos(conn, m, rows, agora, cache)
+    gravadas = _gravar_pedidos(conn, m, rows, agora, cache, origem_ref="SISPLAN")
     aplicar_carteira_anfarma(conn)
     logger.info("cdc.pedidos chaves=%s linhas=%s", len(chaves), gravadas)
     return gravadas

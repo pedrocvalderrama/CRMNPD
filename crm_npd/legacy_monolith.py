@@ -2601,7 +2601,8 @@ def sql_excluir_jit_picado(alias: str = "o") -> str:
 def sql_pedidos_realizados_excel_cond(alias: str = "o", join_alias: str = "v") -> str:
     """Pedidos realizados = MANUAL_REGRAS_PEDIDOS_SISPLAN.
 
-    98-JIT e CLICHES ja saem na extração. 05-JIT IMEDIATO entra.
+    Historico (ate fev/2026): origem_ref = 'HISTORICO', 98-JIT entra e cliches ja sairam no import.
+    Sisplan (mar/2026 em diante): 98-JIT, CLICHES e CANCELADO saem.
     join_alias permanece na assinatura: chamadas antigas passam o alias do vendor.
     """
     a = alias
@@ -2609,11 +2610,17 @@ def sql_pedidos_realizados_excel_cond(alias: str = "o", join_alias: str = "v") -
     cond_ns = f"UPPER(REPLACE(TRIM(COALESCE({a}.condicao_entrega,'')),' ',''))"
     grupo = f"UPPER(COALESCE({a}.grupo_ref,''))"
     sit = f"UPPER(TRIM(COALESCE({a}.situacao_pedido,'')))"
+    origem = f"UPPER(TRIM(COALESCE({a}.origem_ref,'')))"
     return (
         f"TRIM(COALESCE({a}.pedido,'')) <> '' "
-        f"AND {cond_ns} NOT LIKE '%98%JIT%' "
+        f"AND ("
+        f"{origem} = 'HISTORICO' "
+        f"OR ("
+        f"{cond_ns} NOT LIKE '%98%JIT%' "
         f"AND {grupo} NOT LIKE '%CLICHES%' "
         f"AND {sit} <> 'CANCELADO'"
+        f")"
+        f")"
     )
 
 
@@ -10993,6 +11000,7 @@ def importar_csv():
             flash(f"Falha ao ler o FDB: {e}", "danger")
             return redirect(url_for("importar_csv"))
 
+    from crm_npd.sync.historico import obter_status_historico_pedidos
     with conectar() as conn:
         origem = get_setting(conn, "sisplan_origem", "")
         synced = get_setting(conn, "sisplan_snapshot_synced_at", "")
@@ -11000,6 +11008,7 @@ def importar_csv():
         n_fat = int(conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] or 0)
         n_orc = int(conn.execute("SELECT COUNT(*) FROM orcamentos").fetchone()[0] or 0)
         n_liq = int(conn.execute("SELECT COUNT(*) FROM liquidez").fetchone()[0] or 0)
+        hist_status = obter_status_historico_pedidos(conn)
 
     body = render_template_string("""
     <div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-4">
@@ -11009,10 +11018,10 @@ def importar_csv():
       </div>
       <a class="btn btn-outline-secondary" href="{{ url_for('importacoes') }}"><i class="bi bi-clock-history me-1"></i> Historico</a>
     </div>
-    <div class="row g-3">
+    <div class="row g-3 mb-4">
       <div class="col-12 col-xl-8">
         <div class="cardx p-4">
-          <div class="h5 mb-2">Fonte atual</div>
+          <div class="h5 mb-2">Fonte Sisplan (mar/2026 em diante)</div>
           <div class="small text-secondary mb-1">Conexao</div>
           <div class="fw-bold mb-3" style="word-break:break-all">{{ fonte }}</div>
           <div class="small text-secondary mb-1">Ultima leitura</div>
@@ -11033,8 +11042,38 @@ def importar_csv():
       <div class="col-12 col-xl-4">
         <div class="cardx p-4 h-100">
           <div class="h6 mb-3">O que acontece</div>
-          <p class="small text-secondary">O CRM abre o FDB em modo somente leitura, substitui pedidos, faturamento, orcamentos e liquidez, e recalcula redes e tarefas. CSV nao entra mais.</p>
+          <p class="small text-secondary">O CRM abre o FDB em modo somente leitura, substitui pedidos (a partir de {{ hist_status.corte }}), faturamento, orcamentos e liquidez, e recalcula redes e tarefas.</p>
           <p class="small text-secondary mb-0">Padrao da fabrica: <code>192.168.100.168:3051</code> em <code>C:\\Sisplan\\Base\\14215F.FDB</code>. Nada alem de SELECT.</p>
+        </div>
+      </div>
+    </div>
+    <div class="row g-3">
+      <div class="col-12 col-xl-8">
+        <div class="cardx p-4">
+          <div class="h5 mb-2">Historico de Pedidos (ate {{ hist_status.corte }})</div>
+          <div class="small text-secondary mb-1">Arquivo CSV</div>
+          <div class="fw-bold mb-2" style="word-break:break-all">historicopedidos.csv</div>
+          <div class="d-flex flex-wrap gap-3 small mb-3">
+            <span>Status: {% if hist_status.arquivo_existe %}<span class="badge bg-success">Arquivo presente</span>{% else %}<span class="badge bg-warning text-dark">Arquivo nao encontrado</span>{% endif %}</span>
+            {% if hist_status.arquivo_mtime %}<span>Modificado em: <b>{{ hist_status.arquivo_mtime }}</b></span>{% endif %}
+            <span>Corte: <b>{{ hist_status.corte }}</b></span>
+          </div>
+          <div class="d-flex flex-wrap gap-3 small mb-4">
+            <span>Ultima importacao: <b>{{ hist_status.importado_em or 'Ainda nao importado' }}</b></span>
+            <span>Pedidos historicos no banco: <b>{{ hist_status.pedidos_no_banco }}</b></span>
+          </div>
+          <form method="post" action="{{ url_for('route_importar_historico_pedidos') }}" onsubmit="return confirm('Deseja recarregar o historico de pedidos ate {{ hist_status.corte }} a partir do arquivo CSV?');">
+            <button class="btn btn-outline-primary px-4" {% if not hist_status.arquivo_existe %}disabled{% endif %}>
+              <i class="bi bi-clock-history me-1"></i> Recarregar Historico de Pedidos
+            </button>
+          </form>
+        </div>
+      </div>
+      <div class="col-12 col-xl-4">
+        <div class="cardx p-4 h-100">
+          <div class="h6 mb-3">Como funciona o Historico</div>
+          <p class="small text-secondary">Pedidos emitidos <b>antes de {{ hist_status.corte }}</b> sao importados do arquivo <code>historicopedidos.csv</code> com as regras historicas validadas (cliches descartados e 98-JIT contabilizado).</p>
+          <p class="small text-secondary mb-0">De <b>{{ hist_status.corte }} em diante</b>, os pedidos sao lidos do Sisplan em tempo real.</p>
         </div>
       </div>
     </div>
@@ -11042,7 +11081,7 @@ def importar_csv():
       <div style="width:min(520px,94vw);background:#fff;border-radius:20px;padding:28px">
         <div class="d-flex align-items-center gap-3">
           <div class="spinner-border text-primary" role="status"></div>
-          <div><div class="h5 mb-1">Lendo o Sisplan</div><div class="text-secondary small">Consultando o FDB. Pode levar alguns minutos na primeira vez.</div></div>
+          <div><div class="h5 mb-1">Processando</div><div class="text-secondary small">Consultando a base. Pode levar alguns instantes.</div></div>
         </div>
       </div>
     </div>
@@ -11051,8 +11090,30 @@ def importar_csv():
       const overlay = document.getElementById('sisplanProcessing');
       if (form && overlay) form.addEventListener('submit', () => { overlay.style.display = 'flex'; });
     </script>
-    """, fonte=fonte, synced=synced, origem=origem, n_ped=n_ped, n_fat=n_fat, n_orc=n_orc, n_liq=n_liq, ok=disponivel() and not somente_sqlite, somente_sqlite=somente_sqlite)
+    """, fonte=fonte, synced=synced, origem=origem, n_ped=n_ped, n_fat=n_fat, n_orc=n_orc, n_liq=n_liq, ok=disponivel() and not somente_sqlite, somente_sqlite=somente_sqlite, hist_status=hist_status)
     return render_page("Atualizar Sisplan", body, "importar_csv")
+
+
+@app.route("/importar_historico_pedidos", methods=["POST"])
+@login_required
+def route_importar_historico_pedidos():
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+    from crm_npd.sync.historico import importar_historico_pedidos
+    try:
+        with conectar() as conn:
+            res = importar_historico_pedidos(conn)
+        flash(
+            f"Historico de pedidos importado com sucesso! "
+            f"{res['pedidos_gravados']} pedidos gravados ate {res['corte']} "
+            f"({res['cliches_descartados']} cliches descartados).",
+            "success",
+        )
+    except Exception as e:
+        flash(f"Falha ao importar historico de pedidos: {e}", "danger")
+    return redirect(url_for("importar_csv"))
 
 
 @app.route("/importacoes")

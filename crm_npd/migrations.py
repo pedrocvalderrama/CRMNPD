@@ -44,6 +44,8 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "orders", "produto_codigo_ref TEXT")
     ensure_column(conn, "orders", "produto_ref TEXT")
     ensure_column(conn, "orders", "observacao_ref TEXT")
+    ensure_column(conn, "orders", "origem_ref TEXT")
+    ensure_column(conn, "invoices", "origem_ref TEXT")
 
     # Campos do relatório 104 usados na visão detalhada do orçamento.
     # São aditivos: não alteram a lógica existente de pedidos, ciclo, metas ou faturamento.
@@ -92,6 +94,8 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_pedido ON orders(pedido)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_data ON orders(data_emissao)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_cancelado ON orders(pedido_cancelado)")
+    _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_orders_origem_data ON orders(origem_ref, data_emissao)")
+    _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_invoices_origem_data ON invoices(origem_ref, data_emissao)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_invoices_pedido ON invoices(pedido)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_invoices_data ON invoices(data_emissao)")
     _safe_index(conn, "CREATE INDEX IF NOT EXISTS idx_tasks_status_updated ON tasks(status, updated_at)")

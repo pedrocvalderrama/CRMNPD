@@ -15,3 +15,9 @@ DB_PATH = Path(_db_override) if _db_override else PROJECT_ROOT / DB_FILENAME
 
 CACHE_TTL_SECONDS = int(os.environ.get("CRM_NPD_CACHE_TTL", "45"))
 SLOW_REQUEST_MS = int(os.environ.get("CRM_NPD_SLOW_REQUEST_MS", "900"))
+
+# Corte historico: pedidos anteriores a esta data usam CSV historico; a partir dela, Sisplan.
+HISTORICO_CORTE = os.environ.get("CRM_NPD_HISTORICO_CORTE", "2026-03-01").strip()
+_hist_pedidos_override = os.environ.get("CRM_NPD_HISTORICO_PEDIDOS", "").strip()
+HISTORICO_PEDIDOS_PATH = Path(_hist_pedidos_override) if _hist_pedidos_override else PROJECT_ROOT / "historicopedidos.csv"
+

@@ -14,11 +14,18 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return bool(row)
+
+
 def table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column_def: str) -> bool:
+    if not table_exists(conn, table):
+        return False
     col_name = column_def.split()[0]
     cols = table_columns(conn, table)
     if col_name in cols:
