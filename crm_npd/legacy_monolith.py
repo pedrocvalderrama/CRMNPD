@@ -9188,20 +9188,11 @@ def _intervalo_meses_calendario(ano: int, mes_ini: int, mes_fim: int) -> tuple[d
     return d0, d1
 
 
-_DESEMP_JOIN = """
-        FROM invoices i
-        LEFT JOIN vendors v ON v.id = i.vendor_id
-        LEFT JOIN customers c ON c.id = i.cliente_id
-"""
-_DESEMP_BASE_WHERE = """
-          AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
-          AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
-"""
-
+_desemp_unused_var = 1
 
 def _desempenho_filtros_request() -> dict:
     equipe = (request.args.get("equipe") or "").strip().upper()
-    if equipe not in ("INTERNO", "EXTERNO"):
+    if equipe not in ("INTERNO", "EXTERNO", "SITE"):
         equipe = ""
     return {
         "equipe": equipe,
@@ -9234,66 +9225,98 @@ def _parece_logradouro(valor: str) -> bool:
     return False
 
 
-def _desempenho_filtro_sql(filtros: dict) -> tuple[str, list]:
+def _desempenho_filtro_sql(filtros: dict, alias: str = "i") -> tuple[str, list]:
     clauses: List[str] = []
     params: list = []
-    if filtros.get("equipe") in ("INTERNO", "EXTERNO"):
-        clauses.append("COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') = ?")
-        params.append(filtros["equipe"])
+    if filtros.get("equipe") in ("INTERNO", "EXTERNO", "SITE"):
+        if filtros["equipe"] == "SITE":
+            clauses.append("(COALESCE(UPPER(TRIM(v.nome)),'') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)),'') = 'SITE')")
+        else:
+            clauses.append("COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') = ?")
+            params.append(filtros["equipe"])
     if filtros.get("vendedor"):
         clauses.append("UPPER(TRIM(COALESCE(v.nome,''))) = UPPER(?)")
         params.append(filtros["vendedor"])
     if filtros.get("grupo"):
-        clauses.append("UPPER(TRIM(COALESCE(i.grupo_ref,''))) = UPPER(?)")
+        clauses.append(f"UPPER(TRIM(COALESCE({alias}.grupo_ref,''))) = UPPER(?)")
         params.append(filtros["grupo"])
     if filtros.get("formato"):
-        # Formato real está em orders.medida_ref; invoices.formato/medida costumam vir "0".
-        clauses.append(
-            """EXISTS (
-                SELECT 1 FROM orders o
-                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
-                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
-                  AND UPPER(REPLACE(TRIM(COALESCE(o.medida_ref,'')), ' ', ''))
-                      = UPPER(REPLACE(TRIM(?), ' ', ''))
-                  AND TRIM(COALESCE(o.medida_ref,'')) NOT IN ('', '0', '-')
-            )"""
-        )
-        params.append(filtros["formato"])
+        if alias == "o":
+            clauses.append(
+                "UPPER(REPLACE(TRIM(COALESCE(o.medida_ref,'')), ' ', '')) = UPPER(REPLACE(TRIM(?), ' ', '')) AND TRIM(COALESCE(o.medida_ref,'')) NOT IN ('', '0', '-')"
+            )
+            params.append(filtros["formato"])
+        else:
+            clauses.append(
+                """EXISTS (
+                    SELECT 1 FROM orders o
+                    WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                      AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                      AND UPPER(REPLACE(TRIM(COALESCE(o.medida_ref,'')), ' ', ''))
+                          = UPPER(REPLACE(TRIM(?), ' ', ''))
+                      AND TRIM(COALESCE(o.medida_ref,'')) NOT IN ('', '0', '-')
+                )"""
+            )
+            params.append(filtros["formato"])
     if filtros.get("papel"):
-        clauses.append("UPPER(TRIM(COALESCE(i.papel_ref,''))) = UPPER(?)")
+        clauses.append(f"UPPER(TRIM(COALESCE({alias}.papel_ref,''))) = UPPER(?)")
         params.append(filtros["papel"])
     if filtros.get("uf"):
-        clauses.append(
-            """(
-              UPPER(TRIM(COALESCE(c.uf,''))) = UPPER(?)
-              OR EXISTS (
-                SELECT 1 FROM orders o
-                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
-                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
-                  AND UPPER(TRIM(COALESCE(o.uf,''))) = UPPER(?)
-              )
-              OR EXISTS (
-                SELECT 1 FROM orcamentos ox
-                WHERE TRIM(COALESCE(c.codigo,'')) <> ''
-                  AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
-                  AND UPPER(TRIM(COALESCE(ox.uf,''))) = UPPER(?)
-              )
-            )"""
-        )
-        params.extend([filtros["uf"], filtros["uf"], filtros["uf"]])
+        if alias == "o":
+            clauses.append(
+                """(
+                  UPPER(TRIM(COALESCE(c.uf,''))) = UPPER(?)
+                  OR UPPER(TRIM(COALESCE(o.uf,''))) = UPPER(?)
+                  OR EXISTS (
+                    SELECT 1 FROM orcamentos ox
+                    WHERE TRIM(COALESCE(c.codigo,'')) <> ''
+                      AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
+                      AND UPPER(TRIM(COALESCE(ox.uf,''))) = UPPER(?)
+                  )
+                )"""
+            )
+            params.extend([filtros["uf"], filtros["uf"], filtros["uf"]])
+        else:
+            clauses.append(
+                """(
+                  UPPER(TRIM(COALESCE(c.uf,''))) = UPPER(?)
+                  OR EXISTS (
+                    SELECT 1 FROM orders o
+                    WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                      AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                      AND UPPER(TRIM(COALESCE(o.uf,''))) = UPPER(?)
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM orcamentos ox
+                    WHERE TRIM(COALESCE(c.codigo,'')) <> ''
+                      AND TRIM(c.codigo) = TRIM(COALESCE(ox.cliente_codigo,''))
+                      AND UPPER(TRIM(COALESCE(ox.uf,''))) = UPPER(?)
+                  )
+                )"""
+            )
+            params.extend([filtros["uf"], filtros["uf"], filtros["uf"]])
     if filtros.get("cidade"):
-        clauses.append(
-            """(
-              UPPER(TRIM(COALESCE(c.cidade,''))) = UPPER(?)
-              OR EXISTS (
-                SELECT 1 FROM orders o
-                WHERE TRIM(COALESCE(i.pedido,'')) <> ''
-                  AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
-                  AND UPPER(TRIM(COALESCE(o.cidade,''))) = UPPER(?)
-              )
-            )"""
-        )
-        params.extend([filtros["cidade"], filtros["cidade"]])
+        if alias == "o":
+            clauses.append(
+                """(
+                  UPPER(TRIM(COALESCE(c.cidade,''))) = UPPER(?)
+                  OR UPPER(TRIM(COALESCE(o.cidade,''))) = UPPER(?)
+                )"""
+            )
+            params.extend([filtros["cidade"], filtros["cidade"]])
+        else:
+            clauses.append(
+                """(
+                  UPPER(TRIM(COALESCE(c.cidade,''))) = UPPER(?)
+                  OR EXISTS (
+                    SELECT 1 FROM orders o
+                    WHERE TRIM(COALESCE(i.pedido,'')) <> ''
+                      AND TRIM(i.pedido) = TRIM(COALESCE(o.pedido,''))
+                      AND UPPER(TRIM(COALESCE(o.cidade,''))) = UPPER(?)
+                  )
+                )"""
+            )
+            params.extend([filtros["cidade"], filtros["cidade"]])
     if not clauses:
         return "", []
     return " AND " + " AND ".join(clauses), params
@@ -9329,27 +9352,27 @@ def _ensure_customers_geo_cols(conn) -> None:
                 pass
 
 
-def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
+def _desempenho_opcoes_filtro(conn, filtros: dict, include_site: bool = False, visao: str = "faturamento") -> dict:
     _ensure_customers_geo_cols(conn)
+    site_cond = "" if include_site else f"AND {sql_site_exclusion_cond('v')}"
     vendors = conn.execute(
-        """
+        f"""
         SELECT id, nome, COALESCE(UPPER(TRIM(tipo)),'EXTERNO') AS tipo
-        FROM vendors
-        WHERE COALESCE(UPPER(TRIM(nome)),'') <> 'SITE'
-          AND COALESCE(UPPER(TRIM(tipo)),'') <> 'SITE'
-          AND COALESCE(TRIM(nome),'') <> ''
+        FROM vendors v
+        WHERE COALESCE(TRIM(nome),'') <> ''
           AND COALESCE(ativo,1)=1
+          {site_cond}
         ORDER BY nome
         """
     ).fetchall()
+    table_name = "orders" if visao == "pedidos" else "invoices"
     grupos = [
         str(r[0]).strip()
         for r in conn.execute(
-            "SELECT DISTINCT TRIM(grupo_ref) FROM invoices WHERE TRIM(COALESCE(grupo_ref,''))<>'' ORDER BY 1"
+            f"SELECT DISTINCT TRIM(grupo_ref) FROM {table_name} WHERE TRIM(COALESCE(grupo_ref,''))<>'' ORDER BY 1"
         ).fetchall()
         if r[0]
     ]
-    # Formato = medida dos pedidos (ex.: 18X30X10), não o campo quebrado das notas.
     formatos = [
         str(r[0]).strip()
         for r in conn.execute(
@@ -9366,7 +9389,7 @@ def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
     papeis = [
         str(r[0]).strip()
         for r in conn.execute(
-            "SELECT DISTINCT TRIM(papel_ref) FROM invoices WHERE TRIM(COALESCE(papel_ref,''))<>'' ORDER BY 1"
+            f"SELECT DISTINCT TRIM(papel_ref) FROM {table_name} WHERE TRIM(COALESCE(papel_ref,''))<>'' ORDER BY 1"
         ).fetchall()
         if r[0]
     ]
@@ -9426,25 +9449,54 @@ def _desempenho_opcoes_filtro(conn, filtros: dict) -> dict:
 
 
 def _soma_faturamento_periodo(
-    conn, d0: date, d1: date, filtro_sql: str = "", filtro_params: Optional[list] = None
+    conn,
+    d0: date,
+    d1: date,
+    filtro_sql: str = "",
+    filtro_params: Optional[list] = None,
+    visao: str = "faturamento",
+    mostrar_site: bool = False,
 ) -> tuple[float, int, int, float]:
-    """Faturamento do intervalo (sem SITE): valor, qtd notas, clientes e unidades."""
+    """Intervalo: valor, qtd (notas ou pedidos), clientes e unidades."""
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
-    row = conn.execute(
-        f"""
-        SELECT
-            COALESCE(SUM(i.valor),0) AS val,
-            COUNT(*) AS qtd,
-            COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id,0) > 0 THEN i.cliente_id END) AS clientes,
-            COALESCE(SUM(COALESCE(i.quantidade,0)),0) AS unidades
-        {_DESEMP_JOIN}
-        WHERE i.data_emissao IS NOT NULL
-          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
-          {_DESEMP_BASE_WHERE}
-          {filtro_sql}
-        """,
-        params,
-    ).fetchone()
+    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    if visao == "pedidos":
+        row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS val,
+                COUNT(DISTINCT TRIM(COALESCE(o.pedido, ''))) AS qtd,
+                COUNT(DISTINCT CASE WHEN COALESCE(o.cliente_id, 0) > 0 THEN o.cliente_id END) AS clientes,
+                COALESCE(SUM(COALESCE(o.quantidade, 0)), 0) AS unidades
+            FROM orders o
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            WHERE o.data_emissao IS NOT NULL
+              AND date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+              {site_cond}
+              {filtro_sql}
+            """,
+            params,
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(i.valor), 0) AS val,
+                COUNT(*) AS qtd,
+                COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id, 0) > 0 THEN i.cliente_id END) AS clientes,
+                COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            LEFT JOIN customers c ON c.id = i.cliente_id
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              {site_cond}
+              {filtro_sql}
+            """,
+            params,
+        ).fetchone()
     return (
         float(row["val"] or 0),
         int(row["qtd"] or 0),
@@ -9454,24 +9506,53 @@ def _soma_faturamento_periodo(
 
 
 def _fat_mensal_ano(
-    conn, ano: int, mes_ini: int, mes_fim: int, filtro_sql: str = "", filtro_params: Optional[list] = None
+    conn,
+    ano: int,
+    mes_ini: int,
+    mes_fim: int,
+    filtro_sql: str = "",
+    filtro_params: Optional[list] = None,
+    visao: str = "faturamento",
+    mostrar_site: bool = False,
 ) -> List[float]:
-    """12 valores mensais; fora do intervalo selecionado = NaN (não desenha a linha)."""
+    """12 valores mensais; fora do intervalo selecionado = NaN."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
-    rows = conn.execute(
-        f"""
-        SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
-               COALESCE(SUM(i.valor),0) AS val
-        {_DESEMP_JOIN}
-        WHERE i.data_emissao IS NOT NULL
-          AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
-          AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
-          {_DESEMP_BASE_WHERE}
-          {filtro_sql}
-        GROUP BY m
-        """,
-        params,
-    ).fetchall()
+    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    if visao == "pedidos":
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%m', o.data_emissao) AS INTEGER) AS m,
+                   COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS val
+            FROM orders o
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            WHERE o.data_emissao IS NOT NULL
+              AND CAST(strftime('%Y', o.data_emissao) AS INTEGER) = ?
+              AND CAST(strftime('%m', o.data_emissao) AS INTEGER) BETWEEN ? AND ?
+              AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+              {site_cond}
+              {filtro_sql}
+            GROUP BY m
+            """,
+            params,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
+                   COALESCE(SUM(i.valor), 0) AS val
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            LEFT JOIN customers c ON c.id = i.cliente_id
+            WHERE i.data_emissao IS NOT NULL
+              AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
+              AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
+              {site_cond}
+              {filtro_sql}
+            GROUP BY m
+            """,
+            params,
+        ).fetchall()
     by_m = {int(r["m"]): float(r["val"] or 0) for r in rows}
     out: List[float] = []
     for m in range(1, 13):
@@ -9483,64 +9564,131 @@ def _fat_mensal_ano(
 
 
 def _fat_mensal_por_equipe(
-    conn, ano: int, mes_ini: int, mes_fim: int, filtro_sql: str = "", filtro_params: Optional[list] = None
+    conn,
+    ano: int,
+    mes_ini: int,
+    mes_fim: int,
+    filtro_sql: str = "",
+    filtro_params: Optional[list] = None,
+    visao: str = "faturamento",
+    mostrar_site: bool = False,
 ) -> Dict[int, Dict[str, float]]:
-    """Faturamento mensal por time (INTERNO/EXTERNO) no intervalo do ano."""
+    """Mensal por time (INTERNO/EXTERNO/SITE) no intervalo do ano."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
-    rows = conn.execute(
-        f"""
-        SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
-               COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
-               COALESCE(SUM(i.valor),0) AS val
-        {_DESEMP_JOIN}
-        WHERE i.data_emissao IS NOT NULL
-          AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
-          AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
-          {_DESEMP_BASE_WHERE}
-          {filtro_sql}
-        GROUP BY m, COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
-        """,
-        params,
-    ).fetchall()
+    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    tipo_expr = """
+        CASE
+            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE' THEN 'SITE'
+            WHEN UPPER(TRIM(COALESCE(v.tipo, ''))) = 'INTERNO' THEN 'INTERNO'
+            ELSE 'EXTERNO'
+        END
+    """
+    if visao == "pedidos":
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%m', o.data_emissao) AS INTEGER) AS m,
+                   {tipo_expr} AS tipo,
+                   COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS val
+            FROM orders o
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            WHERE o.data_emissao IS NOT NULL
+              AND CAST(strftime('%Y', o.data_emissao) AS INTEGER) = ?
+              AND CAST(strftime('%m', o.data_emissao) AS INTEGER) BETWEEN ? AND ?
+              AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+              {site_cond}
+              {filtro_sql}
+            GROUP BY m, {tipo_expr}
+            """,
+            params,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
+                   {tipo_expr} AS tipo,
+                   COALESCE(SUM(i.valor), 0) AS val
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            LEFT JOIN customers c ON c.id = i.cliente_id
+            WHERE i.data_emissao IS NOT NULL
+              AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
+              AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
+              {site_cond}
+              {filtro_sql}
+            GROUP BY m, {tipo_expr}
+            """,
+            params,
+        ).fetchall()
     out: Dict[int, Dict[str, float]] = {
-        m: {"INTERNO": 0.0, "EXTERNO": 0.0} for m in range(mes_ini, mes_fim + 1)
+        m: {"INTERNO": 0.0, "EXTERNO": 0.0, "SITE": 0.0} for m in range(mes_ini, mes_fim + 1)
     }
     for r in rows:
         m = int(r["m"] or 0)
         if m not in out:
             continue
         tipo = str(r["tipo"] or "EXTERNO").upper()
-        if tipo == "INTERNO":
-            out[m]["INTERNO"] = float(r["val"] or 0)
-        elif tipo == "EXTERNO":
-            out[m]["EXTERNO"] = float(r["val"] or 0)
+        if tipo in out[m]:
+            out[m][tipo] = float(r["val"] or 0)
     return out
 
 
 def _fat_por_equipe(
-    conn, d0: date, d1: date, filtro_sql: str = "", filtro_params: Optional[list] = None
+    conn,
+    d0: date,
+    d1: date,
+    filtro_sql: str = "",
+    filtro_params: Optional[list] = None,
+    visao: str = "faturamento",
+    mostrar_site: bool = False,
 ) -> dict:
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
-    rows = conn.execute(
-        f"""
-        SELECT COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO') AS tipo,
-               COALESCE(SUM(i.valor),0) AS val
-        {_DESEMP_JOIN}
-        WHERE i.data_emissao IS NOT NULL
-          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
-          {_DESEMP_BASE_WHERE}
-          {filtro_sql}
-        GROUP BY COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
-        """,
-        params,
-    ).fetchall()
-    out = {"INTERNO": 0.0, "EXTERNO": 0.0}
+    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    tipo_expr = """
+        CASE
+            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE' THEN 'SITE'
+            WHEN UPPER(TRIM(COALESCE(v.tipo, ''))) = 'INTERNO' THEN 'INTERNO'
+            ELSE 'EXTERNO'
+        END
+    """
+    if visao == "pedidos":
+        rows = conn.execute(
+            f"""
+            SELECT {tipo_expr} AS tipo,
+                   COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS val
+            FROM orders o
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            WHERE o.data_emissao IS NOT NULL
+              AND date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+              {site_cond}
+              {filtro_sql}
+            GROUP BY {tipo_expr}
+            """,
+            params,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT {tipo_expr} AS tipo,
+                   COALESCE(SUM(i.valor), 0) AS val
+            FROM invoices i
+            LEFT JOIN vendors v ON v.id = i.vendor_id
+            LEFT JOIN customers c ON c.id = i.cliente_id
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              {site_cond}
+              {filtro_sql}
+            GROUP BY {tipo_expr}
+            """,
+            params,
+        ).fetchall()
+    out = {"INTERNO": 0.0, "EXTERNO": 0.0, "SITE": 0.0}
     for r in rows:
         tipo = str(r["tipo"] or "EXTERNO").upper()
-        if tipo == "INTERNO":
-            out["INTERNO"] = float(r["val"] or 0)
-        elif tipo == "EXTERNO":
-            out["EXTERNO"] = float(r["val"] or 0)
+        if tipo in out:
+            out[tipo] = float(r["val"] or 0)
     return out
 
 
@@ -9560,11 +9708,42 @@ def _delta_pct(atual: float, base: float) -> float:
 @app.route("/desempenho")
 @login_required
 def desempenho():
-    """Comparativo de faturamento entre dois intervalos de meses."""
+    """Comparativo de faturamento ou pedidos entre dois intervalos de meses."""
     user = get_current_user()
     if not user or user["role"] not in ["admin", "gestor"]:
         flash("Acesso negado.", "warning")
         return redirect(url_for("home"))
+
+    visao = (request.args.get("visao") or "faturamento").strip().lower()
+    if visao not in ("faturamento", "pedidos"):
+        visao = "faturamento"
+
+    mostrar_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
+        request.args.get("mostrar_site") in ("1", "true", "sim", "s")
+    )
+
+    def _build_desemp_url(new_visao: Optional[str] = None, toggle_site: bool = False) -> str:
+        params = dict(request.args)
+        if new_visao is not None:
+            params["visao"] = new_visao
+        elif "visao" not in params:
+            params["visao"] = visao
+
+        cur_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
+            request.args.get("mostrar_site") in ("1", "true", "sim", "s")
+        )
+        target_site = (not cur_site) if toggle_site else cur_site
+        if target_site:
+            params["site"] = "1"
+            params.pop("mostrar_site", None)
+        else:
+            params.pop("site", None)
+            params.pop("mostrar_site", None)
+        return url_for("desempenho", **params)
+
+    url_faturamento = _build_desemp_url(new_visao="faturamento")
+    url_pedidos = _build_desemp_url(new_visao="pedidos")
+    toggle_site_url = _build_desemp_url(toggle_site=True)
 
     hoje = date.today()
     anos = list(range(hoje.year, hoje.year - 8, -1))
@@ -9587,26 +9766,35 @@ def desempenho():
     d0_cmp, d1_cmp = _intervalo_meses_calendario(cmp_ano, cmp_mes_ini, cmp_mes_fim)
 
     filtros = _desempenho_filtros_request()
-    filtro_sql, filtro_params = _desempenho_filtro_sql(filtros)
+    filtro_alias = "o" if visao == "pedidos" else "i"
+    filtro_sql, filtro_params = _desempenho_filtro_sql(filtros, alias=filtro_alias)
 
     with conectar() as conn:
-        opcoes = _desempenho_opcoes_filtro(conn, filtros)
+        opcoes = _desempenho_opcoes_filtro(conn, filtros, include_site=mostrar_site, visao=visao)
         filtros_ativos = _desempenho_filtros_ativos(filtros)
         fat_ref, notas_ref, cli_ref, unid_ref = _soma_faturamento_periodo(
-            conn, d0_ref, d1_ref, filtro_sql, filtro_params
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
         fat_cmp, notas_cmp, cli_cmp, unid_cmp = _soma_faturamento_periodo(
-            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
-        mensal_ref = _fat_mensal_ano(conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params)
-        mensal_cmp = _fat_mensal_ano(conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params)
-        fat_eq_ref = _fat_por_equipe(conn, d0_ref, d1_ref, filtro_sql, filtro_params)
-        fat_eq_cmp = _fat_por_equipe(conn, d0_cmp, d1_cmp, filtro_sql, filtro_params)
+        mensal_ref = _fat_mensal_ano(
+            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+        )
+        mensal_cmp = _fat_mensal_ano(
+            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+        )
+        fat_eq_ref = _fat_por_equipe(
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+        )
+        fat_eq_cmp = _fat_por_equipe(
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+        )
         fat_mes_eq_ref = _fat_mensal_por_equipe(
-            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params
+            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
         fat_mes_eq_cmp = _fat_mensal_por_equipe(
-            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params
+            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
 
     ticket_ref = (fat_ref / notas_ref) if notas_ref > 0 else 0.0
@@ -9630,13 +9818,17 @@ def desempenho():
         (label_cmp, mensal_cmp),
     )
 
+    tipos_equipe = [("INTERNO", "Equipe interna"), ("EXTERNO", "Equipe externa")]
+    if mostrar_site:
+        tipos_equipe.append(("SITE", "Site"))
+
     max_eq = max(
-        fat_eq_ref["INTERNO"], fat_eq_ref["EXTERNO"],
-        fat_eq_cmp["INTERNO"], fat_eq_cmp["EXTERNO"],
-        1.0,
+        [fat_eq_ref.get(t, 0.0) for t, _ in tipos_equipe] +
+        [fat_eq_cmp.get(t, 0.0) for t, _ in tipos_equipe] +
+        [1.0]
     )
     equipes = []
-    for tipo, nome in (("INTERNO", "Equipe interna"), ("EXTERNO", "Equipe externa")):
+    for tipo, nome in tipos_equipe:
         v_ref = float(fat_eq_ref.get(tipo) or 0)
         v_cmp = float(fat_eq_cmp.get(tipo) or 0)
         equipes.append({
@@ -9652,51 +9844,87 @@ def desempenho():
     mes_fim_tab = max(ref_mes_fim, cmp_mes_fim)
     nomes_mes = dict(_MESES_PT_CURTO)
     tabela_meses = []
-    tot_ref_int = tot_ref_ext = tot_cmp_int = tot_cmp_ext = 0.0
+    tot_ref_int = tot_ref_ext = tot_ref_site = 0.0
+    tot_cmp_int = tot_cmp_ext = tot_cmp_site = 0.0
     for m in range(mes_ini_tab, mes_fim_tab + 1):
         in_ref = ref_mes_ini <= m <= ref_mes_fim
         in_cmp = cmp_mes_ini <= m <= cmp_mes_fim
         r_int = float(fat_mes_eq_ref.get(m, {}).get("INTERNO") or 0) if in_ref else None
         r_ext = float(fat_mes_eq_ref.get(m, {}).get("EXTERNO") or 0) if in_ref else None
+        r_site = float(fat_mes_eq_ref.get(m, {}).get("SITE") or 0) if in_ref else None
         c_int = float(fat_mes_eq_cmp.get(m, {}).get("INTERNO") or 0) if in_cmp else None
         c_ext = float(fat_mes_eq_cmp.get(m, {}).get("EXTERNO") or 0) if in_cmp else None
+        c_site = float(fat_mes_eq_cmp.get(m, {}).get("SITE") or 0) if in_cmp else None
+
         if r_int is not None:
             tot_ref_int += r_int
             tot_ref_ext += float(r_ext or 0)
+            tot_ref_site += float(r_site or 0)
         if c_int is not None:
             tot_cmp_int += c_int
             tot_cmp_ext += float(c_ext or 0)
+            tot_cmp_site += float(c_site or 0)
+
         var_int = _delta_pct(float(c_int or 0), float(r_int or 0)) if (in_ref and in_cmp) else None
         var_ext = _delta_pct(float(c_ext or 0), float(r_ext or 0)) if (in_ref and in_cmp) else None
+        var_site = _delta_pct(float(c_site or 0), float(r_site or 0)) if (in_ref and in_cmp) else None
         diff_ei = (float(c_ext or 0) - float(c_int or 0)) if in_cmp else None
+
         tabela_meses.append({
             "mes": nomes_mes.get(m, str(m)),
             "ref_int": r_int,
             "ref_ext": r_ext,
+            "ref_site": r_site,
             "cmp_int": c_int,
             "cmp_ext": c_ext,
+            "cmp_site": c_site,
             "var_int": var_int,
             "var_ext": var_ext,
+            "var_site": var_site,
             "diff_ei": diff_ei,
         })
     tabela_total = {
         "ref_int": tot_ref_int,
         "ref_ext": tot_ref_ext,
+        "ref_site": tot_ref_site,
         "cmp_int": tot_cmp_int,
         "cmp_ext": tot_cmp_ext,
+        "cmp_site": tot_cmp_site,
         "var_int": _delta_pct(tot_cmp_int, tot_ref_int),
         "var_ext": _delta_pct(tot_cmp_ext, tot_ref_ext),
+        "var_site": _delta_pct(tot_cmp_site, tot_ref_site),
         "diff_ei": tot_cmp_ext - tot_cmp_int,
     }
 
     body = render_template_string(
         r"""
-    <div class="mb-3">
-      <div class="h3 mb-1 fw-bold">Desempenho comercial</div>
-      <div class="muted small">Comparativo de faturamento entre dois intervalos de meses.</div>
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
+      <div>
+        <div class="h3 mb-1 fw-bold">Desempenho comercial</div>
+        <div class="muted small">
+          {% if visao == 'pedidos' %}
+            Comparativo de pedidos realizados entre dois intervalos de meses.
+          {% else %}
+            Comparativo de faturamento entre dois intervalos de meses.
+          {% endif %}
+        </div>
+      </div>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <a class="btn btn-sm {{ 'text-white fw-bold' if mostrar_site else 'btn-outline-secondary' }}" {% if mostrar_site %}style="background:#0e7490;border-color:#0e7490"{% endif %} href="{{ toggle_site_url }}">
+          <i class="bi {{ 'bi-check-square-fill' if mostrar_site else 'bi-square' }} me-1"></i>Mostrar Site
+        </a>
+        <nav class="dash-tabs" aria-label="Visão de desempenho">
+          <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_faturamento }}"><i class="bi bi-receipt me-1"></i>Faturamento</a>
+          <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_pedidos }}"><i class="bi bi-cart3 me-1"></i>Pedidos</a>
+        </nav>
+      </div>
     </div>
 
     <form method="get" class="mb-4" id="desempenhoFiltro">
+      <input type="hidden" name="visao" value="{{ visao }}">
+      {% if mostrar_site %}
+      <input type="hidden" name="site" value="1">
+      {% endif %}
       <div class="period-compare mb-3">
         <div class="period-compare-side cmp">
           <div class="label-row"><span class="dot"></span> Período de comparação</div>
@@ -9757,6 +9985,9 @@ def desempenho():
                   <option value="">Todas</option>
                   <option value="INTERNO" {% if filtros.equipe == 'INTERNO' %}selected{% endif %}>Interna</option>
                   <option value="EXTERNO" {% if filtros.equipe == 'EXTERNO' %}selected{% endif %}>Externa</option>
+                  {% if mostrar_site %}
+                  <option value="SITE" {% if filtros.equipe == 'SITE' %}selected{% endif %}>Site</option>
+                  {% endif %}
                 </select>
               </div>
               <div class="col-12 col-md-6 col-xl-3">
@@ -9803,7 +10034,7 @@ def desempenho():
               </div>
               <div class="col-12 col-md-6 col-xl-3 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary flex-grow-1"><i class="bi bi-check2 me-1"></i>Aplicar</button>
-                <a class="btn btn-light border" href="{{ url_for('desempenho', cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
+                <a class="btn btn-light border" href="{{ url_for('desempenho', visao=visao, site='1' if mostrar_site else None, cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
               </div>
             </div>
           </div>
@@ -9823,8 +10054,8 @@ def desempenho():
     <div class="dash-block dash-block--fat mb-3">
       <div class="dash-block-head mb-3">
         <div>
-          <div class="h5 fw-bold mb-0">Faturamento</div>
-          <div class="sub">Valor faturado no período</div>
+          <div class="h5 fw-bold mb-0">{% if visao == 'pedidos' %}Volume de pedidos{% else %}Faturamento{% endif %}</div>
+          <div class="sub">{% if visao == 'pedidos' %}Valor de pedidos no período{% else %}Valor faturado no período{% endif %}</div>
         </div>
       </div>
       <div class="row g-3">
@@ -9833,7 +10064,7 @@ def desempenho():
             <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
             <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(fat_cmp) }}</div>
-            <div class="kpi-meta">{{ notas_cmp }} notas</div>
+            <div class="kpi-meta">{{ notas_cmp }} {% if visao == 'pedidos' %}pedidos{% else %}notas{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -9841,7 +10072,7 @@ def desempenho():
             <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
             <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(fat_ref) }}</div>
-            <div class="kpi-meta">{{ notas_ref }} notas</div>
+            <div class="kpi-meta">{{ notas_ref }} {% if visao == 'pedidos' %}pedidos{% else %}notas{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -9858,8 +10089,8 @@ def desempenho():
     <div class="dash-block dash-block--fat mb-3">
       <div class="dash-block-head mb-3">
         <div>
-          <div class="h5 fw-bold mb-0">Quantidade faturada</div>
-          <div class="sub">Unidades vendidas no período</div>
+          <div class="h5 fw-bold mb-0">{% if visao == 'pedidos' %}Quantidade pedida{% else %}Quantidade faturada{% endif %}</div>
+          <div class="sub">{% if visao == 'pedidos' %}Unidades pedidas no período{% else %}Unidades vendidas no período{% endif %}</div>
         </div>
       </div>
       <div class="row g-3">
@@ -9894,7 +10125,7 @@ def desempenho():
       <div class="dash-block-head mb-3">
         <div>
           <div class="h5 fw-bold mb-0">Clientes ativos</div>
-          <div class="sub">Clientes distintos com faturamento no período</div>
+          <div class="sub">{% if visao == 'pedidos' %}Clientes distintos com pedidos no período{% else %}Clientes distintos com faturamento no período{% endif %}</div>
         </div>
       </div>
       <div class="row g-3">
@@ -9929,7 +10160,7 @@ def desempenho():
       <div class="dash-block-head mb-3">
         <div>
           <div class="h5 fw-bold mb-0">Ticket médio</div>
-          <div class="sub">Valor faturado ÷ quantidade de notas</div>
+          <div class="sub">{% if visao == 'pedidos' %}Valor total ÷ quantidade de pedidos{% else %}Valor faturado ÷ quantidade de notas{% endif %}</div>
         </div>
       </div>
       <div class="row g-3">
@@ -9938,7 +10169,7 @@ def desempenho():
             <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
             <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_cmp) }}</div>
-            <div class="kpi-meta">por nota</div>
+            <div class="kpi-meta">{% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -9946,7 +10177,7 @@ def desempenho():
             <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
             <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_ref) }}</div>
-            <div class="kpi-meta">por nota</div>
+            <div class="kpi-meta">{% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -9965,12 +10196,12 @@ def desempenho():
         <div class="dash-block desemp-chart-card w-100">
           <div class="dash-block-head mb-2">
             <div>
-              <div class="h5 fw-bold mb-0" style="color:#0e7490">Evolução do faturamento</div>
+              <div class="h5 fw-bold mb-0" style="color:#0e7490">{% if visao == 'pedidos' %}Evolução dos pedidos{% else %}Evolução do faturamento{% endif %}</div>
               <div class="sub">Distribuição mensal dos períodos selecionados</div>
             </div>
           </div>
           {% if chart_evol %}
-            <div class="text-center desemp-chart-body"><img src="data:image/png;base64,{{ chart_evol }}" alt="Evolução do faturamento" style="max-width:100%;height:auto"></div>
+            <div class="text-center desemp-chart-body"><img src="data:image/png;base64,{{ chart_evol }}" alt="{% if visao == 'pedidos' %}Evolução dos pedidos{% else %}Evolução do faturamento{% endif %}" style="max-width:100%;height:auto"></div>
           {% else %}
             <div class="muted small">Sem dados para o gráfico.</div>
           {% endif %}
@@ -10011,7 +10242,7 @@ def desempenho():
     <div class="dash-block mb-3">
       <div class="dash-block-head mb-3">
         <div>
-          <div class="h5 fw-bold mb-0" style="color:#0e7490">Faturamento mensal — Interno × Externo</div>
+          <div class="h5 fw-bold mb-0" style="color:#0e7490">{% if visao == 'pedidos' %}Pedidos mensais{% else %}Faturamento mensal{% endif %} — Interno × Externo</div>
           <div class="sub">Cada linha é um mês. Compare os valores do time interno e externo nas colunas lado a lado.</div>
         </div>
         <div class="dash-pill dash-pill--fat"><i class="bi bi-people"></i> Interno × externo</div>
@@ -10021,17 +10252,26 @@ def desempenho():
           <thead>
             <tr>
               <th rowspan="2" class="fat-mes-th-mes">Mês</th>
-              <th colspan="2" class="text-center fat-mes-th-cmp">{{ label_cmp }} — Comparação</th>
-              <th colspan="2" class="text-center fat-mes-th-ref">{{ label_ref }} — Referência</th>
+              <th colspan="{{ 3 if mostrar_site else 2 }}" class="text-center fat-mes-th-cmp">{{ label_cmp }} — Comparação</th>
+              <th colspan="{{ 3 if mostrar_site else 2 }}" class="text-center fat-mes-th-ref">{{ label_ref }} — Referência</th>
               <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time interno</th>
               <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time externo</th>
+              {% if mostrar_site %}
+              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>Site</th>
+              {% endif %}
               <th rowspan="2" class="text-center fat-mes-th-diff">Externo − Interno<br>na comparação (R$)</th>
             </tr>
             <tr>
               <th class="text-center fat-mes-th-cmp">Interno (R$)</th>
               <th class="text-center fat-mes-th-cmp">Externo (R$)</th>
+              {% if mostrar_site %}
+              <th class="text-center fat-mes-th-cmp">Site (R$)</th>
+              {% endif %}
               <th class="text-center fat-mes-th-ref">Interno (R$)</th>
               <th class="text-center fat-mes-th-ref">Externo (R$)</th>
+              {% if mostrar_site %}
+              <th class="text-center fat-mes-th-ref">Site (R$)</th>
+              {% endif %}
             </tr>
           </thead>
           <tbody>
@@ -10040,8 +10280,14 @@ def desempenho():
               <td class="fw-bold">{{ r.mes }}</td>
               <td class="text-center">{{ format_brl(r.cmp_int) if r.cmp_int is not none else '—' }}</td>
               <td class="text-center">{{ format_brl(r.cmp_ext) if r.cmp_ext is not none else '—' }}</td>
+              {% if mostrar_site %}
+              <td class="text-center">{{ format_brl(r.cmp_site) if r.cmp_site is not none else '—' }}</td>
+              {% endif %}
               <td class="text-center">{{ format_brl(r.ref_int) if r.ref_int is not none else '—' }}</td>
               <td class="text-center">{{ format_brl(r.ref_ext) if r.ref_ext is not none else '—' }}</td>
+              {% if mostrar_site %}
+              <td class="text-center">{{ format_brl(r.ref_site) if r.ref_site is not none else '—' }}</td>
+              {% endif %}
               <td class="text-center">
                 {% if r.var_int is not none %}
                   <span class="fat-mes-var {{ 'up' if r.var_int >= 0 else 'down' }}">{{ '↗' if r.var_int >= 0 else '↘' }} {{ '%.0f'|format(r.var_int) }}%</span>
@@ -10052,6 +10298,13 @@ def desempenho():
                   <span class="fat-mes-var {{ 'up' if r.var_ext >= 0 else 'down' }}">{{ '↗' if r.var_ext >= 0 else '↘' }} {{ '%.0f'|format(r.var_ext) }}%</span>
                 {% else %}—{% endif %}
               </td>
+              {% if mostrar_site %}
+              <td class="text-center">
+                {% if r.var_site is not none %}
+                  <span class="fat-mes-var {{ 'up' if r.var_site >= 0 else 'down' }}">{{ '↗' if r.var_site >= 0 else '↘' }} {{ '%.0f'|format(r.var_site) }}%</span>
+                {% else %}—{% endif %}
+              </td>
+              {% endif %}
               <td class="text-end {{ 'text-success' if (r.diff_ei or 0) >= 0 else 'text-danger' }}">
                 {% if r.diff_ei is not none %}{{ '%s%s'|format('+' if r.diff_ei >= 0 else '', format_brl(r.diff_ei)) }}{% else %}—{% endif %}
               </td>
@@ -10063,14 +10316,25 @@ def desempenho():
               <td class="fw-bold">TOTAL</td>
               <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_int) }}</td>
               <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_ext) }}</td>
+              {% if mostrar_site %}
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_site) }}</td>
+              {% endif %}
               <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_int) }}</td>
               <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_ext) }}</td>
+              {% if mostrar_site %}
+              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_site) }}</td>
+              {% endif %}
               <td class="text-center">
                 <span class="fat-mes-var {{ 'up' if tabela_total.var_int >= 0 else 'down' }}">{{ '↗' if tabela_total.var_int >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_int) }}%</span>
               </td>
               <td class="text-center">
                 <span class="fat-mes-var {{ 'up' if tabela_total.var_ext >= 0 else 'down' }}">{{ '↗' if tabela_total.var_ext >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_ext) }}%</span>
               </td>
+              {% if mostrar_site %}
+              <td class="text-center">
+                <span class="fat-mes-var {{ 'up' if tabela_total.var_site >= 0 else 'down' }}">{{ '↗' if tabela_total.var_site >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_site) }}%</span>
+              </td>
+              {% endif %}
               <td class="text-end fw-bold {{ 'text-success' if tabela_total.diff_ei >= 0 else 'text-danger' }}">
                 {{ '%s%s'|format('+' if tabela_total.diff_ei >= 0 else '', format_brl(tabela_total.diff_ei)) }}
               </td>
@@ -10120,9 +10384,13 @@ def desempenho():
         filtros_ativos=filtros_ativos,
         opcoes=opcoes,
         format_brl=format_brl,
+        visao=visao,
+        mostrar_site=mostrar_site,
+        url_faturamento=url_faturamento,
+        url_pedidos=url_pedidos,
+        toggle_site_url=toggle_site_url,
     )
     return render_page("Desempenho", body, "desempenho")
-
 
 @app.route("/orcamentos_detalhe")
 @login_required
