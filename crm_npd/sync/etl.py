@@ -274,7 +274,11 @@ def aplicar_carteira_anfarma(conn: sqlite3.Connection) -> int:
         marks = ",".join("?" for _ in anfarma_ids)
         if has_orders:
             movidos += conn.execute(
-                f"UPDATE orders SET vendor_id=? WHERE vendor_id IN ({marks})",
+                f"""
+                UPDATE orders SET vendor_id=?
+                WHERE vendor_id IN ({marks})
+                  AND UPPER(TRIM(COALESCE(origem_ref, ''))) <> 'HISTORICO'
+                """,
                 (joseane_id, *anfarma_ids),
             ).rowcount
         if has_invoices:
@@ -289,6 +293,7 @@ def aplicar_carteira_anfarma(conn: sqlite3.Connection) -> int:
             UPDATE orders SET vendor_id=?
             WHERE vendor_id <> ?
               AND UPPER(COALESCE(vendor_nome_ref,'')) LIKE ?
+              AND UPPER(TRIM(COALESCE(origem_ref, ''))) <> 'HISTORICO'
             """,
             (joseane_id, joseane_id, like),
         ).rowcount
@@ -318,6 +323,10 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict, origem_r
         codigo = _txt(row.get("CODCLI"))
         fantasia = _txt(row.get("FANTASIA")) or _txt(row.get("CLI_NOME"))
         vendor_nome = vendedor_pedido(row)
+        if origem_ref == "HISTORICO":
+            rep = _txt(row.get("REP_NOME")) or _txt(row.get("REPRESENTATE")) or _txt(row.get("REPRESENTANTE"))
+            if "SITE" in rep.upper():
+                vendor_nome = "SITE"
         vendor_id = m.upsert_vendor(conn, carteira_do_responsavel(vendor_nome), cache=cache)
         qtde = _num(row.get("QTDE"))
         preco = _num(row.get("PRECO"))

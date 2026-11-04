@@ -2456,7 +2456,6 @@ def render_page(title: str, body_html: str, active: str) -> str:
 # -----------------------------
 SITE_VENDOR_NAMES = {
     "SITE",
-    "AMANDA IZABEL BILYK",
     "ANA BEATRIZ ABDU MENEZES",
 }
 
@@ -2472,11 +2471,14 @@ def force_site_vendor_types(conn: sqlite3.Connection) -> None:
         ensure_vendor_type_column(conn)
         # SITE precisa ficar fora das metas Interno/Externo.
         # Inclui a linha sintética "SITE" e as duas vendedoras do canal SITE.
-        for nome in ("SITE", "AMANDA IZABEL BILYK", "ANA BEATRIZ ABDU MENEZES"):
+        for nome in ("SITE", "ANA BEATRIZ ABDU MENEZES"):
             conn.execute(
                 "UPDATE vendors SET tipo='Site' WHERE UPPER(TRIM(COALESCE(nome,''))) = ?",
                 (nome,)
             )
+        conn.execute(
+            "UPDATE vendors SET tipo='Interno' WHERE UPPER(TRIM(COALESCE(nome,''))) = 'AMANDA IZABEL BILYK'"
+        )
         # Interno/Externo fica na tela de Vendedores; nao forcar ANFARMA no boot.
         conn.commit()
     except Exception:
@@ -2489,7 +2491,7 @@ def get_site_vendor_row(conn: sqlite3.Connection):
         FROM vendors
         WHERE UPPER(TRIM(COALESCE(nome, ''))) = 'SITE'
            OR UPPER(TRIM(COALESCE(codigo, ''))) = 'SITE'
-           OR UPPER(TRIM(COALESCE(nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES')
+           OR UPPER(TRIM(COALESCE(nome, ''))) = 'ANA BEATRIZ ABDU MENEZES'
            OR UPPER(TRIM(COALESCE(tipo, ''))) = 'SITE'
         ORDER BY id
         LIMIT 1

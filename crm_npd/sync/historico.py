@@ -114,7 +114,7 @@ def importar_historico_pedidos(
     Substitui qualquer pedido do periodo anterior ao corte.
     """
     from crm_npd import legacy_monolith as m
-    from crm_npd.sync.etl import _gravar_pedidos, aplicar_carteira_anfarma
+    from crm_npd.sync.etl import _gravar_pedidos, aplicar_carteira_anfarma, eh_responsavel_anfarma
 
     apply_safe_migrations(conn)
 
@@ -177,7 +177,17 @@ def importar_historico_pedidos(
             cli_nome = match_cli.group(2).strip()
 
         fantasia = str(r.get("FANTASIA") or "").strip() or cli_nome
-        responsavel = str(r.get("RESPONSAVEL") or "").strip() or str(r.get("REPRESENTATE") or "").strip()
+        responsavel_raw = str(r.get("RESPONSAVEL") or "").strip()
+        representante_raw = str(r.get("REPRESENTATE") or r.get("REPRESENTANTE") or "").strip()
+
+        # Regra 1: Quando o representante for Site, considerar como Site inves de pegar o responsavel
+        if "SITE" in representante_raw.upper():
+            responsavel_final = "SITE"
+        # Regra 2: Para o historico do Excel (fev/2026 para tras), ANFARMA vai para Paola de Mattos Francisco
+        elif eh_responsavel_anfarma(responsavel_raw) or "05975" in responsavel_raw:
+            responsavel_final = "05239 - PAOLA DE MATTOS FRANCISCO"
+        else:
+            responsavel_final = responsavel_raw or representante_raw
 
         entrega_iso = parse_br_date(r.get("ENTREGA_PEDIDO"))
         qtde = parse_num(r.get("QTDE_TOTAL"))
@@ -202,7 +212,8 @@ def importar_historico_pedidos(
             "CODCLI": codcli,
             "FANTASIA": fantasia,
             "CLI_NOME": cli_nome,
-            "RESPONSAVEL": responsavel,
+            "RESPONSAVEL": responsavel_final,
+            "REPRESENTATE": representante_raw,
             "QTDE": qtde,
             "PRECO": preco,
             "VALOR_ITEM": valor_item,

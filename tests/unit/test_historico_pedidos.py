@@ -129,3 +129,82 @@ def test_importar_historico_pedidos_isolado(tmp_path: Path) -> None:
     assert res2["pedidos_gravados"] == 2
     rows2 = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
     assert rows2 == 2
+
+
+def test_regras_vendedor_historico_anfarma_site_bilyk(tmp_path: Path) -> None:
+    """Verifica as 3 regras: ANFARMA -> Paola, Rep=SITE -> SITE, Amanda Bilyk -> Interno."""
+    csv_file = tmp_path / "historicopedidos_regras.csv"
+    csv_content = (
+        "SITUACAO;TIPO_ITEM_PEDIDO;CONDICAO_ENTREGA;MOTIVO;FANTASIA;EMISSAO_PEDIDO;ENTREGA_PEDIDO;PEDIDO;MEDIDA;VALOR_ITEM;QTDE_TOTAL;REPRESENTATE;RESPONSAVEL;CIDADE;PAPEL;GRUPO;CLIENTE;OBS;UF;PRECO;VALOR_PED;CODIGO;DESCRICAO;DDD;TELEFONE;EMAIL\n"
+        "Faturado;Normal;00 - DIA;;CLIENTE 1;10/01/2024;15/01/2024;101;22x30x12;1000;500;00022 - SITE;05046 - AMANDA IZABEL BILYK;CIDADE A;PAPEL;SACOLAS;01 - CLI 1;;SC;2.00;1000;01;PROD;48;999;e1\n"
+        "Faturado;Normal;00 - DIA;;CLIENTE 2;12/01/2024;15/01/2024;102;22x30x12;2000;1000;05046 - AMANDA IZABEL BILYK;05046 - AMANDA IZABEL BILYK;CIDADE B;PAPEL;SACOLAS;02 - CLI 2;;SC;2.00;2000;02;PROD;48;999;e2\n"
+        "Faturado;Normal;00 - DIA;;CLIENTE 3;14/01/2024;15/01/2024;103;22x30x12;3000;1500;05975 - REP;05975 - ASSOCIACAO NACIONAL DE FARMACEUTICOS MAGISTRAIS ANFARMA;CIDADE C;PAPEL;SACOLAS;03 - CLI 3;;SC;2.00;3000;03;PROD;48;999;e3\n"
+    )
+    csv_file.write_text(csv_content, encoding="cp1252")
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, nome TEXT, fantasia TEXT, cidade TEXT, uf TEXT, created_at TEXT, updated_at TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, nome TEXT, tipo TEXT, ativo INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT);
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id INTEGER,
+            pedido TEXT,
+            data_emissao TEXT,
+            cliente_id INTEGER,
+            vendor_id INTEGER,
+            valor REAL,
+            quantidade REAL,
+            raw_json TEXT,
+            created_at TEXT,
+            medida_ref TEXT,
+            cliente_nome_ref TEXT,
+            vendor_nome_ref TEXT,
+            dedupe_key TEXT UNIQUE,
+            condicao_entrega TEXT,
+            is_jit INTEGER DEFAULT 0,
+            rede_nome TEXT,
+            rede_key TEXT,
+            grupo_ref TEXT,
+            tipo_item_ref TEXT,
+            papel_ref TEXT,
+            preco_ref REAL,
+            valor_item_ref REAL,
+            situacao_pedido TEXT,
+            motivo_pedido TEXT,
+            desc_motivo_pedido TEXT,
+            pedido_cancelado INTEGER DEFAULT 0,
+            entrega_pedido TEXT,
+            produto_codigo_ref TEXT,
+            produto_ref TEXT,
+            observacao_ref TEXT,
+            cidade TEXT,
+            uf TEXT,
+            origem_ref TEXT
+        );
+    """)
+
+    # Amanda inicializada como Interno
+    conn.execute("INSERT INTO vendors (codigo, nome, tipo) VALUES ('05046', 'AMANDA IZABEL BILYK', 'Interno')")
+    conn.execute("INSERT INTO vendors (codigo, nome, tipo) VALUES ('05239', 'PAOLA DE MATTOS FRANCISCO', 'Interno')")
+    conn.execute("INSERT INTO vendors (codigo, nome, tipo) VALUES ('00022', 'SITE', 'Site')")
+    conn.commit()
+
+    importar_historico_pedidos(conn, path=csv_file, corte="2026-03-01")
+
+    # Pedido 101: Representante é SITE -> deve ir para o SITE
+    p1 = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '00101'").fetchone()
+    assert p1["v_nome"] == "SITE"
+    assert p1["v_tipo"] == "Site"
+
+    # Pedido 102: Amanda Bilyk com rep nao-site -> fica com Amanda Bilyk (tipo Interno)
+    p2 = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '00102'").fetchone()
+    assert "BILYK" in p2["v_nome"].upper()
+    assert p2["v_tipo"] == "Interno"
+
+    # Pedido 103: ANFARMA -> deve ir para Paola de Mattos Francisco (tipo Interno)
+    p3 = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '00103'").fetchone()
+    assert "PAOLA" in p3["v_nome"].upper()
+    assert p3["v_tipo"] == "Interno"

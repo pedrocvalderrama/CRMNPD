@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_app():
+    legacy = importlib.import_module('crm_npd.legacy_monolith')
+    if getattr(legacy.app, "_bootstrap_completed", False) or getattr(legacy.app, "_got_first_request", False):
+        return legacy.app
     aplicar_env()
     configurar_logging()
     legacy = importlib.import_module('crm_npd.legacy_monolith')
@@ -34,6 +37,7 @@ def create_app():
     registrar_blueprints(legacy.app)
     registrar_rotas(legacy)
     refresh_runtime_version(legacy)
+    legacy.app._bootstrap_completed = True
     try:
         from crm_npd.sync.cdc import iniciar_cdc_em_background
         from crm_npd.sync.fonte import usando_firebird

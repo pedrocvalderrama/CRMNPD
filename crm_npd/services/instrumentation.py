@@ -5,6 +5,10 @@ from ..config import SLOW_REQUEST_MS
 
 
 def install_request_timing(app) -> None:
+    if getattr(app, "_request_timing_installed", False):
+        return
+    app._request_timing_installed = True
+
     @app.before_request
     def _mark_start():
         g._request_started_at = time.perf_counter()

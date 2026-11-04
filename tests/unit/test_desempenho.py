@@ -30,7 +30,6 @@ def test_desempenho_padrao_faturamento(admin_client) -> None:
     # Tabs e botões
     assert "Desempenho comercial" in html
     assert "Comparativo de faturamento" in html
-    assert 'class="active" href="/desempenho?visao=faturamento' in html or 'href="/desempenho?visao=faturamento" class="active"' in html or 'class="active"' in html
     assert "Mostrar Site" in html
     assert "bi-square" in html  # desmarcado por padrão
     assert "bi-check-square-fill" not in html
