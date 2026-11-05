@@ -2493,7 +2493,7 @@ def get_site_vendor_row(conn: sqlite3.Connection):
            OR UPPER(TRIM(COALESCE(codigo, ''))) = 'SITE'
            OR UPPER(TRIM(COALESCE(nome, ''))) = 'ANA BEATRIZ ABDU MENEZES'
            OR UPPER(TRIM(COALESCE(tipo, ''))) = 'SITE'
-        ORDER BY id
+        ORDER BY CASE WHEN UPPER(TRIM(COALESCE(nome, ''))) = 'SITE' THEN 0 ELSE 1 END, id
         LIMIT 1
     """).fetchone()
 
@@ -2521,6 +2521,9 @@ def sql_site_match(alias: str, vendor_id_field: str = 'vendor_id', vendor_nome_f
     if join_alias:
         parts.append(f"UPPER(TRIM(COALESCE({join_alias}.nome, ''))) = 'SITE'")
         parts.append(f"UPPER(TRIM(COALESCE({join_alias}.codigo, ''))) = 'SITE'")
+        parts.append(f"UPPER(TRIM(COALESCE({join_alias}.tipo, ''))) = 'SITE'")
+    else:
+        parts.append(f"COALESCE({alias}.{vendor_id_field},0) IN (SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(tipo, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(nome, ''))) = 'SITE')")
     return '(' + ' OR '.join(parts) + ')'
 
 

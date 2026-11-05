@@ -240,6 +240,38 @@ def _carimbar(conn: sqlite3.Connection, version: int, nome: str) -> None:
     )
 
 
+
+
+def _migrar_carteira_site(conn: sqlite3.Connection) -> None:
+    """Garante alinhamento do canal SITE: Amanda Bilyk como Interno e pedidos/NFs do Site atribuídos ao SITE."""
+    try:
+        conn.execute("UPDATE vendors SET tipo='Interno' WHERE UPPER(TRIM(COALESCE(nome,''))) = 'AMANDA IZABEL BILYK'")
+        conn.execute("UPDATE vendors SET tipo='Site' WHERE UPPER(TRIM(COALESCE(nome,''))) = 'SITE'")
+        site_row = conn.execute("SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(nome,''))) = 'SITE' ORDER BY id LIMIT 1").fetchone()
+        if site_row and site_row[0]:
+            site_id = int(site_row[0])
+            bilyk_row = conn.execute("SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(nome,''))) = 'AMANDA IZABEL BILYK' LIMIT 1").fetchone()
+            if bilyk_row and bilyk_row[0]:
+                bilyk_id = int(bilyk_row[0])
+                conn.execute(
+                    """
+                    UPDATE orders 
+                    SET vendor_id = ?, vendor_nome_ref = 'SITE' 
+                    WHERE vendor_id = ? AND UPPER(TRIM(COALESCE(origem_ref, ''))) = 'SISPLAN'
+                    """,
+                    (site_id, bilyk_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE invoices 
+                    SET vendor_id = ?, vendor_nome_ref = 'SITE' 
+                    WHERE vendor_id = ? AND strftime('%Y-%m', data_emissao) >= '2026-03'
+                    """,
+                    (site_id, bilyk_id),
+                )
+    except Exception:
+        pass
+
 def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
     """Aplica as migracoes pendentes em ordem.
 
@@ -276,5 +308,10 @@ def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
         apply_safe_migrations(conn)
         _carimbar(conn, 3, "relatorios_entrega_vendedores")
         aplicadas.append(3)
+        conn.commit()
+    if not _aplicada(conn, 4):
+        _migrar_carteira_site(conn)
+        _carimbar(conn, 4, "alinhamento_carteira_site")
+        aplicadas.append(4)
         conn.commit()
     return aplicadas

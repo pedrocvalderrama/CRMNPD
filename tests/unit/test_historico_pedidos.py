@@ -208,3 +208,152 @@ def test_regras_vendedor_historico_anfarma_site_bilyk(tmp_path: Path) -> None:
     p3 = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '00103'").fetchone()
     assert "PAOLA" in p3["v_nome"].upper()
     assert p3["v_tipo"] == "Interno"
+
+
+def test_regras_sisplan_site_rep_e_bilyk_interno() -> None:
+    """Garante que no Sisplan (mar/2026 em diante), pedidos e faturamento com REP=SITE vao para o SITE, mantendo Amanda Bilyk como Interno."""
+    from crm_npd.sync.etl import _gravar_pedidos, _gravar_faturamento
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, nome TEXT, fantasia TEXT, cidade TEXT, uf TEXT, created_at TEXT, updated_at TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, nome TEXT, tipo TEXT, ativo INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT);
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id INTEGER,
+            pedido TEXT,
+            data_emissao TEXT,
+            cliente_id INTEGER,
+            vendor_id INTEGER,
+            valor REAL,
+            quantidade REAL,
+            raw_json TEXT,
+            created_at TEXT,
+            medida_ref TEXT,
+            cliente_nome_ref TEXT,
+            vendor_nome_ref TEXT,
+            dedupe_key TEXT UNIQUE,
+            condicao_entrega TEXT,
+            is_jit INTEGER DEFAULT 0,
+            rede_nome TEXT,
+            rede_key TEXT,
+            grupo_ref TEXT,
+            tipo_item_ref TEXT,
+            papel_ref TEXT,
+            preco_ref REAL,
+            valor_item_ref REAL,
+            situacao_pedido TEXT,
+            motivo_pedido TEXT,
+            desc_motivo_pedido TEXT,
+            pedido_cancelado INTEGER DEFAULT 0,
+            entrega_pedido TEXT,
+            produto_codigo_ref TEXT,
+            produto_ref TEXT,
+            observacao_ref TEXT,
+            cidade TEXT,
+            uf TEXT,
+            origem_ref TEXT
+        );
+        CREATE TABLE invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id INTEGER,
+            numero TEXT,
+            data_emissao TEXT,
+            cliente_id INTEGER,
+            vendor_id INTEGER,
+            valor REAL,
+            quantidade REAL,
+            pedido TEXT,
+            produto TEXT,
+            formato TEXT,
+            created_at TEXT,
+            medida_ref TEXT,
+            cliente_nome_ref TEXT,
+            vendor_nome_ref TEXT,
+            dedupe_key TEXT UNIQUE,
+            is_jit INTEGER DEFAULT 0,
+            rede_nome TEXT,
+            rede_key TEXT,
+            grupo_ref TEXT,
+            tipo_item_ref TEXT,
+            papel_ref TEXT,
+            preco_ref REAL,
+            valor_item_ref REAL,
+            produto_codigo_ref TEXT,
+            origem_ref TEXT
+        );
+    """)
+
+    conn.execute("INSERT INTO vendors (codigo, nome, tipo) VALUES ('05046', 'AMANDA IZABEL BILYK', 'Interno')")
+    conn.execute("INSERT INTO vendors (codigo, nome, tipo) VALUES ('00022', 'SITE', 'Site')")
+    conn.commit()
+
+    agora = m.now_iso()
+    cache = m.build_import_entity_cache(conn)
+
+    pedidos_rows = [
+        # Pedido do Sisplan onde responsavel e Amanda Bilyk, mas representante e SITE
+        {
+            "PEDIDO": "23128",
+            "DT_EMISSAO": "2026-10-01",
+            "CODCLI": "08695",
+            "CLI_NOME": "CLIENTE WEB",
+            "RESPONSAVEL": "05046 - AMANDA IZABEL BILYK",
+            "REP_NOME": "SITE",
+            "CODREP": "00022",
+            "VALOR_ITEM": 360.0,
+            "QTDE": 100,
+            "PRECO": 3.6,
+            "SITUACAO": "Normal",
+            "CONDICAO_ENTREGA": "01 - PADRAO",
+        },
+        # Pedido do Sisplan onde Amanda e vendedora interna direta (rep nao e site)
+        {
+            "PEDIDO": "23129",
+            "DT_EMISSAO": "2026-10-02",
+            "CODCLI": "08696",
+            "CLI_NOME": "CLIENTE INTERNO",
+            "RESPONSAVEL": "05046 - AMANDA IZABEL BILYK",
+            "REP_NOME": "AMANDA IZABEL BILYK",
+            "CODREP": "05046",
+            "VALOR_ITEM": 500.0,
+            "QTDE": 200,
+            "PRECO": 2.5,
+            "SITUACAO": "Normal",
+            "CONDICAO_ENTREGA": "01 - PADRAO",
+        },
+    ]
+
+    _gravar_pedidos(conn, m, pedidos_rows, agora, cache, origem_ref="SISPLAN")
+
+    p_site = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '23128'").fetchone()
+    assert p_site["v_nome"] == "SITE"
+    assert p_site["v_tipo"] == "Site"
+
+    p_interno = conn.execute("SELECT o.*, v.nome as v_nome, v.tipo as v_tipo FROM orders o JOIN vendors v ON v.id = o.vendor_id WHERE o.pedido = '23129'").fetchone()
+    assert "BILYK" in p_interno["v_nome"].upper()
+    assert p_interno["v_tipo"] == "Interno"
+
+    fat_rows = [
+        # Nota do pedido do site
+        {
+            "FATURA": "99001",
+            "DT_EMISSAO": "2026-10-05",
+            "CODCLI": "08695",
+            "CLI_NOME": "CLIENTE WEB",
+            "PEDIDO": "23128",
+            "VALOR_LIQ": 360.0,
+            "QTDE": 100,
+            "PRECO": 3.6,
+            "REP_NOME": "SITE",
+            "CODREP": "00022",
+        },
+    ]
+    _gravar_faturamento(conn, m, fat_rows, agora, cache)
+
+    f_site = conn.execute("SELECT i.*, v.nome as v_nome, v.tipo as v_tipo FROM invoices i JOIN vendors v ON v.id = i.vendor_id WHERE i.numero = '99001'").fetchone()
+    assert f_site["v_nome"] == "SITE"
+    assert f_site["v_tipo"] == "Site"

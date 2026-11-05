@@ -323,10 +323,9 @@ def _gravar_pedidos(conn, m, rows: list[dict], agora: str, cache: dict, origem_r
         codigo = _txt(row.get("CODCLI"))
         fantasia = _txt(row.get("FANTASIA")) or _txt(row.get("CLI_NOME"))
         vendor_nome = vendedor_pedido(row)
-        if origem_ref == "HISTORICO":
-            rep = _txt(row.get("REP_NOME")) or _txt(row.get("REPRESENTATE")) or _txt(row.get("REPRESENTANTE"))
-            if "SITE" in rep.upper():
-                vendor_nome = "SITE"
+        rep = _txt(row.get("REP_NOME")) or _txt(row.get("REPRESENTATE")) or _txt(row.get("REPRESENTANTE")) or _txt(row.get("CODREP"))
+        if "SITE" in rep.upper() or rep.strip() == "00022":
+            vendor_nome = "SITE"
         vendor_id = m.upsert_vendor(conn, carteira_do_responsavel(vendor_nome), cache=cache)
         qtde = _num(row.get("QTDE"))
         preco = _num(row.get("PRECO"))
@@ -441,7 +440,7 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
         pedido = _txt(row.get("PEDIDO"))
         origem = vendedor_faturamento(row)
         pedido_vendor_id, pedido_vendor_nome = _lookup_vendor_pedido(conn, pedido, cache_pedidos)
-        vendor_nome = pedido_vendor_nome or origem
+        rep = _txt(row.get("REP_NOME")) or _txt(row.get("REPRESENTATE")) or _txt(row.get("REPRESENTANTE")) or _txt(row.get("CODREP"))
         produto = _txt(row.get("DESCRICAO"))
         produto_codigo = _txt(row.get("CODIGO"))
         qtde = _num(row.get("QTDE"))
@@ -453,11 +452,17 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
         rede_nome = _txt(row.get("REDE_NOME"))
         rede_key = _rede_key(_txt(row.get("REDE_CODIGO")))
         cliente_id = m.upsert_customer(conn, fantasia, fantasia, codigo_hint=codigo, cache=cache)
-        if eh_responsavel_anfarma(origem) or eh_responsavel_anfarma(vendor_nome):
+        if "SITE" in rep.upper() or rep.strip() == "00022" or (pedido_vendor_nome and "SITE" in pedido_vendor_nome.upper()):
+            vendor_nome = "SITE"
+            vendor_id = m.upsert_vendor(conn, "SITE", cache=cache)
+        elif eh_responsavel_anfarma(origem) or eh_responsavel_anfarma(pedido_vendor_nome or origem):
             vendor_id = m.upsert_vendor(conn, LABEL_JOSEANE, cache=cache)
             if eh_responsavel_anfarma(origem):
                 vendor_nome = origem
+            else:
+                vendor_nome = pedido_vendor_nome or origem
         else:
+            vendor_nome = pedido_vendor_nome or origem
             vendor_id = pedido_vendor_id or m.upsert_vendor(conn, vendor_nome, cache=cache)
         dedupe = m.build_dedupe_key(
             tipo="FATURAMENTO",
