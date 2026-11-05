@@ -2512,18 +2512,33 @@ def is_site_vendor_id(conn: sqlite3.Connection, vendor_id: Optional[int]) -> boo
     return (str(row["tipo"] or "").strip().upper() == "SITE") or is_site_vendor_name(row["nome"] or row["codigo"] or "")
 
 
-def sql_site_match(alias: str, vendor_id_field: str = 'vendor_id', vendor_nome_field: Optional[str] = 'vendor_nome_ref', join_alias: Optional[str] = 'v', responsavel_field: Optional[str] = None) -> str:
+def sql_site_match(alias: str, vendor_id_field: str = 'vendor_id', vendor_nome_field: Optional[str] = 'vendor_nome_ref', join_alias: Optional[str] = 'v', responsavel_field: Optional[str] = None, data_field: Optional[str] = None) -> str:
     parts = [f"(? > 0 AND COALESCE({alias}.{vendor_id_field},0) = ?)"]
     if vendor_nome_field:
         parts.append(f"UPPER(TRIM(COALESCE({alias}.{vendor_nome_field}, ''))) = 'SITE'")
     if responsavel_field:
         parts.append(f"UPPER(TRIM(COALESCE({alias}.{responsavel_field}, ''))) = 'SITE'")
+    if data_field:
+        df = data_field
+    elif alias.lower() in ('l', 'liq', 'liquidez'):
+        df = f"{alias}.data_pagto"
+    else:
+        df = f"{alias}.data_emissao"
+    is_invoice_or_liquidez = (alias.lower() in ('i', 'l', 'nf', 'fat', 'inv', 'invoices', 'liquidez'))
     if join_alias:
         parts.append(f"UPPER(TRIM(COALESCE({join_alias}.nome, ''))) = 'SITE'")
         parts.append(f"UPPER(TRIM(COALESCE({join_alias}.codigo, ''))) = 'SITE'")
         parts.append(f"UPPER(TRIM(COALESCE({join_alias}.tipo, ''))) = 'SITE'")
+        if is_invoice_or_liquidez:
+            parts.append(f"(date({df}) < '2026-03-01' AND UPPER(TRIM(COALESCE({join_alias}.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))")
+        else:
+            parts.append(f"(date({df}) < '2026-03-01' AND UPPER(TRIM(COALESCE({join_alias}.nome, ''))) = 'ANA BEATRIZ ABDU MENEZES')")
     else:
         parts.append(f"COALESCE({alias}.{vendor_id_field},0) IN (SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(tipo, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(nome, ''))) = 'SITE')")
+        if is_invoice_or_liquidez:
+            parts.append(f"(date({df}) < '2026-03-01' AND COALESCE({alias}.{vendor_id_field},0) IN (SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES')))")
+        else:
+            parts.append(f"(date({df}) < '2026-03-01' AND COALESCE({alias}.{vendor_id_field},0) IN (SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(nome, ''))) = 'ANA BEATRIZ ABDU MENEZES'))")
     return '(' + ' OR '.join(parts) + ')'
 
 
@@ -2629,10 +2644,15 @@ def sql_pedidos_realizados_excel_cond(alias: str = "o", join_alias: str = "v") -
     )
 
 
-def sql_site_exclusion_cond(join_alias: str = "v") -> str:
-    """Exclui SITE quando a tela é de time interno/externo."""
+def sql_site_exclusion_cond(join_alias: str = "v", date_col: Optional[str] = None) -> str:
+    """Exclui SITE quando a tela é de time interno/externo.
+    Para datas anteriores a março/2026, também exclui Amanda Bilyk e Ana Beatriz (regra histórica do Site).
+    """
     j = join_alias
-    return f"COALESCE(UPPER(TRIM({j}.nome)), '') <> 'SITE' AND COALESCE(UPPER(TRIM({j}.tipo)), '') <> 'SITE'"
+    cond = f"COALESCE(UPPER(TRIM({j}.nome)), '') <> 'SITE' AND COALESCE(UPPER(TRIM({j}.tipo)), '') <> 'SITE'"
+    if date_col:
+        cond += f" AND NOT (date({date_col}) < '2026-03-01' AND UPPER(TRIM(COALESCE({j}.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))"
+    return f"({cond})" 
 
 
 def pedidos_oficiais_summary_sql(start_param: str = "?", end_param: str = "?", vendor_filter: str = "", include_site: bool = True) -> str:
@@ -7528,7 +7548,10 @@ def _query_dashboard_faturamento_periodo(
                     '-'
                 ) AS vendedor,
                 CASE
-                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
+                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE'
+                      OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE'
+                      OR (date(i.data_emissao) < '2026-03-01' AND UPPER(TRIM(COALESCE(v.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))
+                    THEN 'SITE'
                     ELSE COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
                 END AS canal,
                 COALESCE(NULLIF(TRIM(i.grupo_ref), ''), '') AS grupo,
@@ -7706,7 +7729,10 @@ def dashboard():
         rows_fat = conn.execute("""
             SELECT
                 CASE
-                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE' OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE' THEN 'SITE'
+                    WHEN COALESCE(UPPER(TRIM(v.nome)), '') = 'SITE'
+                      OR COALESCE(UPPER(TRIM(v.tipo)), '') = 'SITE'
+                      OR (date(i.data_emissao) < '2026-03-01' AND UPPER(TRIM(COALESCE(v.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))
+                    THEN 'SITE'
                     ELSE COALESCE(UPPER(TRIM(v.tipo)), 'EXTERNO')
                 END AS tipo,
                 COALESCE(SUM(i.valor), 0) AS val,
@@ -7718,7 +7744,7 @@ def dashboard():
             LEFT JOIN vendors v ON v.id = i.vendor_id
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
-            GROUP BY tipo
+            GROUP BY 1
         """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
 
         f_map = {r["tipo"]: float(r["val"] or 0.0) for r in rows_fat}
@@ -7757,7 +7783,7 @@ def dashboard():
             LEFT JOIN vendors v ON v.id = o.vendor_id
             WHERE date(o.data_emissao) BETWEEN date(?) AND date(?)
               AND {sql_pedidos_realizados_excel_cond('o','v')}
-            GROUP BY tipo
+            GROUP BY 1
         """, (d0_ped.isoformat(), d1_ped.isoformat())).fetchall()
 
         p_map = {r["tipo"]: float(r["val"] or 0) for r in rows_ped_excel}
@@ -8144,6 +8170,7 @@ def dashboard():
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
               AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE'
               AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'
+              AND NOT (date(i.data_emissao) < '2026-03-01' AND UPPER(TRIM(COALESCE(v.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))
             GROUP BY v.id
             HAVING COALESCE(SUM(i.valor), 0) > 0
             ORDER BY valor DESC, nome ASC
@@ -9464,7 +9491,10 @@ def _soma_faturamento_periodo(
 ) -> tuple[float, int, int, float]:
     """Intervalo: valor, qtd (notas ou pedidos), clientes e unidades."""
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
-    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    site_cond = "" if mostrar_site else (
+        f"AND {sql_site_exclusion_cond('v')}" if visao == "pedidos"
+        else f"AND {sql_site_exclusion_cond('v', date_col='i.data_emissao')}"
+    )
     if visao == "pedidos":
         row = conn.execute(
             f"""
@@ -9522,7 +9552,10 @@ def _fat_mensal_ano(
 ) -> List[float]:
     """12 valores mensais; fora do intervalo selecionado = NaN."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
-    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    site_cond = "" if mostrar_site else (
+        f"AND {sql_site_exclusion_cond('v')}" if visao == "pedidos"
+        else f"AND {sql_site_exclusion_cond('v', date_col='i.data_emissao')}"
+    )
     if visao == "pedidos":
         rows = conn.execute(
             f"""
@@ -9580,10 +9613,16 @@ def _fat_mensal_por_equipe(
 ) -> Dict[int, Dict[str, float]]:
     """Mensal por time (INTERNO/EXTERNO/SITE) no intervalo do ano."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
-    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
-    tipo_expr = """
+    site_cond = "" if mostrar_site else (
+        f"AND {sql_site_exclusion_cond('v')}" if visao == "pedidos"
+        else f"AND {sql_site_exclusion_cond('v', date_col='i.data_emissao')}"
+    )
+    tipo_expr = f"""
         CASE
-            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE' THEN 'SITE'
+            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE'
+              OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE'
+              {f"OR (date(i.data_emissao) < '2026-03-01' AND UPPER(TRIM(COALESCE(v.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))" if visao != "pedidos" else ""}
+            THEN 'SITE'
             WHEN UPPER(TRIM(COALESCE(v.tipo, ''))) = 'INTERNO' THEN 'INTERNO'
             ELSE 'EXTERNO'
         END
@@ -9648,10 +9687,16 @@ def _fat_por_equipe(
     mostrar_site: bool = False,
 ) -> dict:
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
-    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
-    tipo_expr = """
+    site_cond = "" if mostrar_site else (
+        f"AND {sql_site_exclusion_cond('v')}" if visao == "pedidos"
+        else f"AND {sql_site_exclusion_cond('v', date_col='i.data_emissao')}"
+    )
+    tipo_expr = f"""
         CASE
-            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE' OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE' THEN 'SITE'
+            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE'
+              OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE'
+              {f"OR (date(i.data_emissao) < '2026-03-01' AND UPPER(TRIM(COALESCE(v.nome, ''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES'))" if visao != "pedidos" else ""}
+            THEN 'SITE'
             WHEN UPPER(TRIM(COALESCE(v.tipo, ''))) = 'INTERNO' THEN 'INTERNO'
             ELSE 'EXTERNO'
         END
