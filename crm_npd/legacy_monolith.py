@@ -9484,7 +9484,7 @@ def _soma_faturamento_periodo(
             f"""
             SELECT
                 COALESCE(SUM(i.valor), 0) AS val,
-                COUNT(*) AS qtd,
+                COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS qtd,
                 COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id, 0) > 0 THEN i.cliente_id END) AS clientes,
                 COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades
             FROM invoices i
