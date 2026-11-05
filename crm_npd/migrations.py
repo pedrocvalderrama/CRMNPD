@@ -272,6 +272,48 @@ def _migrar_carteira_site(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+def _unificar_regras_site(conn: sqlite3.Connection) -> None:
+    """Unifica regra do canal SITE:
+    - Pedidos com representante Site contam sempre para o Site independente do responsavel.
+    - Caso o representante nao seja Site, conta para o responsavel.
+    - Amanda Bilyk e Ana Beatriz quando nao forem representante Site contam como Interno.
+    """
+    try:
+        # 1. Amanda Bilyk e Ana Beatriz sao do time Interno
+        conn.execute("UPDATE vendors SET tipo='Interno' WHERE UPPER(TRIM(COALESCE(nome,''))) IN ('AMANDA IZABEL BILYK', 'ANA BEATRIZ ABDU MENEZES')")
+        conn.execute("UPDATE vendors SET tipo='Site' WHERE UPPER(TRIM(COALESCE(nome,''))) = 'SITE'")
+
+        site_row = conn.execute("SELECT id FROM vendors WHERE UPPER(TRIM(COALESCE(nome,''))) = 'SITE' ORDER BY id LIMIT 1").fetchone()
+        if site_row and site_row[0]:
+            site_id = int(site_row[0])
+            # 2. Toda NF cujo pedido associado pertenca ao SITE (representante Site) e atribuida ao SITE
+            conn.execute(
+                """
+                UPDATE invoices
+                SET vendor_id = ?, vendor_nome_ref = 'SITE'
+                WHERE pedido IN (
+                    SELECT DISTINCT pedido FROM orders WHERE vendor_id = ?
+                )
+                """,
+                (site_id, site_id),
+            )
+            # 3. Qualquer pedido com representante SITE fica com vendor_id = site_id
+            conn.execute(
+                """
+                UPDATE orders
+                SET vendor_id = ?, vendor_nome_ref = 'SITE'
+                WHERE (
+                    UPPER(TRIM(COALESCE(vendor_nome_ref, ''))) = 'SITE'
+                    OR UPPER(TRIM(COALESCE(origem_ref, ''))) = 'SITE'
+                )
+                """,
+                (site_id,),
+            )
+        conn.commit()
+    except Exception:
+        pass
+
+
 def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
     """Aplica as migracoes pendentes em ordem.
 
@@ -313,5 +355,10 @@ def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
         _migrar_carteira_site(conn)
         _carimbar(conn, 4, "alinhamento_carteira_site")
         aplicadas.append(4)
+        conn.commit()
+    if not _aplicada(conn, 5):
+        _unificar_regras_site(conn)
+        _carimbar(conn, 5, "unificar_regras_site_amanda_ana_beatriz")
+        aplicadas.append(5)
         conn.commit()
     return aplicadas
