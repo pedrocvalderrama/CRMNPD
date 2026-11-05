@@ -314,6 +314,70 @@ def _unificar_regras_site(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _atualizar_qtde_demo_por_pedidos(conn: sqlite3.Connection) -> None:
+    """Atualiza a quantidade de registros DEMO em invoices com base nos pedidos reais.
+
+    DEMO vem da tabela financeira RECEBER_001 onde QTDE entrava como 1.
+    Esta migracao busca a quantidade fisica real em orders e distribui proporcionalmente
+    ao valor de cada parcela do pedido.
+    """
+    try:
+        demos = conn.execute(
+            """
+            SELECT id, pedido, valor
+            FROM invoices
+            WHERE (tipo_item_ref = 'DEMO' OR grupo_ref = 'DEMO' OR numero LIKE 'DEMO-%')
+              AND pedido IS NOT NULL AND TRIM(pedido) <> ''
+            """
+        ).fetchall()
+        if not demos:
+            return
+
+        from collections import defaultdict
+        by_ped = defaultdict(list)
+        for d in demos:
+            ped = (d["pedido"] or "").strip()
+            by_ped[ped].append(d)
+
+        updates = []
+        for ped, inv_list in by_ped.items():
+            ord_row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(quantidade), 0) AS tot_q,
+                    COALESCE(SUM(valor), 0) AS tot_v
+                FROM orders
+                WHERE TRIM(COALESCE(pedido, '')) = TRIM(?)
+                """,
+                (ped,),
+            ).fetchone()
+            tot_q = float(ord_row["tot_q"] or 0.0) if ord_row else 0.0
+            tot_v = float(ord_row["tot_v"] or 0.0) if ord_row else 0.0
+
+            if tot_q <= 0:
+                continue
+
+            for inv in inv_list:
+                v = float(inv["valor"] or 0.0)
+                if tot_v > 0 and v > 0:
+                    calc_q = round(v * (tot_q / tot_v), 2)
+                elif len(inv_list) > 0:
+                    calc_q = round(tot_q / len(inv_list), 2)
+                else:
+                    calc_q = round(tot_q, 2)
+                calc_p = round(v / calc_q, 4) if calc_q > 0 else v
+                updates.append((calc_q, calc_p, inv["id"]))
+
+        if updates:
+            conn.executemany(
+                "UPDATE invoices SET quantidade = ?, preco_ref = ? WHERE id = ?",
+                updates,
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
     """Aplica as migracoes pendentes em ordem.
 
@@ -360,5 +424,10 @@ def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
         _unificar_regras_site(conn)
         _carimbar(conn, 5, "unificar_regras_site_amanda_ana_beatriz")
         aplicadas.append(5)
+        conn.commit()
+    if not _aplicada(conn, 6):
+        _atualizar_qtde_demo_por_pedidos(conn)
+        _carimbar(conn, 6, "atualizar_qtde_demo_por_pedidos")
+        aplicadas.append(6)
         conn.commit()
     return aplicadas

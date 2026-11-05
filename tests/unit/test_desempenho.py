@@ -187,3 +187,49 @@ def test_ticket_medio_modo_nota_e_item() -> None:
     ticket_item = val / itens
     assert round(ticket_item, 2) == 66.67
 
+
+def test_migracao_qtde_demo_por_pedidos() -> None:
+    """Verifica que DEMO busca quantidade real do pedido e divide proporcionalmente entre parcelas."""
+    import sqlite3
+    from crm_npd.migrations import _atualizar_qtde_demo_por_pedidos
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            pedido TEXT,
+            quantidade REAL,
+            valor REAL
+        );
+        CREATE TABLE invoices (
+            id INTEGER PRIMARY KEY,
+            numero TEXT,
+            tipo_item_ref TEXT,
+            grupo_ref TEXT,
+            pedido TEXT,
+            valor REAL,
+            quantidade REAL,
+            preco_ref REAL
+        );
+    """)
+
+    # Pedido 1001 com 6000 sacolas e R$ 3000,00 de valor total
+    conn.execute("INSERT INTO orders (pedido, quantidade, valor) VALUES ('1001', 6000.0, 3000.0)")
+    # DEMO com 2 parcelas de R$ 1500 cada (50% cada)
+    conn.execute("INSERT INTO invoices (id, numero, tipo_item_ref, pedido, valor, quantidade) VALUES (1, 'DEMO-001-1', 'DEMO', '1001', 1500.0, 1.0)")
+    conn.execute("INSERT INTO invoices (id, numero, tipo_item_ref, pedido, valor, quantidade) VALUES (2, 'DEMO-001-2', 'DEMO', '1001', 1500.0, 1.0)")
+
+    conn.commit()
+    _atualizar_qtde_demo_por_pedidos(conn)
+
+    inv1 = conn.execute("SELECT * FROM invoices WHERE id = 1").fetchone()
+    inv2 = conn.execute("SELECT * FROM invoices WHERE id = 2").fetchone()
+
+    # Cada parcela deve receber 3000 sacolas (50% das 6000) e preco unitario 0.50
+    assert inv1["quantidade"] == 3000.0
+    assert inv1["preco_ref"] == 0.5
+    assert inv2["quantidade"] == 3000.0
+    assert inv2["preco_ref"] == 0.5
+
+

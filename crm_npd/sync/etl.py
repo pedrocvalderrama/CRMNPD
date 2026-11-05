@@ -427,9 +427,33 @@ def _lookup_vendor_pedido(conn, pedido: str, cache_pedidos: dict) -> tuple[int |
     return cache_pedidos[pedido]
 
 
+def _lookup_totais_pedido(conn, pedido: str, cache_pedidos_totais: dict) -> tuple[float, float]:
+    """Soma quantidade e valor total dos itens do pedido na tabela orders."""
+    pedido = (pedido or "").strip()
+    if not pedido:
+        return 0.0, 0.0
+    if pedido not in cache_pedidos_totais:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(quantidade), 0) AS tot_q,
+                COALESCE(SUM(valor), 0) AS tot_v
+            FROM orders
+            WHERE TRIM(COALESCE(pedido, '')) = TRIM(?)
+            """,
+            (pedido,),
+        ).fetchone()
+        cache_pedidos_totais[pedido] = (
+            float(row["tot_q"] or 0.0) if row else 0.0,
+            float(row["tot_v"] or 0.0) if row else 0.0,
+        )
+    return cache_pedidos_totais[pedido]
+
+
 def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> int:
     inserts = []
     cache_pedidos: dict = {}
+    cache_pedidos_totais: dict = {}
     for row in rows:
         numero = _txt(row.get("FATURA"))
         if not numero:
@@ -449,6 +473,20 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
         medida = _txt(row.get("MEDIDA"))
         grupo = _txt(row.get("GRUPO"))
         nat_tipo = _txt(row.get("NAT_TIPO"))
+
+        # Para DEMO (que vem do financeiro RECEBER_001 com QTDE nominal = 1),
+        # buscamos a quantidade fisica real das sacolas no pedido associado em orders.
+        # Se o pedido tiver multiplas parcelas DEMO, distribui proporcionalmente ao valor da parcela.
+        if (nat_tipo == "DEMO" or numero.startswith("DEMO-") or grupo == "DEMO") and pedido:
+            tot_q, tot_v = _lookup_totais_pedido(conn, pedido, cache_pedidos_totais)
+            if tot_q > 0:
+                if tot_v > 0 and valor > 0:
+                    qtde = round(valor * (tot_q / tot_v), 2)
+                else:
+                    qtde = round(tot_q, 2)
+                if qtde > 0:
+                    preco = round(valor / qtde, 4)
+
         rede_nome = _txt(row.get("REDE_NOME"))
         rede_key = _rede_key(_txt(row.get("REDE_CODIGO")))
         cliente_id = m.upsert_customer(conn, fantasia, fantasia, codigo_hint=codigo, cache=cache)
