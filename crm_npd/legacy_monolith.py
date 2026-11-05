@@ -9456,8 +9456,8 @@ def _soma_faturamento_periodo(
     filtro_params: Optional[list] = None,
     visao: str = "faturamento",
     mostrar_site: bool = False,
-) -> tuple[float, int, int, float]:
-    """Intervalo: valor, qtd (notas ou pedidos), clientes e unidades."""
+) -> tuple[float, int, int, float, int]:
+    """Intervalo: valor, qtd (notas ou pedidos), clientes, unidades e itens."""
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
     site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
     if visao == "pedidos":
@@ -9467,7 +9467,8 @@ def _soma_faturamento_periodo(
                 COALESCE(SUM(COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0)), 0) AS val,
                 COUNT(DISTINCT TRIM(COALESCE(o.pedido, ''))) AS qtd,
                 COUNT(DISTINCT CASE WHEN COALESCE(o.cliente_id, 0) > 0 THEN o.cliente_id END) AS clientes,
-                COALESCE(SUM(COALESCE(o.quantidade, 0)), 0) AS unidades
+                COALESCE(SUM(COALESCE(o.quantidade, 0)), 0) AS unidades,
+                COUNT(*) AS itens
             FROM orders o
             LEFT JOIN vendors v ON v.id = o.vendor_id
             LEFT JOIN customers c ON c.id = o.cliente_id
@@ -9486,7 +9487,8 @@ def _soma_faturamento_periodo(
                 COALESCE(SUM(i.valor), 0) AS val,
                 COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS qtd,
                 COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id, 0) > 0 THEN i.cliente_id END) AS clientes,
-                COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades
+                COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades,
+                COUNT(*) AS itens
             FROM invoices i
             LEFT JOIN vendors v ON v.id = i.vendor_id
             LEFT JOIN customers c ON c.id = i.cliente_id
@@ -9502,6 +9504,7 @@ def _soma_faturamento_periodo(
         int(row["qtd"] or 0),
         int(row["clientes"] or 0),
         float(row["unidades"] or 0),
+        int(row["itens"] or 0),
     )
 
 
@@ -9725,16 +9728,29 @@ def desempenho():
     if visao not in ("faturamento", "pedidos"):
         visao = "faturamento"
 
+    ticket_modo = (request.args.get("ticket_modo") or request.args.get("ticket") or "nota").strip().lower()
+    if ticket_modo not in ("nota", "item"):
+        ticket_modo = "nota"
+
     mostrar_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
         request.args.get("mostrar_site") in ("1", "true", "sim", "s")
     )
 
-    def _build_desemp_url(new_visao: Optional[str] = None, toggle_site: bool = False) -> str:
+    def _build_desemp_url(
+        new_visao: Optional[str] = None,
+        new_ticket_modo: Optional[str] = None,
+        toggle_site: bool = False,
+    ) -> str:
         params = dict(request.args)
         if new_visao is not None:
             params["visao"] = new_visao
         elif "visao" not in params:
             params["visao"] = visao
+
+        if new_ticket_modo is not None:
+            params["ticket_modo"] = new_ticket_modo
+        elif "ticket_modo" not in params and ticket_modo != "nota":
+            params["ticket_modo"] = ticket_modo
 
         cur_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
             request.args.get("mostrar_site") in ("1", "true", "sim", "s")
@@ -9750,6 +9766,8 @@ def desempenho():
 
     url_faturamento = _build_desemp_url(new_visao="faturamento")
     url_pedidos = _build_desemp_url(new_visao="pedidos")
+    url_ticket_nota = _build_desemp_url(new_ticket_modo="nota")
+    url_ticket_item = _build_desemp_url(new_ticket_modo="item")
     toggle_site_url = _build_desemp_url(toggle_site=True)
 
     hoje = date.today()
@@ -9779,10 +9797,10 @@ def desempenho():
     with conectar() as conn:
         opcoes = _desempenho_opcoes_filtro(conn, filtros, include_site=mostrar_site, visao=visao)
         filtros_ativos = _desempenho_filtros_ativos(filtros)
-        fat_ref, notas_ref, cli_ref, unid_ref = _soma_faturamento_periodo(
+        fat_ref, notas_ref, cli_ref, unid_ref, itens_ref = _soma_faturamento_periodo(
             conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
-        fat_cmp, notas_cmp, cli_cmp, unid_cmp = _soma_faturamento_periodo(
+        fat_cmp, notas_cmp, cli_cmp, unid_cmp, itens_cmp = _soma_faturamento_periodo(
             conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
         mensal_ref = _fat_mensal_ano(
@@ -9804,8 +9822,24 @@ def desempenho():
             conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
 
-    ticket_ref = (fat_ref / notas_ref) if notas_ref > 0 else 0.0
-    ticket_cmp = (fat_cmp / notas_cmp) if notas_cmp > 0 else 0.0
+    if ticket_modo == "item":
+        ticket_ref = (fat_ref / itens_ref) if itens_ref > 0 else 0.0
+        ticket_cmp = (fat_cmp / itens_cmp) if itens_cmp > 0 else 0.0
+        ticket_sub = (
+            "Valor total ÷ quantidade de itens"
+            if visao == "pedidos"
+            else "Valor faturado ÷ quantidade de itens"
+        )
+        ticket_meta = "por item"
+    else:
+        ticket_ref = (fat_ref / notas_ref) if notas_ref > 0 else 0.0
+        ticket_cmp = (fat_cmp / notas_cmp) if notas_cmp > 0 else 0.0
+        ticket_sub = (
+            "Valor total ÷ quantidade de pedidos"
+            if visao == "pedidos"
+            else "Valor faturado ÷ quantidade de notas"
+        )
+        ticket_meta = "por pedido" if visao == "pedidos" else "por nota"
 
     delta_fat = fat_cmp - fat_ref
     delta_fat_pct = _delta_pct(fat_cmp, fat_ref)
@@ -9924,11 +9958,16 @@ def desempenho():
           <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_faturamento }}"><i class="bi bi-receipt me-1"></i>Faturamento</a>
           <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_pedidos }}"><i class="bi bi-cart3 me-1"></i>Pedidos</a>
         </nav>
+        <nav class="dash-tabs" aria-label="Modo do ticket médio">
+          <a class="{{ 'active' if ticket_modo == 'nota' else '' }}" href="{{ url_ticket_nota }}"><i class="bi bi-tag me-1"></i>Ticket {% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</a>
+          <a class="{{ 'active' if ticket_modo == 'item' else '' }}" href="{{ url_ticket_item }}"><i class="bi bi-box-seam me-1"></i>Ticket por item</a>
+        </nav>
       </div>
     </div>
 
     <form method="get" class="mb-4" id="desempenhoFiltro">
       <input type="hidden" name="visao" value="{{ visao }}">
+      <input type="hidden" name="ticket_modo" value="{{ ticket_modo }}">
       {% if mostrar_site %}
       <input type="hidden" name="site" value="1">
       {% endif %}
@@ -10164,11 +10203,19 @@ def desempenho():
     </div>
 
     <div class="dash-block dash-block--fat mb-3">
-      <div class="dash-block-head mb-3">
+      <div class="dash-block-head mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <div>
           <div class="h5 fw-bold mb-0">Ticket médio</div>
-          <div class="sub">{% if visao == 'pedidos' %}Valor total ÷ quantidade de pedidos{% else %}Valor faturado ÷ quantidade de notas{% endif %}</div>
+          <div class="sub">{{ ticket_sub }}</div>
         </div>
+        <nav class="dash-tabs" aria-label="Alternar ticket médio">
+          <a class="{{ 'active' if ticket_modo == 'nota' else '' }}" href="{{ url_ticket_nota }}">
+            <i class="bi bi-tag me-1"></i>{% if visao == 'pedidos' %}Por pedido{% else %}Por nota{% endif %}
+          </a>
+          <a class="{{ 'active' if ticket_modo == 'item' else '' }}" href="{{ url_ticket_item }}">
+            <i class="bi bi-box-seam me-1"></i>Por item
+          </a>
+        </nav>
       </div>
       <div class="row g-3">
         <div class="col-12 col-md-4">
@@ -10176,7 +10223,7 @@ def desempenho():
             <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
             <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_cmp) }}</div>
-            <div class="kpi-meta">{% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</div>
+            <div class="kpi-meta">{{ ticket_meta }} ({{ itens_cmp if ticket_modo == 'item' else notas_cmp }} {{ 'itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas') }})</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10184,7 +10231,7 @@ def desempenho():
             <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
             <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_ref) }}</div>
-            <div class="kpi-meta">{% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</div>
+            <div class="kpi-meta">{{ ticket_meta }} ({{ itens_ref if ticket_modo == 'item' else notas_ref }} {{ 'itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas') }})</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10395,6 +10442,13 @@ def desempenho():
         mostrar_site=mostrar_site,
         url_faturamento=url_faturamento,
         url_pedidos=url_pedidos,
+        url_ticket_nota=url_ticket_nota,
+        url_ticket_item=url_ticket_item,
+        ticket_modo=ticket_modo,
+        ticket_sub=ticket_sub,
+        ticket_meta=ticket_meta,
+        itens_ref=itens_ref,
+        itens_cmp=itens_cmp,
         toggle_site_url=toggle_site_url,
     )
     return render_page("Desempenho", body, "desempenho")

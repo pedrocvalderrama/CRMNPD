@@ -147,3 +147,43 @@ def test_regras_unificadas_site_amanda_ana_beatriz() -> None:
     """).fetchone()
     assert interno_mar["val"] == 350.0
     assert interno_mar["qtd"] == 1
+
+
+def test_ticket_medio_modo_nota_e_item() -> None:
+    """Verifica que o ticket medio pode ser calculado por nota ou por item."""
+    import sqlite3
+    from datetime import date
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE customers (id INTEGER PRIMARY KEY, nome TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, nome TEXT, tipo TEXT);
+        CREATE TABLE invoices (id INTEGER PRIMARY KEY, numero TEXT, data_emissao TEXT, vendor_id INTEGER, valor REAL, quantidade REAL, cliente_id INTEGER);
+    """)
+    conn.execute("INSERT INTO vendors (id, nome, tipo) VALUES (1, 'V1', 'Interno')")
+    # Nota 1 tem 2 itens (linhas)
+    conn.execute("INSERT INTO invoices (numero, data_emissao, vendor_id, valor, quantidade, cliente_id) VALUES ('NF1', '2026-10-05', 1, 60.0, 5, 10)")
+    conn.execute("INSERT INTO invoices (numero, data_emissao, vendor_id, valor, quantidade, cliente_id) VALUES ('NF1', '2026-10-05', 1, 40.0, 5, 10)")
+    # Nota 2 tem 1 item (linha)
+    conn.execute("INSERT INTO invoices (numero, data_emissao, vendor_id, valor, quantidade, cliente_id) VALUES ('NF2', '2026-10-10', 1, 100.0, 10, 20)")
+    conn.commit()
+
+    val, qtd_notas, clientes, unidades, itens = m._soma_faturamento_periodo(
+        conn, date(2026, 10, 1), date(2026, 10, 31)
+    )
+    assert val == 200.0
+    assert qtd_notas == 2   # 2 notas fiscais distintas
+    assert itens == 3       # 3 itens/linhas faturadas
+    assert unidades == 20.0 # 20 pecas
+    assert clientes == 2
+
+    # Ticket por nota
+    ticket_nota = val / qtd_notas
+    assert ticket_nota == 100.0
+
+    # Ticket por item
+    ticket_item = val / itens
+    assert round(ticket_item, 2) == 66.67
+
