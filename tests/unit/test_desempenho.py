@@ -187,6 +187,10 @@ def test_ticket_medio_modo_nota_e_item() -> None:
     ticket_item = val / itens
     assert round(ticket_item, 2) == 66.67
 
+    # Ticket por quantidade (unidades fisicas)
+    ticket_quantidade = val / unidades
+    assert ticket_quantidade == 10.0
+
 
 def test_migracao_qtde_demo_por_pedidos() -> None:
     """Verifica que DEMO busca quantidade real do pedido e divide proporcionalmente entre parcelas."""

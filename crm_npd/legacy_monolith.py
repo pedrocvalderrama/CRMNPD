@@ -9729,8 +9729,10 @@ def desempenho():
         visao = "faturamento"
 
     ticket_modo = (request.args.get("ticket_modo") or request.args.get("ticket") or "nota").strip().lower()
-    if ticket_modo not in ("nota", "item"):
+    if ticket_modo not in ("nota", "item", "quantidade", "unidade"):
         ticket_modo = "nota"
+    if ticket_modo == "unidade":
+        ticket_modo = "quantidade"
 
     mostrar_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
         request.args.get("mostrar_site") in ("1", "true", "sim", "s")
@@ -9768,6 +9770,7 @@ def desempenho():
     url_pedidos = _build_desemp_url(new_visao="pedidos")
     url_ticket_nota = _build_desemp_url(new_ticket_modo="nota")
     url_ticket_item = _build_desemp_url(new_ticket_modo="item")
+    url_ticket_quantidade = _build_desemp_url(new_ticket_modo="quantidade")
     toggle_site_url = _build_desemp_url(toggle_site=True)
 
     hoje = date.today()
@@ -9822,7 +9825,28 @@ def desempenho():
             conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
         )
 
-    if ticket_modo == "item":
+    def _fmt_qtde_local(q: float) -> str:
+        try:
+            val = float(q or 0.0)
+            if abs(val - round(val)) < 1e-4:
+                return f"{int(round(val)):,}".replace(",", ".")
+            return f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except Exception:
+            return str(q)
+
+    unid_ref_fmt = _fmt_qtde_local(unid_ref)
+    unid_cmp_fmt = _fmt_qtde_local(unid_cmp)
+
+    if ticket_modo == "quantidade":
+        ticket_ref = (fat_ref / unid_ref) if unid_ref > 0 else 0.0
+        ticket_cmp = (fat_cmp / unid_cmp) if unid_cmp > 0 else 0.0
+        ticket_sub = (
+            "Valor total ÷ quantidade física de unidades"
+            if visao == "pedidos"
+            else "Valor faturado ÷ quantidade física de unidades"
+        )
+        ticket_meta = "por quantidade"
+    elif ticket_modo == "item":
         ticket_ref = (fat_ref / itens_ref) if itens_ref > 0 else 0.0
         ticket_cmp = (fat_cmp / itens_cmp) if itens_cmp > 0 else 0.0
         ticket_sub = (
@@ -9961,6 +9985,7 @@ def desempenho():
         <nav class="dash-tabs" aria-label="Modo do ticket médio">
           <a class="{{ 'active' if ticket_modo == 'nota' else '' }}" href="{{ url_ticket_nota }}"><i class="bi bi-tag me-1"></i>Ticket {% if visao == 'pedidos' %}por pedido{% else %}por nota{% endif %}</a>
           <a class="{{ 'active' if ticket_modo == 'item' else '' }}" href="{{ url_ticket_item }}"><i class="bi bi-box-seam me-1"></i>Ticket por item</a>
+          <a class="{{ 'active' if ticket_modo == 'quantidade' else '' }}" href="{{ url_ticket_quantidade }}"><i class="bi bi-stack me-1"></i>Ticket por quantidade</a>
         </nav>
       </div>
     </div>
@@ -10215,6 +10240,9 @@ def desempenho():
           <a class="{{ 'active' if ticket_modo == 'item' else '' }}" href="{{ url_ticket_item }}">
             <i class="bi bi-box-seam me-1"></i>Por item
           </a>
+          <a class="{{ 'active' if ticket_modo == 'quantidade' else '' }}" href="{{ url_ticket_quantidade }}">
+            <i class="bi bi-stack me-1"></i>Por quantidade
+          </a>
         </nav>
       </div>
       <div class="row g-3">
@@ -10223,7 +10251,7 @@ def desempenho():
             <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
             <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_cmp) }}</div>
-            <div class="kpi-meta">{{ ticket_meta }} ({{ itens_cmp if ticket_modo == 'item' else notas_cmp }} {{ 'itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas') }})</div>
+            <div class="kpi-meta">{{ ticket_meta }} ({{ unid_cmp_fmt if ticket_modo == 'quantidade' else (itens_cmp if ticket_modo == 'item' else notas_cmp) }} {{ 'unidades' if ticket_modo == 'quantidade' else ('itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas')) }})</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10231,7 +10259,7 @@ def desempenho():
             <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
             <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(ticket_ref) }}</div>
-            <div class="kpi-meta">{{ ticket_meta }} ({{ itens_ref if ticket_modo == 'item' else notas_ref }} {{ 'itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas') }})</div>
+            <div class="kpi-meta">{{ ticket_meta }} ({{ unid_ref_fmt if ticket_modo == 'quantidade' else (itens_ref if ticket_modo == 'item' else notas_ref) }} {{ 'unidades' if ticket_modo == 'quantidade' else ('itens' if ticket_modo == 'item' else ('pedidos' if visao == 'pedidos' else 'notas')) }})</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10444,6 +10472,9 @@ def desempenho():
         url_pedidos=url_pedidos,
         url_ticket_nota=url_ticket_nota,
         url_ticket_item=url_ticket_item,
+        url_ticket_quantidade=url_ticket_quantidade,
+        unid_ref_fmt=unid_ref_fmt,
+        unid_cmp_fmt=unid_cmp_fmt,
         ticket_modo=ticket_modo,
         ticket_sub=ticket_sub,
         ticket_meta=ticket_meta,
