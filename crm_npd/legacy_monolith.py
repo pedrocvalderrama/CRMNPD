@@ -9549,6 +9549,22 @@ def _desempenho_opcoes_filtro(conn, filtros: dict, include_site: bool = False, v
     }
 
 
+def _invoices_has_col(conn, col: str) -> bool:
+    try:
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(invoices)").fetchall()}
+        return col in cols
+    except Exception:
+        return False
+
+
+def _cliche_and_valor_expr(conn, mostrar_frete_cliche: bool) -> tuple[str, str]:
+    has_cliche_cols = _invoices_has_col(conn, "grupo_ref") and _invoices_has_col(conn, "tipo_item_ref")
+    has_frete_col = _invoices_has_col(conn, "valor_frete")
+    cliche_cond = "" if (mostrar_frete_cliche or not has_cliche_cols) else "AND (UPPER(COALESCE(i.grupo_ref, '')) NOT LIKE '%CLICHE%' AND UPPER(COALESCE(i.tipo_item_ref, '')) <> 'CLICHE')"
+    valor_expr = "COALESCE(SUM(i.valor + COALESCE(i.valor_frete, 0)), 0)" if (mostrar_frete_cliche and has_frete_col) else "COALESCE(SUM(i.valor), 0)"
+    return cliche_cond, valor_expr
+
+
 def _soma_faturamento_periodo(
     conn,
     d0: date,
@@ -9557,6 +9573,8 @@ def _soma_faturamento_periodo(
     filtro_params: Optional[list] = None,
     visao: str = "faturamento",
     mostrar_site: bool = False,
+    mostrar_ml: bool = False,
+    mostrar_frete_cliche: bool = False,
 ) -> tuple[float, int, int, float, int]:
     """Intervalo: valor, qtd (notas ou pedidos), clientes, unidades e itens."""
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
@@ -9581,11 +9599,19 @@ def _soma_faturamento_periodo(
             """,
             params,
         ).fetchone()
+        return (
+            float(row["val"] or 0),
+            int(row["qtd"] or 0),
+            int(row["clientes"] or 0),
+            float(row["unidades"] or 0),
+            int(row["itens"] or 0),
+        )
     else:
+        cliche_cond, valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
         row = conn.execute(
             f"""
             SELECT
-                COALESCE(SUM(i.valor), 0) AS val,
+                {valor_expr} AS val,
                 COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS qtd,
                 COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id, 0) > 0 THEN i.cliente_id END) AS clientes,
                 COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades,
@@ -9596,17 +9622,25 @@ def _soma_faturamento_periodo(
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
               {site_cond}
+              {cliche_cond}
               {filtro_sql}
             """,
             params,
         ).fetchone()
-    return (
-        float(row["val"] or 0),
-        int(row["qtd"] or 0),
-        int(row["clientes"] or 0),
-        float(row["unidades"] or 0),
-        int(row["itens"] or 0),
-    )
+        val = float(row["val"] or 0)
+        qtd = int(row["qtd"] or 0)
+        clientes = int(row["clientes"] or 0)
+        unidades = float(row["unidades"] or 0)
+        itens = int(row["itens"] or 0)
+
+        if mostrar_ml and not filtro_sql:
+            from crm_npd.services.mercado_livre import resumo_mercado_livre_periodo
+            ml_res = resumo_mercado_livre_periodo(conn, d0, d1)
+            val += ml_res["valor_total"]
+            qtd += ml_res["qtd_notas"]
+            itens += ml_res["qtd_notas"]
+
+        return val, qtd, clientes, unidades, itens
 
 
 def _fat_mensal_ano(
@@ -9618,6 +9652,8 @@ def _fat_mensal_ano(
     filtro_params: Optional[list] = None,
     visao: str = "faturamento",
     mostrar_site: bool = False,
+    mostrar_ml: bool = False,
+    mostrar_frete_cliche: bool = False,
 ) -> List[float]:
     """12 valores mensais; fora do intervalo selecionado = NaN."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
@@ -9644,10 +9680,11 @@ def _fat_mensal_ano(
             params,
         ).fetchall()
     else:
+        cliche_cond, valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
         rows = conn.execute(
             f"""
             SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
-                   COALESCE(SUM(i.valor), 0) AS val
+                   {valor_expr} AS val
             FROM invoices i
             LEFT JOIN vendors v ON v.id = i.vendor_id
             LEFT JOIN customers c ON c.id = i.cliente_id
@@ -9655,12 +9692,29 @@ def _fat_mensal_ano(
               AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
               AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
               {site_cond}
+              {cliche_cond}
               {filtro_sql}
             GROUP BY m
             """,
             params,
         ).fetchall()
     by_m = {int(r["m"]): float(r["val"] or 0) for r in rows}
+    if visao == "faturamento" and mostrar_ml and not filtro_sql:
+        try:
+            ml_rows = conn.execute("""
+                SELECT CAST(strftime('%m', data_emissao) AS INTEGER) AS m,
+                       COALESCE(SUM(valor_total), 0) AS val
+                FROM mercado_livre_invoices
+                WHERE data_emissao IS NOT NULL
+                  AND CAST(strftime('%Y', data_emissao) AS INTEGER) = ?
+                  AND CAST(strftime('%m', data_emissao) AS INTEGER) BETWEEN ? AND ?
+                GROUP BY m
+            """, (ano, mes_ini, mes_fim)).fetchall()
+            for r in ml_rows:
+                m_val = int(r["m"])
+                by_m[m_val] = by_m.get(m_val, 0.0) + float(r["val"] or 0)
+        except Exception:
+            pass
     out: List[float] = []
     for m in range(1, 13):
         if mes_ini <= m <= mes_fim:
@@ -9679,6 +9733,8 @@ def _fat_mensal_por_equipe(
     filtro_params: Optional[list] = None,
     visao: str = "faturamento",
     mostrar_site: bool = False,
+    mostrar_ml: bool = False,
+    mostrar_frete_cliche: bool = False,
 ) -> Dict[int, Dict[str, float]]:
     """Mensal por time (INTERNO/EXTERNO/SITE) no intervalo do ano."""
     params = [ano, mes_ini, mes_fim] + list(filtro_params or [])
@@ -9712,11 +9768,12 @@ def _fat_mensal_por_equipe(
             params,
         ).fetchall()
     else:
+        cliche_cond, valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
         rows = conn.execute(
             f"""
             SELECT CAST(strftime('%m', i.data_emissao) AS INTEGER) AS m,
                    {tipo_expr} AS tipo,
-                   COALESCE(SUM(i.valor), 0) AS val
+                   {valor_expr} AS val
             FROM invoices i
             LEFT JOIN vendors v ON v.id = i.vendor_id
             LEFT JOIN customers c ON c.id = i.cliente_id
@@ -9724,6 +9781,7 @@ def _fat_mensal_por_equipe(
               AND CAST(strftime('%Y', i.data_emissao) AS INTEGER) = ?
               AND CAST(strftime('%m', i.data_emissao) AS INTEGER) BETWEEN ? AND ?
               {site_cond}
+              {cliche_cond}
               {filtro_sql}
             GROUP BY m, {tipo_expr}
             """,
@@ -9750,6 +9808,8 @@ def _fat_por_equipe(
     filtro_params: Optional[list] = None,
     visao: str = "faturamento",
     mostrar_site: bool = False,
+    mostrar_ml: bool = False,
+    mostrar_frete_cliche: bool = False,
 ) -> dict:
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
     site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
@@ -9780,16 +9840,18 @@ def _fat_por_equipe(
             params,
         ).fetchall()
     else:
+        cliche_cond, valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
         rows = conn.execute(
             f"""
             SELECT {tipo_expr} AS tipo,
-                   COALESCE(SUM(i.valor), 0) AS val
+                   {valor_expr} AS val
             FROM invoices i
             LEFT JOIN vendors v ON v.id = i.vendor_id
             LEFT JOIN customers c ON c.id = i.cliente_id
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
               {site_cond}
+              {cliche_cond}
               {filtro_sql}
             GROUP BY {tipo_expr}
             """,
@@ -9800,6 +9862,13 @@ def _fat_por_equipe(
         tipo = str(r["tipo"] or "EXTERNO").upper()
         if tipo in out:
             out[tipo] = float(r["val"] or 0)
+    if visao == "faturamento" and mostrar_ml and not filtro_sql:
+        try:
+            from crm_npd.services.mercado_livre import resumo_mercado_livre_periodo
+            ml_res = resumo_mercado_livre_periodo(conn, d0, d1)
+            out["MERCADO LIVRE"] = ml_res["valor_total"]
+        except Exception:
+            out["MERCADO LIVRE"] = 0.0
     return out
 
 
@@ -9838,11 +9907,19 @@ def desempenho():
     mostrar_site = (request.args.get("site") in ("1", "true", "sim", "s")) or (
         request.args.get("mostrar_site") in ("1", "true", "sim", "s")
     )
+    mostrar_ml = (request.args.get("ml") in ("1", "true", "sim", "s")) or (
+        request.args.get("mostrar_ml") in ("1", "true", "sim", "s")
+    )
+    mostrar_frete_cliche = (request.args.get("frete_cliche") in ("1", "true", "sim", "s")) or (
+        request.args.get("mostrar_frete_cliche") in ("1", "true", "sim", "s")
+    )
 
     def _build_desemp_url(
         new_visao: Optional[str] = None,
         new_ticket_modo: Optional[str] = None,
         toggle_site: bool = False,
+        toggle_ml: bool = False,
+        toggle_frete_cliche: bool = False,
     ) -> str:
         params = dict(request.args)
         if new_visao is not None:
@@ -9865,6 +9942,29 @@ def desempenho():
         else:
             params.pop("site", None)
             params.pop("mostrar_site", None)
+
+        cur_ml = (request.args.get("ml") in ("1", "true", "sim", "s")) or (
+            request.args.get("mostrar_ml") in ("1", "true", "sim", "s")
+        )
+        target_ml = (not cur_ml) if toggle_ml else cur_ml
+        if target_ml:
+            params["ml"] = "1"
+            params.pop("mostrar_ml", None)
+        else:
+            params.pop("ml", None)
+            params.pop("mostrar_ml", None)
+
+        cur_fc = (request.args.get("frete_cliche") in ("1", "true", "sim", "s")) or (
+            request.args.get("mostrar_frete_cliche") in ("1", "true", "sim", "s")
+        )
+        target_fc = (not cur_fc) if toggle_frete_cliche else cur_fc
+        if target_fc:
+            params["frete_cliche"] = "1"
+            params.pop("mostrar_frete_cliche", None)
+        else:
+            params.pop("frete_cliche", None)
+            params.pop("mostrar_frete_cliche", None)
+
         return url_for("desempenho", **params)
 
     url_faturamento = _build_desemp_url(new_visao="faturamento")
@@ -9873,6 +9973,8 @@ def desempenho():
     url_ticket_item = _build_desemp_url(new_ticket_modo="item")
     url_ticket_quantidade = _build_desemp_url(new_ticket_modo="quantidade")
     toggle_site_url = _build_desemp_url(toggle_site=True)
+    toggle_ml_url = _build_desemp_url(toggle_ml=True)
+    toggle_frete_cliche_url = _build_desemp_url(toggle_frete_cliche=True)
 
     hoje = date.today()
     anos = list(range(hoje.year, hoje.year - 8, -1))
@@ -9902,28 +10004,36 @@ def desempenho():
         opcoes = _desempenho_opcoes_filtro(conn, filtros, include_site=mostrar_site, visao=visao)
         filtros_ativos = _desempenho_filtros_ativos(filtros)
         fat_ref, notas_ref, cli_ref, unid_ref, itens_ref = _soma_faturamento_periodo(
-            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         fat_cmp, notas_cmp, cli_cmp, unid_cmp, itens_cmp = _soma_faturamento_periodo(
-            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         mensal_ref = _fat_mensal_ano(
-            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         mensal_cmp = _fat_mensal_ano(
-            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         fat_eq_ref = _fat_por_equipe(
-            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         fat_eq_cmp = _fat_por_equipe(
-            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         fat_mes_eq_ref = _fat_mensal_por_equipe(
-            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, ref_ano, ref_mes_ini, ref_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
         fat_mes_eq_cmp = _fat_mensal_por_equipe(
-            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site
+            conn, cmp_ano, cmp_mes_ini, cmp_mes_fim, filtro_sql, filtro_params, visao=visao, mostrar_site=mostrar_site,
+            mostrar_ml=mostrar_ml, mostrar_frete_cliche=mostrar_frete_cliche,
         )
 
     def _fmt_qtde_local(q: float) -> str:
@@ -9987,6 +10097,8 @@ def desempenho():
     tipos_equipe = [("INTERNO", "Equipe interna"), ("EXTERNO", "Equipe externa")]
     if mostrar_site:
         tipos_equipe.append(("SITE", "Site"))
+    if mostrar_ml and visao == "faturamento":
+        tipos_equipe.append(("MERCADO LIVRE", "Mercado Livre"))
 
     max_eq = max(
         [fat_eq_ref.get(t, 0.0) for t, _ in tipos_equipe] +
@@ -10079,6 +10191,12 @@ def desempenho():
         <a class="btn btn-sm {{ 'text-white fw-bold' if mostrar_site else 'btn-outline-secondary' }}" {% if mostrar_site %}style="background:#0e7490;border-color:#0e7490"{% endif %} href="{{ toggle_site_url }}">
           <i class="bi {{ 'bi-check-square-fill' if mostrar_site else 'bi-square' }} me-1"></i>Mostrar Site
         </a>
+        <a class="btn btn-sm {{ 'btn-warning fw-bold text-dark' if mostrar_ml else 'btn-outline-secondary' }}" href="{{ toggle_ml_url }}">
+          <i class="bi {{ 'bi-check-square-fill' if mostrar_ml else 'bi-square' }} me-1"></i>Mostrar Mercado Livre
+        </a>
+        <a class="btn btn-sm {{ 'fw-bold text-white' if mostrar_frete_cliche else 'btn-outline-secondary' }}" {% if mostrar_frete_cliche %}style="background:#0284c7;border-color:#0284c7"{% endif %} href="{{ toggle_frete_cliche_url }}">
+          <i class="bi {{ 'bi-check-square-fill' if mostrar_frete_cliche else 'bi-square' }} me-1"></i>Mostrar Frete/Clichê
+        </a>
         <nav class="dash-tabs" aria-label="Visão de desempenho">
           <a class="{{ 'active' if visao == 'faturamento' else '' }}" href="{{ url_faturamento }}"><i class="bi bi-receipt me-1"></i>Faturamento</a>
           <a class="{{ 'active' if visao == 'pedidos' else '' }}" href="{{ url_pedidos }}"><i class="bi bi-cart3 me-1"></i>Pedidos</a>
@@ -10096,6 +10214,12 @@ def desempenho():
       <input type="hidden" name="ticket_modo" value="{{ ticket_modo }}">
       {% if mostrar_site %}
       <input type="hidden" name="site" value="1">
+      {% endif %}
+      {% if mostrar_ml %}
+      <input type="hidden" name="ml" value="1">
+      {% endif %}
+      {% if mostrar_frete_cliche %}
+      <input type="hidden" name="frete_cliche" value="1">
       {% endif %}
       <div class="period-compare mb-3">
         <div class="period-compare-side cmp">
@@ -10206,7 +10330,7 @@ def desempenho():
               </div>
               <div class="col-12 col-md-6 col-xl-3 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary flex-grow-1"><i class="bi bi-check2 me-1"></i>Aplicar</button>
-                <a class="btn btn-light border" href="{{ url_for('desempenho', visao=visao, site='1' if mostrar_site else None, cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
+                <a class="btn btn-light border" href="{{ url_for('desempenho', visao=visao, site='1' if mostrar_site else None, ml='1' if mostrar_ml else None, frete_cliche='1' if mostrar_frete_cliche else None, cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>
               </div>
             </div>
           </div>
@@ -10569,6 +10693,8 @@ def desempenho():
         format_brl=format_brl,
         visao=visao,
         mostrar_site=mostrar_site,
+        mostrar_ml=mostrar_ml,
+        mostrar_frete_cliche=mostrar_frete_cliche,
         url_faturamento=url_faturamento,
         url_pedidos=url_pedidos,
         url_ticket_nota=url_ticket_nota,
@@ -10582,6 +10708,8 @@ def desempenho():
         itens_ref=itens_ref,
         itens_cmp=itens_cmp,
         toggle_site_url=toggle_site_url,
+        toggle_ml_url=toggle_ml_url,
+        toggle_frete_cliche_url=toggle_frete_cliche_url,
     )
     return render_page("Desempenho", body, "desempenho")
 

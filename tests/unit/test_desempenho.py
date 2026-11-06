@@ -237,3 +237,99 @@ def test_migracao_qtde_demo_por_pedidos() -> None:
     assert inv2["preco_ref"] == 0.5
 
 
+def test_desempenho_frete_cliche_e_mercado_livre() -> None:
+    """Verifica que os botoes/toggles de frete/cliche e mercado livre refletem corretamente no desempenho."""
+    import sqlite3
+    from datetime import date
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE customers (id INTEGER PRIMARY KEY, nome TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, nome TEXT, tipo TEXT);
+        CREATE TABLE invoices (
+            id INTEGER PRIMARY KEY,
+            numero TEXT,
+            data_emissao TEXT,
+            vendor_id INTEGER,
+            valor REAL,
+            valor_frete REAL,
+            quantidade REAL,
+            cliente_id INTEGER,
+            grupo_ref TEXT,
+            tipo_item_ref TEXT
+        );
+        CREATE TABLE mercado_livre_invoices (
+            id INTEGER PRIMARY KEY,
+            numero_nfe TEXT,
+            data_emissao TEXT,
+            valor_total REAL,
+            valor_produtos REAL,
+            valor_frete REAL,
+            tipo_logistico TEXT
+        );
+    """)
+    conn.execute("INSERT INTO vendors (id, nome, tipo) VALUES (1, 'Vendedor Interno', 'INTERNO')")
+    # Item normal: R$ 100,00, frete R$ 20,00
+    conn.execute("""
+        INSERT INTO invoices (numero, data_emissao, vendor_id, valor, valor_frete, quantidade, cliente_id, grupo_ref, tipo_item_ref)
+        VALUES ('NF100', '2026-10-05', 1, 100.0, 20.0, 10, 1, 'SACOLAS', 'MERCADORIA')
+    """)
+    # Item clichê: R$ 50,00, frete R$ 0,00
+    conn.execute("""
+        INSERT INTO invoices (numero, data_emissao, vendor_id, valor, valor_frete, quantidade, cliente_id, grupo_ref, tipo_item_ref)
+        VALUES ('NF101', '2026-10-06', 1, 50.0, 0.0, 1, 1, 'CLICHES', 'CLICHE')
+    """)
+    # Mercado Livre: 2 notas somando R$ 200,00
+    conn.execute("INSERT INTO mercado_livre_invoices (numero_nfe, data_emissao, valor_total) VALUES ('ML1', '2026-10-15', 120.0)")
+    conn.execute("INSERT INTO mercado_livre_invoices (numero_nfe, data_emissao, valor_total) VALUES ('ML2', '2026-10-20', 80.0)")
+    conn.commit()
+
+    d0 = date(2026, 10, 1)
+    d1 = date(2026, 10, 31)
+
+    # 1. Padrão: sem frete/clichê e sem Mercado Livre
+    val_padrao, qtd_padrao, cli_padrao, unid_padrao, itens_padrao = m._soma_faturamento_periodo(
+        conn, d0, d1, mostrar_frete_cliche=False, mostrar_ml=False
+    )
+    assert val_padrao == 100.0
+    assert qtd_padrao == 1
+    assert itens_padrao == 1
+
+    # 2. Com frete/clichê: R$ 100 + R$ 20 (frete) + R$ 50 (clichê) = R$ 170
+    val_fc, qtd_fc, cli_fc, unid_fc, itens_fc = m._soma_faturamento_periodo(
+        conn, d0, d1, mostrar_frete_cliche=True, mostrar_ml=False
+    )
+    assert val_fc == 170.0
+    assert qtd_fc == 2
+    assert itens_fc == 2
+
+    # 3. Com Mercado Livre: R$ 100 + R$ 200 (ML) = R$ 300
+    val_ml, qtd_ml, cli_ml, unid_ml, itens_ml = m._soma_faturamento_periodo(
+        conn, d0, d1, mostrar_frete_cliche=False, mostrar_ml=True
+    )
+    assert val_ml == 300.0
+    assert qtd_ml == 3 # 1 nota comum + 2 notas ML
+    assert itens_ml == 3
+
+    # 4. Ambos ativos: R$ 170 + R$ 200 = R$ 370
+    val_ambos, qtd_ambos, _, _, _ = m._soma_faturamento_periodo(
+        conn, d0, d1, mostrar_frete_cliche=True, mostrar_ml=True
+    )
+    assert val_ambos == 370.0
+
+    # 5. _fat_por_equipe inclui Mercado Livre e Frete/Clichê quando ativos
+    eq_padrao = m._fat_por_equipe(conn, d0, d1, mostrar_frete_cliche=False, mostrar_ml=False)
+    assert eq_padrao["INTERNO"] == 100.0
+    assert "MERCADO LIVRE" not in eq_padrao
+
+    eq_fc = m._fat_por_equipe(conn, d0, d1, mostrar_frete_cliche=True, mostrar_ml=False)
+    assert eq_fc["INTERNO"] == 170.0
+
+    eq_ml = m._fat_por_equipe(conn, d0, d1, mostrar_frete_cliche=False, mostrar_ml=True)
+    assert eq_ml["INTERNO"] == 100.0
+    assert eq_ml["MERCADO LIVRE"] == 200.0
+
+
+
