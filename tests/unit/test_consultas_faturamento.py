@@ -10,9 +10,8 @@ from crm_npd.repositories.firebird.consultas import (
 
 def test_saida_exclui_cliches_e_nao_soma_frete() -> None:
     sql = CRM_FATURAMENTO.upper()
-    assert "CLICHES" in sql
     assert "VALOR_LIQ" in sql
-    assert "VALOR_FRETE" not in sql
+    assert "VALOR_FRETE" in sql
     assert "5.116" not in sql
     assert "6.1162" not in sql
     assert "MOTIVO_CANCEL" in sql
@@ -37,9 +36,8 @@ def test_entrada_devolucao_deduz_sem_frete() -> None:
     assert "NOTA_ENTRA_001" in sql
     assert "1.201" in sql
     assert "2.201" in sql
-    assert "CLICHES" in sql
     assert "-ABS" in sql
-    assert "VAL_FRETE" not in sql
+    assert "VAL_FRETE" in sql
     assert "CODSIT_NOTA" in sql
 
 

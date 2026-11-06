@@ -25,7 +25,7 @@ def main() -> int:
     from crm_npd.legacy_monolith import conectar, ensure_users_schema, force_site_vendor_types, init_db
     from crm_npd.migrations import aplicar_migracoes
     from crm_npd.repositories.firebird.conexao import descricao_conexao, disponivel
-    from crm_npd.sync.etl import sincronizar_crm
+    from crm_npd.sync.etl import sincronizar_crm, sincronizar_faturamento, preencher_historico_frete_cliche
 
     if not disponivel():
         print("Firebird indisponivel. Confira SISPLAN_HOST, SISPLAN_DATABASE e SISPLAN_PASSWORD no .env.")
@@ -41,6 +41,16 @@ def main() -> int:
             force_site_vendor_types(conn)
         except Exception:
             pass
+
+        if "--faturamento" in sys.argv:
+            n = sincronizar_faturamento(conn)
+            print("Faturamento sincronizado com frete e clichês:", n)
+            return 0
+        if "--frete-cliche" in sys.argv:
+            res = preencher_historico_frete_cliche(conn)
+            print("Histórico de frete e clichês preenchido:", res)
+            return 0
+
         lidas = sincronizar_crm(conn)
     print("Pedidos:", lidas["pedidos"])
     print("Faturamento:", lidas["faturamento"])

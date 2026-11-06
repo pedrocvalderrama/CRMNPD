@@ -27,6 +27,7 @@ def apply_safe_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "invoices", "rede_nome TEXT")
     ensure_column(conn, "invoices", "rede_key TEXT")
     ensure_column(conn, "invoices", "comissionavel INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "invoices", "valor_frete REAL DEFAULT 0")
 
     ensure_column(conn, "orders", "condicao_entrega TEXT")
     ensure_column(conn, "orders", "is_jit INTEGER NOT NULL DEFAULT 0")
@@ -429,5 +430,10 @@ def aplicar_migracoes(conn: sqlite3.Connection) -> list[int]:
         _atualizar_qtde_demo_por_pedidos(conn)
         _carimbar(conn, 6, "atualizar_qtde_demo_por_pedidos")
         aplicadas.append(6)
+        conn.commit()
+    if not _aplicada(conn, 7):
+        apply_safe_migrations(conn)
+        _carimbar(conn, 7, "adicionar_coluna_frete_invoices")
+        aplicadas.append(7)
         conn.commit()
     return aplicadas

@@ -7432,11 +7432,17 @@ def _query_dashboard_faturamento_periodo(
     include_items: bool = False,
     include_site: bool = False,
     include_ml: bool = False,
+    include_frete_cliche: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     filtro_site_sql = (
         ""
         if include_site
         else "AND COALESCE(UPPER(TRIM(v.nome)), '') <> 'SITE' AND COALESCE(UPPER(TRIM(v.tipo)), '') <> 'SITE'"
+    )
+    filtro_cliche_sql = (
+        ""
+        if include_frete_cliche
+        else "AND (UPPER(COALESCE(i.grupo_ref, '')) NOT LIKE '%CLICHE%' AND UPPER(COALESCE(i.tipo_item_ref, '')) <> 'CLICHE')"
     )
     nf_rows_raw = conn.execute(f"""
         SELECT
@@ -7445,6 +7451,7 @@ def _query_dashboard_faturamento_periodo(
             CASE
                 WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
                 WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'CLICHE' OR UPPER(TRIM(COALESCE(i.grupo_ref, ''))) LIKE '%CLICHE%' THEN 'CLICHÊ'
                 ELSE 'VENDA'
             END AS tipo_nf,
             COALESCE(NULLIF(GROUP_CONCAT(DISTINCT NULLIF(TRIM(i.pedido), '')), ''), '-') AS pedido,
@@ -7471,17 +7478,20 @@ def _query_dashboard_faturamento_periodo(
                 '-'
             ) AS grupo_produto,
             COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS quantidade,
-            COALESCE(SUM(COALESCE(i.valor, 0)), 0) AS valor
+            COALESCE(SUM(COALESCE(i.valor, 0)), 0) AS valor,
+            COALESCE(SUM(COALESCE(i.valor_frete, 0)), 0) AS valor_frete
         FROM invoices i
         LEFT JOIN customers c ON c.id = i.cliente_id
         LEFT JOIN vendors v ON v.id = i.vendor_id
         WHERE i.data_emissao IS NOT NULL
           AND date(i.data_emissao) BETWEEN date(?) AND date(?)
           {filtro_site_sql}
+          {filtro_cliche_sql}
         GROUP BY COALESCE(NULLIF(TRIM(i.numero), ''), 'SEM-NF-' || CAST(i.id AS TEXT)),
                  CASE
                      WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
                      WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                     WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'CLICHE' OR UPPER(TRIM(COALESCE(i.grupo_ref, ''))) LIKE '%CLICHE%' THEN 'CLICHÊ'
                      ELSE 'VENDA'
                  END
         ORDER BY MAX(date(i.data_emissao)) DESC, nf DESC, MAX(i.id) DESC
@@ -7490,7 +7500,12 @@ def _query_dashboard_faturamento_periodo(
     nf_rows = []
     for r in nf_rows_raw:
         d = dict(r)
-        d["valor"] = float(d.get("valor") or 0.0)
+        d["valor_mercadoria"] = float(d.get("valor") or 0.0)
+        d["valor_frete"] = float(d.get("valor_frete") or 0.0)
+        if include_frete_cliche:
+            d["valor"] = d["valor_mercadoria"] + d["valor_frete"]
+        else:
+            d["valor"] = d["valor_mercadoria"]
         d["quantidade"] = float(d.get("quantidade") or 0.0)
         d["data_fmt"] = _fmt_br_date_str(d.get("data_emissao"))
         nf_rows.append(d)
@@ -7504,6 +7519,7 @@ def _query_dashboard_faturamento_periodo(
                 CASE
                     WHEN COALESCE(i.valor, 0) < 0 OR UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'D' THEN 'DEVOLUÇÃO'
                     WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                    WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'CLICHE' OR UPPER(TRIM(COALESCE(i.grupo_ref, ''))) LIKE '%CLICHE%' THEN 'CLICHÊ'
                     ELSE 'VENDA'
                 END AS tipo_nf,
                 COALESCE(NULLIF(TRIM(i.pedido), ''), '') AS pedido,
@@ -7529,13 +7545,15 @@ def _query_dashboard_faturamento_periodo(
                 COALESCE(NULLIF(TRIM(i.formato), ''), NULLIF(TRIM(i.medida_ref), ''), '') AS formato,
                 COALESCE(NULLIF(TRIM(i.papel_ref), ''), '') AS papel,
                 COALESCE(i.quantidade, 0) AS quantidade,
-                COALESCE(i.valor, 0) AS valor
+                COALESCE(i.valor, 0) AS valor,
+                COALESCE(i.valor_frete, 0) AS valor_frete
             FROM invoices i
             LEFT JOIN customers c ON c.id = i.cliente_id
             LEFT JOIN vendors v ON v.id = i.vendor_id
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
               {filtro_site_sql}
+              {filtro_cliche_sql}
             ORDER BY date(i.data_emissao) DESC, nf DESC, i.id DESC
         """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
         item_rows = [dict(r) for r in item_rows_raw]
@@ -7666,6 +7684,7 @@ def dashboard():
     visao = visao_raw if visao_raw in {"geral", "faturamento", "pedidos"} else "geral"
     mostrar_site = (visao == "faturamento") and (request.args.get("mostrar_site") == "1")
     mostrar_ml = (visao == "faturamento") and (request.args.get("mostrar_ml") == "1")
+    mostrar_frete_cliche = (visao == "faturamento") and (request.args.get("mostrar_frete_cliche") == "1")
 
     dates_ctx = _resolve_dashboard_dates(request.args)
     hoje = dates_ctx["hoje"]
@@ -7713,8 +7732,47 @@ def dashboard():
             LEFT JOIN vendors v ON v.id = i.vendor_id
             WHERE i.data_emissao IS NOT NULL
               AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              AND (UPPER(COALESCE(i.grupo_ref, '')) NOT LIKE '%CLICHE%' AND UPPER(COALESCE(i.tipo_item_ref, '')) <> 'CLICHE')
             GROUP BY 1
         """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchall()
+
+        # Totais de Frete e Clichês no ciclo selecionado
+        frete_row = conn.execute("""
+            SELECT
+                COALESCE(SUM(i.valor_frete), 0) AS val_frete,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor_frete, 0) > 0 THEN i.valor_frete ELSE 0 END), 0) AS val_frete_bruto,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor_frete, 0) < 0 THEN ABS(i.valor_frete) ELSE 0 END), 0) AS val_frete_dev,
+                COUNT(DISTINCT CASE WHEN COALESCE(i.valor_frete, 0) <> 0 THEN TRIM(COALESCE(i.numero, '')) END) AS nfs_frete
+            FROM invoices i
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+        """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchone()
+
+        cliche_row = conn.execute("""
+            SELECT
+                COALESCE(SUM(i.valor), 0) AS val_cliche,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor, 0) > 0 THEN i.valor ELSE 0 END), 0) AS val_cliche_bruto,
+                COALESCE(SUM(CASE WHEN COALESCE(i.valor, 0) < 0 THEN ABS(i.valor) ELSE 0 END), 0) AS val_cliche_dev,
+                COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS nfs_cliche
+            FROM invoices i
+            WHERE i.data_emissao IS NOT NULL
+              AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+              AND (UPPER(COALESCE(i.grupo_ref, '')) LIKE '%CLICHE%' OR UPPER(COALESCE(i.tipo_item_ref, '')) = 'CLICHE')
+        """, (d0_fat.isoformat(), d1_fat.isoformat())).fetchone()
+
+        val_frete_ciclo = float(frete_row["val_frete"] or 0.0) if frete_row else 0.0
+        val_frete_bruto = float(frete_row["val_frete_bruto"] or 0.0) if frete_row else 0.0
+        val_frete_dev = float(frete_row["val_frete_dev"] or 0.0) if frete_row else 0.0
+        qtd_nfs_frete = int(frete_row["nfs_frete"] or 0) if frete_row else 0
+
+        val_cliche_ciclo = float(cliche_row["val_cliche"] or 0.0) if cliche_row else 0.0
+        val_cliche_bruto = float(cliche_row["val_cliche_bruto"] or 0.0) if cliche_row else 0.0
+        val_cliche_dev = float(cliche_row["val_cliche_dev"] or 0.0) if cliche_row else 0.0
+        qtd_nfs_cliche = int(cliche_row["nfs_cliche"] or 0) if cliche_row else 0
+
+        total_frete_cliche = val_frete_ciclo + val_cliche_ciclo
+        total_frete_cliche_bruto = val_frete_bruto + val_cliche_bruto
+        total_frete_cliche_dev = val_frete_dev + val_cliche_dev
 
         f_map = {r["tipo"]: float(r["val"] or 0.0) for r in rows_fat}
         fb_map = {r["tipo"]: float(r["val_bruto"] or 0.0) for r in rows_fat}
@@ -8003,6 +8061,10 @@ def dashboard():
             fat_kpi_bruto += ml_fat_ciclo["valor_bruto"]
             fat_kpi_devolvido += ml_fat_ciclo["valor_devolvido"]
             fat_kpi_notas += ml_fat_ciclo["qtd_notas"]
+        if mostrar_frete_cliche:
+            fat_kpi_liquido += total_frete_cliche
+            fat_kpi_bruto += total_frete_cliche_bruto
+            fat_kpi_devolvido += total_frete_cliche_dev
 
         # Listas detalhadas do período selecionado para as abas Faturamento e Pedidos
         faturamento_periodo: list[dict] = []
@@ -8014,6 +8076,7 @@ def dashboard():
                 include_items=False,
                 include_site=mostrar_site,
                 include_ml=mostrar_ml,
+                include_frete_cliche=mostrar_frete_cliche,
             )
 
         pedidos_periodo: list[dict] = []
@@ -8217,6 +8280,8 @@ def dashboard():
         fat_padrao_kw["mostrar_site"] = "1"
     if mostrar_ml:
         fat_padrao_kw["mostrar_ml"] = "1"
+    if mostrar_frete_cliche:
+        fat_padrao_kw["mostrar_frete_cliche"] = "1"
 
     ped_padrao_kw = {"data_ref": mes_ref}
     if data_fat_custom:
@@ -8236,6 +8301,8 @@ def dashboard():
         toggle_site_kw["mostrar_site"] = "1"
     if mostrar_ml:
         toggle_site_kw["mostrar_ml"] = "1"
+    if mostrar_frete_cliche:
+        toggle_site_kw["mostrar_frete_cliche"] = "1"
     toggle_site_url = url_for("dashboard", **toggle_site_kw)
 
     toggle_ml_kw = dict(base_fat_toggle_kw)
@@ -8243,7 +8310,18 @@ def dashboard():
         toggle_ml_kw["mostrar_site"] = "1"
     if not mostrar_ml:
         toggle_ml_kw["mostrar_ml"] = "1"
+    if mostrar_frete_cliche:
+        toggle_ml_kw["mostrar_frete_cliche"] = "1"
     toggle_ml_url = url_for("dashboard", **toggle_ml_kw)
+
+    toggle_frete_cliche_kw = dict(base_fat_toggle_kw)
+    if mostrar_site:
+        toggle_frete_cliche_kw["mostrar_site"] = "1"
+    if mostrar_ml:
+        toggle_frete_cliche_kw["mostrar_ml"] = "1"
+    if not mostrar_frete_cliche:
+        toggle_frete_cliche_kw["mostrar_frete_cliche"] = "1"
+    toggle_frete_cliche_url = url_for("dashboard", **toggle_frete_cliche_kw)
 
     fat_excel_kw = {"data_ref": mes_ref}
     if data_fat_custom:
@@ -8253,6 +8331,8 @@ def dashboard():
         fat_excel_kw["mostrar_site"] = "1"
     if mostrar_ml:
         fat_excel_kw["mostrar_ml"] = "1"
+    if mostrar_frete_cliche:
+        fat_excel_kw["mostrar_frete_cliche"] = "1"
     fat_excel_url = url_for("dashboard_faturamento_excel", **fat_excel_kw)
 
     ped_excel_kw = {"data_ref": mes_ref}
@@ -8504,6 +8584,9 @@ def dashboard():
           <a class="btn btn-sm {{ 'btn-warning fw-bold text-dark' if mostrar_ml else 'btn-outline-secondary' }}" href="{{ toggle_ml_url }}">
             <i class="bi {{ 'bi-check-square-fill' if mostrar_ml else 'bi-square' }} me-1"></i>Mostrar Mercado Livre
           </a>
+          <a class="btn btn-sm {{ 'fw-bold text-white' if mostrar_frete_cliche else 'btn-outline-secondary' }}" {% if mostrar_frete_cliche %}style="background:#0284c7;border-color:#0284c7"{% endif %} href="{{ toggle_frete_cliche_url }}">
+            <i class="bi {{ 'bi-check-square-fill' if mostrar_frete_cliche else 'bi-square' }} me-1"></i>Mostrar Frete/Clichê
+          </a>
           <form method="get" class="d-flex gap-2 align-items-end flex-wrap">
             <input type="hidden" name="visao" value="faturamento">
             <input type="hidden" name="data_ref" value="{{ mes_ref }}">
@@ -8516,6 +8599,9 @@ def dashboard():
             {% endif %}
             {% if mostrar_ml %}
             <input type="hidden" name="mostrar_ml" value="1">
+            {% endif %}
+            {% if mostrar_frete_cliche %}
+            <input type="hidden" name="mostrar_frete_cliche" value="1">
             {% endif %}
             <div>
               <label class="form-label small fw-bold text-muted mb-0">DE</label>
@@ -8566,10 +8652,10 @@ def dashboard():
           </div>
         </div>
       </div>
-      {% set sub_canais_fat = 'Interno, Externo, Site e Mercado Livre no ciclo financeiro.' if (mostrar_site and mostrar_ml) else ('Interno, Externo e Site no ciclo financeiro.' if mostrar_site else ('Interno, Externo e Mercado Livre no ciclo financeiro.' if mostrar_ml else 'Interno e Externo no ciclo financeiro.')) %}
+      {% set sub_canais_fat = 'Interno, Externo, Site, Mercado Livre, Frete e Clichês no ciclo financeiro.' if (mostrar_site and mostrar_ml and mostrar_frete_cliche) else ('Interno, Externo, Site e Mercado Livre no ciclo financeiro.' if (mostrar_site and mostrar_ml) else ('Interno, Externo e Frete/Clichê no ciclo financeiro.' if mostrar_frete_cliche else ('Interno, Externo e Site no ciclo financeiro.' if mostrar_site else ('Interno, Externo e Mercado Livre no ciclo financeiro.' if mostrar_ml else 'Interno e Externo no ciclo financeiro.')))) %}
       <div class="section-heading mt-2 mb-3"><div><h2>Performance por canal</h2><p>{{ sub_canais_fat }}</p></div></div>
-      {% set n_canais_fat = 2 + (1 if mostrar_site else 0) + (1 if mostrar_ml else 0) %}
-      {% set col_fat_canal = 'col-12 col-md-6 col-xl-3' if n_canais_fat == 4 else ('col-12 col-xl-4' if n_canais_fat == 3 else 'col-12 col-xl-6') %}
+      {% set n_canais_fat = 2 + (1 if mostrar_site else 0) + (1 if mostrar_ml else 0) + (1 if mostrar_frete_cliche else 0) %}
+      {% set col_fat_canal = 'col-12 col-md-6 col-xl-3' if n_canais_fat >= 4 else ('col-12 col-xl-4' if n_canais_fat == 3 else 'col-12 col-xl-6') %}
       <div class="row g-3 align-items-start">
         <div class="{{ col_fat_canal }}">
           <div class="channel-card internal">
@@ -8606,6 +8692,16 @@ def dashboard():
             <div><div class="channel-main">{{ format_brl(ml_fat_ciclo['valor_total']) }}</div><div class="small text-muted">faturado no canal (c/ frete)</div></div>
             <div class="channel-status"><span>{{ ml_fat_ciclo['qtd_notas'] }} notas</span><span>{{ ml_fat_ciclo['qtd_full'] }} Full</span><span>{{ ml_fat_ciclo['qtd_envios'] }} Envios</span></div>
             <div class="channel-meta"><div class="box"><div class="label">Produtos</div><div class="value">{{ format_brl(ml_fat_ciclo['valor_produtos']) }}</div></div><div class="box"><div class="label">Frete</div><div class="value">{{ format_brl(ml_fat_ciclo['valor_frete']) }}</div></div><div class="box"><div class="label">Ticket médio</div><div class="value">{{ format_brl(ml_fat_ciclo['ticket_medio']) }}</div></div></div>
+          </div>
+        </div>
+        {% endif %}
+        {% if mostrar_frete_cliche %}
+        <div class="{{ col_fat_canal }}">
+          <div class="channel-card" style="border-left: 4px solid #0284c7;">
+            <div class="d-flex justify-content-between align-items-center gap-2"><span class="channel-tag" style="background:#e0f2fe;color:#0369a1;"><i class="bi bi-box-seam-fill"></i> FRETE & CLICHÊ</span></div>
+            <div><div class="channel-main">{{ format_brl(total_frete_cliche) }}</div><div class="small text-muted">adicional ao faturamento</div></div>
+            <div class="channel-status"><span>{{ qtd_nfs_frete }} notas c/ frete</span><span>{{ qtd_nfs_cliche }} notas c/ clichê</span></div>
+            <div class="channel-meta"><div class="box"><div class="label">Frete</div><div class="value">{{ format_brl(val_frete_ciclo) }}</div></div><div class="box"><div class="label">Clichês</div><div class="value">{{ format_brl(val_cliche_ciclo) }}</div></div><div class="box"><div class="label">Total</div><div class="value" style="color:#0284c7">{{ format_brl(total_frete_cliche) }}</div></div></div>
           </div>
         </div>
         {% endif %}
@@ -8918,6 +9014,9 @@ def dashboard():
     fat_kpi_devolvido=fat_kpi_devolvido, fat_kpi_notas=fat_kpi_notas,
     mostrar_site=mostrar_site, toggle_site_url=toggle_site_url,
     mostrar_ml=mostrar_ml, toggle_ml_url=toggle_ml_url, ml_fat_ciclo=ml_fat_ciclo,
+    mostrar_frete_cliche=mostrar_frete_cliche, toggle_frete_cliche_url=toggle_frete_cliche_url,
+    total_frete_cliche=total_frete_cliche, val_frete_ciclo=val_frete_ciclo, val_cliche_ciclo=val_cliche_ciclo,
+    qtd_nfs_frete=qtd_nfs_frete, qtd_nfs_cliche=qtd_nfs_cliche,
     fat_equipe_total=fat_equipe_total, fat_notas_total=fat_notas_total,
     fat_site_ciclo=fat_site_ciclo, qtd_nf_site_ciclo=qtd_nf_site_ciclo,
     ped_site_ciclo=ped_site_ciclo, qtd_ped_site_ciclo=qtd_ped_site_ciclo,
@@ -8966,12 +9065,14 @@ def dashboard_faturamento_excel():
     fat_ate_str = dates_ctx["fat_ate_str"]
     include_site = request.args.get("mostrar_site") == "1"
     include_ml = request.args.get("mostrar_ml") == "1"
+    include_frete_cliche = request.args.get("mostrar_frete_cliche") == "1"
     periodo_label = f"{d0_fat.strftime('%d/%m/%Y')} a {d1_fat.strftime('%d/%m/%Y')}"
 
     with conectar() as conn:
         ensure_vendor_type_column(conn)
         nf_rows, item_rows = _query_dashboard_faturamento_periodo(
-            conn, d0_fat, d1_fat, include_items=True, include_site=include_site, include_ml=include_ml
+            conn, d0_fat, d1_fat, include_items=True, include_site=include_site, include_ml=include_ml,
+            include_frete_cliche=include_frete_cliche,
         )
 
     fat_int = sum(float(r["valor"] or 0.0) for r in nf_rows if r.get("canal") == "INTERNO")

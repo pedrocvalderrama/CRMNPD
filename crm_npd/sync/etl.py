@@ -157,6 +157,61 @@ def sincronizar_faturamento(conn: sqlite3.Connection) -> int:
     return n_fat
 
 
+def preencher_historico_frete_cliche(conn: sqlite3.Connection, fb_conn: Any = None) -> dict[str, int]:
+    """Preenche valor_frete em faturas existentes e insere clichês passados do Sisplan."""
+    if not disponivel() and fb_conn is None:
+        raise RuntimeError("Firebird indisponivel. Verifique conexao no .env.")
+
+    from crm_npd import legacy_monolith as m
+    from crm_npd.migrations import aplicar_migracoes
+
+    aplicar_migracoes(conn)
+    rows = _ler_faturamento()
+    agora = m.now_iso()
+    cache = m.build_import_entity_cache(conn)
+
+    fretes_para_atualizar = []
+    cliches_para_inserir = []
+
+    for r in rows:
+        v_frete = _num(r.get("VALOR_FRETE"))
+        grupo = _txt(r.get("GRUPO"))
+        prod = _txt(r.get("DESCRICAO"))
+        is_cliche = ("CLICHE" in grupo.upper() or "CLICHÊ" in grupo.upper() or
+                     "CLICHE" in prod.upper() or "CLICHÊ" in prod.upper())
+        if is_cliche:
+            cliches_para_inserir.append(r)
+        elif v_frete != 0:
+            fat = _txt(r.get("FATURA"))
+            ped = _txt(r.get("PEDIDO"))
+            cod = _txt(r.get("CODIGO"))
+            fretes_para_atualizar.append((v_frete, fat, ped, cod))
+
+    conn.execute("BEGIN IMMEDIATE")
+    atualizados = 0
+    if fretes_para_atualizar:
+        for v_frete, fat, ped, cod in fretes_para_atualizar:
+            cur = conn.execute(
+                """
+                UPDATE invoices
+                SET valor_frete = ?
+                WHERE TRIM(COALESCE(numero, '')) = TRIM(?)
+                  AND (TRIM(COALESCE(pedido, '')) = TRIM(?) OR ? = '')
+                """,
+                (v_frete, fat, ped, ped),
+            )
+            atualizados += int(cur.rowcount or 0)
+
+    n_cliches = 0
+    if cliches_para_inserir:
+        conn.execute("DELETE FROM invoices WHERE UPPER(COALESCE(grupo_ref, '')) LIKE '%CLICHE%' OR UPPER(COALESCE(tipo_item_ref, '')) = 'CLICHE'")
+        n_cliches = _gravar_faturamento(conn, m, cliches_para_inserir, agora, cache)
+
+    conn.commit()
+    logger.info("sync.preencher_historico_frete_cliche fretes_atualizados=%s cliches_gravados=%s", atualizados, n_cliches)
+    return {"fretes_atualizados": atualizados, "cliches_gravados": n_cliches}
+
+
 def sincronizar_pedidos(conn: sqlite3.Connection) -> int:
     """Apaga e regrava so a tabela orders, pelas regras do manual de pedidos."""
     if not disponivel():
@@ -473,6 +528,15 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
         medida = _txt(row.get("MEDIDA"))
         grupo = _txt(row.get("GRUPO"))
         nat_tipo = _txt(row.get("NAT_TIPO"))
+        valor_frete = _num(row.get("VALOR_FRETE"))
+
+        if ("CLICHE" in grupo.upper() or "CLICHÊ" in grupo.upper() or
+            "CLICHE" in produto.upper() or "CLICHÊ" in produto.upper()):
+            if not grupo or "CLICHE" not in grupo.upper():
+                grupo = "CLICHES"
+            tipo_item_ref = "CLICHE"
+        else:
+            tipo_item_ref = nat_tipo or None
 
         # Para DEMO (que vem do financeiro RECEBER_001 com QTDE nominal = 1),
         # buscamos a quantidade fisica real das sacolas no pedido associado em orders.
@@ -516,10 +580,16 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
             None, numero, data_emissao, cliente_id, vendor_id, valor, qtde,
             pedido or None, produto or None, medida or None, agora,
             medida or None, fantasia or None, vendor_nome or None, dedupe,
-            0, rede_nome or None, rede_key or None, grupo or None, nat_tipo or None, None,
-            preco, valor, produto_codigo or None,
+            0, rede_nome or None, rede_key or None, grupo or None, tipo_item_ref, None,
+            preco, valor, produto_codigo or None, valor_frete,
         ))
     if inserts:
+        try:
+            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(invoices)").fetchall()}
+            if "valor_frete" not in cols:
+                conn.execute("ALTER TABLE invoices ADD COLUMN valor_frete REAL DEFAULT 0")
+        except Exception:
+            pass
         conn.executemany(
             """
             INSERT INTO invoices(
@@ -527,8 +597,8 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
                 valor, quantidade, pedido, produto, formato,
                 created_at, medida_ref, cliente_nome_ref, vendor_nome_ref, dedupe_key,
                 is_jit, rede_nome, rede_key, grupo_ref, tipo_item_ref, papel_ref,
-                preco_ref, valor_item_ref, produto_codigo_ref
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                preco_ref, valor_item_ref, produto_codigo_ref, valor_frete
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )
