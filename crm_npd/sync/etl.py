@@ -535,8 +535,10 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
             if not grupo or "CLICHE" not in grupo.upper():
                 grupo = "CLICHES"
             tipo_item_ref = "CLICHE"
+            comissionavel = 0
         else:
             tipo_item_ref = nat_tipo or None
+            comissionavel = 1
 
         # Para DEMO (que vem do financeiro RECEBER_001 com QTDE nominal = 1),
         # buscamos a quantidade fisica real das sacolas no pedido associado em orders.
@@ -581,13 +583,15 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
             pedido or None, produto or None, medida or None, agora,
             medida or None, fantasia or None, vendor_nome or None, dedupe,
             0, rede_nome or None, rede_key or None, grupo or None, tipo_item_ref, None,
-            preco, valor, produto_codigo or None, valor_frete,
+            preco, valor, produto_codigo or None, valor_frete, comissionavel,
         ))
     if inserts:
         try:
             cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(invoices)").fetchall()}
             if "valor_frete" not in cols:
                 conn.execute("ALTER TABLE invoices ADD COLUMN valor_frete REAL DEFAULT 0")
+            if "comissionavel" not in cols:
+                conn.execute("ALTER TABLE invoices ADD COLUMN comissionavel INTEGER NOT NULL DEFAULT 1")
         except Exception:
             pass
         conn.executemany(
@@ -597,8 +601,8 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
                 valor, quantidade, pedido, produto, formato,
                 created_at, medida_ref, cliente_nome_ref, vendor_nome_ref, dedupe_key,
                 is_jit, rede_nome, rede_key, grupo_ref, tipo_item_ref, papel_ref,
-                preco_ref, valor_item_ref, produto_codigo_ref, valor_frete
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                preco_ref, valor_item_ref, produto_codigo_ref, valor_frete, comissionavel
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             inserts,
         )

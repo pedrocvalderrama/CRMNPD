@@ -14004,6 +14004,8 @@ def compute_vendor_commission(conn, vendor_id: int, d0: date, d1: date):
         WHERE i.vendor_id = ?
           AND i.data_emissao IS NOT NULL
           AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+          AND (UPPER(COALESCE(i.grupo_ref, '')) NOT LIKE '%CLICHE%' AND UPPER(COALESCE(i.tipo_item_ref, '')) <> 'CLICHE')
+          AND COALESCE(i.comissionavel, 1) = 1
         ORDER BY date(i.data_emissao) ASC, i.id ASC
     """, (vendor_id, d0.isoformat(), d1.isoformat())).fetchall()
 
