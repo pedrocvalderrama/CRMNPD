@@ -428,3 +428,15 @@ FROM LOG
 WHERE ID > ?
 ORDER BY ID ASC
 """
+
+
+def sql_firebird_saude_database() -> str:
+    """Diagnostico de transacoes e Garbage Collection (MANUAL_INTEGRACAO_SEGURA_FIREBIRD.md)."""
+    return """
+SELECT
+    MON$OLDEST_ACTIVE AS OAT,
+    MON$NEXT_TRANSACTION AS PROXIMA_TRANSACAO,
+    (MON$NEXT_TRANSACTION - MON$OLDEST_ACTIVE) AS GAP_ACUMULADO
+FROM MON$DATABASE
+"""
+

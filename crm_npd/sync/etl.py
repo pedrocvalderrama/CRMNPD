@@ -697,16 +697,16 @@ def _delete_in_pedidos_sisplan(conn, chaves: list[str]) -> int:
     return total
 
 
-def _select_in(sql: str, coluna: str, chaves: list[str]) -> list[dict]:
+def _select_in(sql: str, coluna: str, chaves: list[str], fb_conn: Any = None) -> list[dict]:
     linhas: list[dict] = []
     for i in range(0, len(chaves), _CDC_LOTE_IN):
         lote = chaves[i : i + _CDC_LOTE_IN]
         consulta = anexar_and(sql, in_trim(coluna, len(lote)))
-        linhas.extend(executar_select_dicts(consulta, lote))
+        linhas.extend(executar_select_dicts(consulta, lote, conn=fb_conn))
     return linhas
 
 
-def recarregar_pedidos(conn: sqlite3.Connection, numeros) -> int:
+def recarregar_pedidos(conn: sqlite3.Connection, numeros, fb_conn: Any = None) -> int:
     """Apaga e regrava so os pedidos cujos numeros mudaram no Sisplan."""
     from crm_npd import legacy_monolith as m
     from crm_npd.config import HISTORICO_CORTE
@@ -714,7 +714,7 @@ def recarregar_pedidos(conn: sqlite3.Connection, numeros) -> int:
     chaves = _chaves_com_documento_pai(numeros)
     if not chaves:
         return 0
-    rows = _select_in(CRM_PEDIDOS, "P.NUMERO", chaves)
+    rows = _select_in(CRM_PEDIDOS, "P.NUMERO", chaves, fb_conn=fb_conn)
     corte = (HISTORICO_CORTE or "").strip()
     if corte:
         rows = [r for r in rows if (_data(r.get("DT_EMISSAO")) or "") >= corte]
@@ -729,7 +729,7 @@ def recarregar_pedidos(conn: sqlite3.Connection, numeros) -> int:
     return gravadas
 
 
-def recarregar_faturamento(conn: sqlite3.Connection, *, faturas=None, pedidos=None) -> int:
+def recarregar_faturamento(conn: sqlite3.Connection, *, faturas=None, pedidos=None, fb_conn: Any = None) -> int:
     """Apaga e regrava NFs (e DEMO/entrada) das chaves que o CDC viu."""
     from crm_npd import legacy_monolith as m
 
@@ -739,14 +739,14 @@ def recarregar_faturamento(conn: sqlite3.Connection, *, faturas=None, pedidos=No
         return 0
     rows: list[dict] = []
     if fats:
-        rows.extend(_select_in(CRM_FATURAMENTO, "N.FATURA", fats))
-        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NE.NOTAFISCAL", fats))
-        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NEI.NUMERO", fats))
-        rows.extend(_select_in(CRM_FATURAMENTO_DEMO, "R.NUMERO", fats))
+        rows.extend(_select_in(CRM_FATURAMENTO, "N.FATURA", fats, fb_conn=fb_conn))
+        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NE.NOTAFISCAL", fats, fb_conn=fb_conn))
+        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NEI.NUMERO", fats, fb_conn=fb_conn))
+        rows.extend(_select_in(CRM_FATURAMENTO_DEMO, "R.NUMERO", fats, fb_conn=fb_conn))
     if peds:
-        rows.extend(_select_in(CRM_FATURAMENTO, "NI.PEDIDO", peds))
-        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NEI.PEDIDO", peds))
-        rows.extend(_select_in(CRM_FATURAMENTO_DEMO, "R.PEDIDO", peds))
+        rows.extend(_select_in(CRM_FATURAMENTO, "NI.PEDIDO", peds, fb_conn=fb_conn))
+        rows.extend(_select_in(CRM_FATURAMENTO_ENTRADA, "NEI.PEDIDO", peds, fb_conn=fb_conn))
+        rows.extend(_select_in(CRM_FATURAMENTO_DEMO, "R.PEDIDO", peds, fb_conn=fb_conn))
     vistos: set[tuple] = set()
     unicas: list[dict] = []
     for row in rows:
@@ -780,14 +780,14 @@ def recarregar_faturamento(conn: sqlite3.Connection, *, faturas=None, pedidos=No
     return gravadas
 
 
-def recarregar_orcamentos(conn: sqlite3.Connection, numeros) -> int:
+def recarregar_orcamentos(conn: sqlite3.Connection, numeros, fb_conn: Any = None) -> int:
     """Apaga e regrava so os orcamentos (OS) cujos numeros mudaram."""
     from crm_npd import legacy_monolith as m
 
     chaves = _chaves_norm(numeros)
     if not chaves:
         return 0
-    rows = _select_in(CRM_ORCAMENTOS, "O.NUMERO", chaves)
+    rows = _select_in(CRM_ORCAMENTOS, "O.NUMERO", chaves, fb_conn=fb_conn)
     _delete_in(conn, "orcamentos", "numero", chaves)
     agora = m.now_iso()
     gravadas = _gravar_orcamentos(conn, m, rows, agora)

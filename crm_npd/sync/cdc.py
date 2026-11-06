@@ -112,9 +112,10 @@ def extrair_chave_documento(campo: str | None) -> str | None:
 
 
 def _intervalo() -> float:
+    """Intervalo minimo de 3 a 5 segundos (Regra 5 do manual)."""
     bruto = os.environ.get("SISPLAN_CDC_INTERVAL", "5").strip() or "5"
     try:
-        return max(2.0, float(bruto))
+        return max(3.0, float(bruto))
     except ValueError:
         return 5.0
 
@@ -165,24 +166,24 @@ def deve_recarregar_na_subida(
     return snapshot_desatualizado(synced_at, hoje=hoje)
 
 
-def _max_id(sql: str) -> int:
+def _max_id(sql: str, fb_conn=None) -> int:
     from crm_npd.repositories.firebird.conexao import executar_select
 
-    linhas = executar_select(sql)
+    linhas = executar_select(sql, conn=fb_conn)
     if not linhas or linhas[0][0] is None:
         return 0
     return int(linhas[0][0] or 0)
 
 
-def carregar_checkpoint(sqlite_conn) -> dict:
+def carregar_checkpoint(sqlite_conn, fb_conn=None) -> dict:
     """Le o cursor no SQLite. Cold start pega MAX(ID) atual, sem replay historico."""
     from crm_npd.legacy_monolith import get_setting
     from crm_npd.repositories.firebird.consultas import sql_cdc_max_log, sql_cdc_max_log_alteracao
 
     alt = get_setting(sqlite_conn, CHAVE_ALT, "").strip()
     log = get_setting(sqlite_conn, CHAVE_LOG, "").strip()
-    last_alt = int(alt) if alt else _max_id(sql_cdc_max_log_alteracao())
-    last_log = int(log) if log else _max_id(sql_cdc_max_log())
+    last_alt = int(alt) if alt else _max_id(sql_cdc_max_log_alteracao(), fb_conn=fb_conn)
+    last_log = int(log) if log else _max_id(sql_cdc_max_log(), fb_conn=fb_conn)
     checkpoint = {
         "last_log_alteracao_id": last_alt,
         "last_log_id": last_log,
@@ -193,13 +194,13 @@ def carregar_checkpoint(sqlite_conn) -> dict:
     return checkpoint
 
 
-def alinhar_checkpoint_ao_sisplan(sqlite_conn) -> dict:
+def alinhar_checkpoint_ao_sisplan(sqlite_conn, fb_conn=None) -> dict:
     """Depois da carga completa, o cursor vai para o MAX(ID) atual (sem replay)."""
     from crm_npd.repositories.firebird.consultas import sql_cdc_max_log, sql_cdc_max_log_alteracao
 
     checkpoint = {
-        "last_log_alteracao_id": _max_id(sql_cdc_max_log_alteracao()),
-        "last_log_id": _max_id(sql_cdc_max_log()),
+        "last_log_alteracao_id": _max_id(sql_cdc_max_log_alteracao(), fb_conn=fb_conn),
+        "last_log_id": _max_id(sql_cdc_max_log(), fb_conn=fb_conn),
     }
     salvar_checkpoint(sqlite_conn, checkpoint)
     logger.info(
@@ -229,9 +230,9 @@ def _acumular(mudancas: MudancasCdc, destino: str | None, chave: str | None) -> 
         mudancas.orcamentos.add(chave)
 
 
-def detectar_mudancas(checkpoint: dict) -> MudancasCdc:
-    """Le os logs novos. Nao grava nada no Sisplan."""
-    from crm_npd.repositories.firebird.conexao import executar_select_dicts
+def detectar_mudancas(checkpoint: dict, fb_conn=None) -> MudancasCdc:
+    """Le os logs novos com transacao leve isolada e commit imediato (Regras 2, 3 e 4)."""
+    from crm_npd.repositories.firebird.conexao import conectar_somente_leitura
     from crm_npd.repositories.firebird.consultas import sql_cdc_log, sql_cdc_log_alteracao
 
     lote = _lote()
@@ -239,40 +240,51 @@ def detectar_mudancas(checkpoint: dict) -> MudancasCdc:
     last_log = int(checkpoint.get("last_log_id") or 0)
     mudancas = MudancasCdc(last_alt=last_alt, last_log=last_log)
 
-    alts = executar_select_dicts(sql_cdc_log_alteracao(lote), (last_alt,))
-    for row in alts:
-        rid = int(row.get("ID") or 0)
-        mudancas.last_alt = max(mudancas.last_alt, rid)
-        mudancas.lidas_alt += 1
-        destino = classificar_tabela(row.get("TABELA"), row.get("TELA"))
-        _acumular(mudancas, destino, extrair_chave_documento(row.get("CAMPO_CHAVE")))
+    with conectar_somente_leitura(conn=fb_conn) as tx:
+        cur = tx.cursor()
 
-    logs = executar_select_dicts(sql_cdc_log(lote), (last_log,))
-    for row in logs:
-        rid = int(row.get("ID") or 0)
-        mudancas.last_log = max(mudancas.last_log, rid)
-        mudancas.lidas_log += 1
-        destino = classificar_tabela(row.get("TABELA"), row.get("TELA"))
-        chave = extrair_chave_documento(row.get("CHAVE")) or extrair_chave_documento(row.get("DESCRICAO"))
-        _acumular(mudancas, destino, chave)
+        # Consulta 1: LOG_ALTERACAO estritamente por ID indexado (Regra 4)
+        cur.execute(sql_cdc_log_alteracao(lote), (last_alt,))
+        nomes_alt = [(col[0] or "").strip() for col in (cur.description or ())]
+        for linha in cur.fetchall():
+            row = dict(zip(nomes_alt, linha))
+            rid = int(row.get("ID") or 0)
+            mudancas.last_alt = max(mudancas.last_alt, rid)
+            mudancas.lidas_alt += 1
+            destino = classificar_tabela(row.get("TABELA"), row.get("TELA"))
+            _acumular(mudancas, destino, extrair_chave_documento(row.get("CAMPO_CHAVE")))
 
+        # Consulta 2: LOG estritamente por ID indexado (Regra 4)
+        cur.execute(sql_cdc_log(lote), (last_log,))
+        nomes_log = [(col[0] or "").strip() for col in (cur.description or ())]
+        for linha in cur.fetchall():
+            row = dict(zip(nomes_log, linha))
+            rid = int(row.get("ID") or 0)
+            mudancas.last_log = max(mudancas.last_log, rid)
+            mudancas.lidas_log += 1
+            destino = classificar_tabela(row.get("TABELA"), row.get("TELA"))
+            chave = extrair_chave_documento(row.get("CHAVE")) or extrair_chave_documento(row.get("DESCRICAO"))
+            _acumular(mudancas, destino, chave)
+
+    # Ao sair do bloco, tx.commit() ja foi executado liberando o Garbage Collector (Regra 3)
     return mudancas
 
 
-def aplicar_mudancas(sqlite_conn, mudancas: MudancasCdc) -> bool:
+def aplicar_mudancas(sqlite_conn, mudancas: MudancasCdc, fb_conn=None) -> bool:
     """Regrava no SQLite as chaves detectadas e so entao avanca o cursor."""
     from crm_npd.legacy_monolith import set_setting
     from crm_npd.services.performance import limpar_caches_comerciais
     from crm_npd.sync.etl import recarregar_faturamento, recarregar_orcamentos, recarregar_pedidos
 
     try:
-        n_ped = recarregar_pedidos(sqlite_conn, mudancas.pedidos)
+        n_ped = recarregar_pedidos(sqlite_conn, mudancas.pedidos, fb_conn=fb_conn)
         n_fat = recarregar_faturamento(
             sqlite_conn,
             faturas=mudancas.faturas,
             pedidos=mudancas.pedidos,
+            fb_conn=fb_conn,
         )
-        n_orc = recarregar_orcamentos(sqlite_conn, mudancas.orcamentos)
+        n_orc = recarregar_orcamentos(sqlite_conn, mudancas.orcamentos, fb_conn=fb_conn)
         salvar_checkpoint(
             sqlite_conn,
             {
@@ -301,23 +313,19 @@ def aplicar_mudancas(sqlite_conn, mudancas: MudancasCdc) -> bool:
         return False
 
 
-def ciclo() -> MudancasCdc | None:
+def ciclo(fb_conn=None) -> MudancasCdc | None:
     """Um passo do listener. Devolve as mudancas vistas, ou None se Sisplan indisponivel."""
-    from crm_npd.legacy_monolith import conectar, ensure_users_schema, init_db
-    from crm_npd.migrations import aplicar_migracoes
+    from crm_npd.legacy_monolith import conectar
     from crm_npd.repositories.firebird.conexao import disponivel
 
     if not disponivel():
         logger.warning("cdc.sisplan indisponivel; conferir SISPLAN_* no .env")
         return None
 
-    init_db()
     with conectar() as sqlite_conn:
-        ensure_users_schema(sqlite_conn)
-        aplicar_migracoes(sqlite_conn)
-        checkpoint = carregar_checkpoint(sqlite_conn)
+        checkpoint = carregar_checkpoint(sqlite_conn, fb_conn=fb_conn)
         sqlite_conn.commit()
-        mudancas = detectar_mudancas(checkpoint)
+        mudancas = detectar_mudancas(checkpoint, fb_conn=fb_conn)
         avanco = (
             mudancas.last_alt != int(checkpoint["last_log_alteracao_id"])
             or mudancas.last_log != int(checkpoint["last_log_id"])
@@ -329,7 +337,7 @@ def ciclo() -> MudancasCdc | None:
                 sorted(mudancas.faturas),
                 sorted(mudancas.orcamentos),
             )
-            aplicar_mudancas(sqlite_conn, mudancas)
+            aplicar_mudancas(sqlite_conn, mudancas, fb_conn=fb_conn)
         elif avanco:
             salvar_checkpoint(
                 sqlite_conn,
@@ -343,24 +351,120 @@ def ciclo() -> MudancasCdc | None:
 
 
 def loop_cdc(*, uma_vez: bool = False) -> None:
-    """Loop continuo. ``uma_vez`` existe para teste e para o doctor."""
-    from crm_npd.repositories.firebird.conexao import descricao_conexao
+    """Loop continuo com conexao persistente unica (Regras 1, 2, 3, 4 e 5)."""
+    import fdb
+    from crm_npd.legacy_monolith import ensure_users_schema, init_db
+    from crm_npd.migrations import aplicar_migracoes
+    from crm_npd.repositories.firebird.conexao import (
+        conectar_firebird,
+        descricao_conexao,
+        diagnosticar_saude_firebird,
+        disponivel,
+    )
 
-    logger.info("cdc.inicio alvo=%s intervalo=%ss", descricao_conexao(), _intervalo())
+    intervalo = _intervalo()
+    logger.info("cdc.inicio alvo=%s intervalo=%.1fs", descricao_conexao(), intervalo)
+
+    # Inicializa tabelas e migracoes no SQLite uma unica vez na subida
+    try:
+        init_db()
+        from crm_npd.legacy_monolith import conectar
+        with conectar() as s_conn:
+            ensure_users_schema(s_conn)
+            aplicar_migracoes(s_conn)
+            s_conn.commit()
+    except Exception as exc:
+        logger.warning("cdc.init_db falhou na inicializacao: %s", exc)
+
+    fb_conn = None
+    ciclos_cont = 0
+
     while not _cdc_parar.is_set():
         try:
-            mudancas = ciclo()
+            if not disponivel():
+                logger.warning("cdc.sisplan indisponivel; aguardando no intervalo...")
+                _cdc_parar.wait(intervalo)
+                if uma_vez:
+                    break
+                continue
+
+            # Regra 1: Abre conexao persistente unica e reutiliza nos ciclos
+            if fb_conn is None or getattr(fb_conn, "closed", True):
+                logger.info("cdc.conectando conexao persistente ao Firebird do Sisplan...")
+                fb_conn = conectar_firebird()
+
+                # Auditoria de saude na conexao inicial
+                try:
+                    saude = diagnosticar_saude_firebird(conn=fb_conn)
+                    if saude and saude.get("status") != "erro":
+                        logger.info(
+                            "cdc.saude_firebird OAT=%s NEXT=%s GAP=%s (%s)",
+                            saude.get("oat"),
+                            saude.get("proxima_transacao"),
+                            saude.get("gap_acumulado"),
+                            saude.get("mensagem"),
+                        )
+                except Exception:
+                    pass
+
+            mudancas = ciclo(fb_conn=fb_conn)
+            ciclos_cont += 1
+
+            # A cada 100 ciclos (~5 a 8 minutos), valida saude do OAT e GAP
+            if ciclos_cont % 100 == 0:
+                try:
+                    saude = diagnosticar_saude_firebird(conn=fb_conn)
+                    if saude and saude.get("status") in ("atencao", "critico"):
+                        logger.warning(
+                            "cdc.alerta_saude_firebird GAP=%s status=%s (%s)",
+                            saude.get("gap_acumulado"),
+                            saude.get("status"),
+                            saude.get("mensagem"),
+                        )
+                except Exception:
+                    pass
+
             if uma_vez:
                 return
             if mudancas and (mudancas.lidas_alt >= _lote() or mudancas.lidas_log >= _lote()):
                 continue
-        except Exception:
-            logger.exception("cdc.ciclo falhou; nova tentativa no intervalo")
+        except fdb.Error as fb_err:
+            logger.error("cdc.erro_firebird: %s. Reconectando controladamente no proximo ciclo...", fb_err)
+            if fb_conn is not None:
+                try:
+                    fb_conn.close()
+                except Exception:
+                    pass
+                fb_conn = None
             if uma_vez:
                 raise
-        _cdc_parar.wait(_intervalo())
+        except Exception as exc:
+            logger.exception("cdc.ciclo falhou: %s", exc)
+            if fb_conn is not None:
+                try:
+                    fb_conn.close()
+                except Exception:
+                    pass
+                fb_conn = None
+            if uma_vez:
+                raise
+        finally:
+            if uma_vez and fb_conn is not None:
+                try:
+                    fb_conn.close()
+                except Exception:
+                    pass
+                fb_conn = None
+
+        _cdc_parar.wait(intervalo)
         if uma_vez:
             break
+
+    if fb_conn is not None:
+        try:
+            fb_conn.close()
+        except Exception:
+            pass
 
 
 def iniciar_cdc_em_background() -> bool:

@@ -163,3 +163,31 @@ def test_orcamentos_leem_descricao_do_status_os() -> None:
     assert "ST.DESCRICAO" in sql
     assert "DESC_STATUS" in sql
     assert "TIPO_MOTIVO_001 ST" in sql
+
+
+def test_cdc_intervalo_minimo_3_segundos(monkeypatch) -> None:
+    """Regra 5 do manual: intervalo minimo de 3 a 5 segundos."""
+    from crm_npd.sync.cdc import _intervalo
+
+    monkeypatch.delenv("SISPLAN_CDC_INTERVAL", raising=False)
+    assert _intervalo() == 5.0
+
+    # Se configurado para 1s ou 2s, deve travar no minimo 3s
+    monkeypatch.setenv("SISPLAN_CDC_INTERVAL", "1")
+    assert _intervalo() == 3.0
+    monkeypatch.setenv("SISPLAN_CDC_INTERVAL", "2.5")
+    assert _intervalo() == 3.0
+    monkeypatch.setenv("SISPLAN_CDC_INTERVAL", "10")
+    assert _intervalo() == 10.0
+
+
+def test_queries_cdc_usam_id_asc() -> None:
+    """Regra 4 do manual: consultas estritamente por ID indexado com ORDER BY ID ASC."""
+    sql_alt = sql_cdc_log_alteracao(500).upper()
+    assert "WHERE ID > ?" in sql_alt
+    assert "ORDER BY ID ASC" in sql_alt
+
+    sql_l = sql_cdc_log(500).upper()
+    assert "WHERE ID > ?" in sql_l
+    assert "ORDER BY ID ASC" in sql_l
+

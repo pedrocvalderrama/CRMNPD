@@ -179,50 +179,127 @@ def _kwargs_conexao() -> dict[str, Any]:
     }
 
 
-@contextmanager
-def conectar_somente_leitura() -> Iterator[Any]:
-    """Abre o Firebird em transacao READ ONLY / READ COMMITTED e faz rollback ao sair."""
+def tpb_monitoramento() -> bytes:
+    """TPB Oficial de Baixissimo Impacto (MANUAL_INTEGRACAO_SEGURA_FIREBIRD.md).
+
+    - isc_tpb_version3
+    - isc_tpb_read: Nao grava no cabecalho do .FDB nem gera attachment overhead
+    - isc_tpb_read_committed + isc_tpb_rec_version: Enxerga mudancas sem prender o OAT
+    - isc_tpb_nowait: Se encontrar lock, nao trava o script
+    """
     import fdb
 
-    _preparar_cliente()
-    conn = fdb.connect(**_kwargs_conexao())
-    tpb = (
+    return bytes([
+        fdb.isc_tpb_version3,
         fdb.isc_tpb_read,
         fdb.isc_tpb_read_committed,
         fdb.isc_tpb_rec_version,
-        fdb.isc_tpb_wait,
-    )
-    transacao_aberta = False
+        fdb.isc_tpb_nowait,
+    ])
+
+
+def conectar_firebird() -> Any:
+    """Abre uma conexao TCP persistente com o Firebird do Sisplan."""
+    import fdb
+
+    _preparar_cliente()
+    return fdb.connect(**_kwargs_conexao())
+
+
+@contextmanager
+def conectar_somente_leitura(conn: Any = None) -> Iterator[Any]:
+    """Abre transacao READ ONLY / READ COMMITTED com TPB oficial e commit ao sair.
+
+    Regras obrigatorias do manual:
+    - Se conn for passado (reutilizacao de conexao persistente), usa conn sem abrir/fechar.
+    - Se conn for None, abre conexao efemera e fecha no final.
+    - Em ambos os casos, executa tx.commit() obrigatoriamente para liberar o OAT
+      (Garbage Collection do Firebird).
+    """
+    import fdb
+
+    tpb = tpb_monitoramento()
+    fechar_ao_sair = False
+    if conn is None or getattr(conn, "closed", True):
+        _preparar_cliente()
+        conn = fdb.connect(**_kwargs_conexao())
+        fechar_ao_sair = True
+
+    tx = conn.trans(tpb)
     try:
-        conn.begin(tpb=tpb)
-        transacao_aberta = True
-        yield conn
+        yield tx
+        tx.commit()
+    except Exception:
+        try:
+            tx.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        if transacao_aberta:
+        if fechar_ao_sair:
             try:
-                conn.rollback()
+                conn.close()
             except Exception:
                 pass
-        conn.close()
 
 
-def executar_select(sql: str, params: Sequence[Any] | None = None) -> list[tuple[Any, ...]]:
+def executar_select(
+    sql: str,
+    params: Sequence[Any] | None = None,
+    conn: Any = None,
+) -> list[tuple[Any, ...]]:
     """Roda um SELECT e devolve as linhas. Qualquer outro SQL e recusado."""
     sql_ok = _validar_select(sql)
-    with conectar_somente_leitura() as conn:
-        cur = conn.cursor()
+    with conectar_somente_leitura(conn=conn) as tx:
+        cur = tx.cursor()
         cur.execute(sql_ok, tuple(params or ()))
         return list(cur.fetchall())
 
 
-def executar_select_dicts(sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+def executar_select_dicts(
+    sql: str,
+    params: Sequence[Any] | None = None,
+    conn: Any = None,
+) -> list[dict[str, Any]]:
     """Roda um SELECT e devolve dicts com o nome da coluna."""
     sql_ok = _validar_select(sql)
-    with conectar_somente_leitura() as conn:
-        cur = conn.cursor()
+    with conectar_somente_leitura(conn=conn) as tx:
+        cur = tx.cursor()
         cur.execute(sql_ok, tuple(params or ()))
         nomes = [(col[0] or "").strip() for col in (cur.description or ())]
         return [dict(zip(nomes, linha)) for linha in cur.fetchall()]
+
+
+def diagnosticar_saude_firebird(conn: Any = None) -> dict[str, Any]:
+    """Consulta MON$DATABASE para verificar a saude das transacoes e do OAT (Secao 4 do manual)."""
+    from crm_npd.repositories.firebird.consultas import sql_firebird_saude_database
+
+    try:
+        rows = executar_select_dicts(sql_firebird_saude_database(), conn=conn)
+        if not rows:
+            return {}
+        row = rows[0]
+        oat = int(row.get("OAT") or 0)
+        prox = int(row.get("PROXIMA_TRANSACAO") or 0)
+        gap = int(row.get("GAP_ACUMULADO") or 0)
+        if gap < 1000:
+            status = "ok"
+            msg = f"Banco operando perfeitamente (GAP={gap} < 1.000)"
+        elif gap < 20000:
+            status = "atencao"
+            msg = f"GAP de transacoes moderado ({gap})"
+        else:
+            status = "critico"
+            msg = f"Alerta critico: GAP={gap} (> 20.000) represando garbage collection"
+        return {
+            "oat": oat,
+            "proxima_transacao": prox,
+            "gap_acumulado": gap,
+            "status": status,
+            "mensagem": msg,
+        }
+    except Exception as exc:
+        return {"status": "erro", "mensagem": str(exc)}
 
 
 def disponivel() -> bool:

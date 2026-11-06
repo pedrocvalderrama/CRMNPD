@@ -75,3 +75,32 @@ def test_conexao_local_usa_dsn(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Non
     assert kwargs["dsn"] == str(caminho)
     assert "host" not in kwargs
     assert _modo_local()
+
+
+def test_tpb_monitoramento_manual_regras() -> None:
+    """Verifica que o TPB contem estritamente os 5 parametros oficiais do manual."""
+    import fdb
+    from crm_npd.repositories.firebird.conexao import tpb_monitoramento
+
+    tpb = tpb_monitoramento()
+    assert isinstance(tpb, bytes)
+    esperado = bytes([
+        fdb.isc_tpb_version3,
+        fdb.isc_tpb_read,
+        fdb.isc_tpb_read_committed,
+        fdb.isc_tpb_rec_version,
+        fdb.isc_tpb_nowait,
+    ])
+    assert tpb == esperado
+    assert list(tpb) == [3, 8, 15, 17, 7]
+
+
+def test_sql_saude_database_valida() -> None:
+    from crm_npd.repositories.firebird.consultas import sql_firebird_saude_database
+
+    sql = sql_firebird_saude_database()
+    assert _validar_select(sql).upper().lstrip().startswith("SELECT")
+    assert "MON$DATABASE" in sql.upper()
+    assert "MON$OLDEST_ACTIVE" in sql.upper()
+    assert "MON$NEXT_TRANSACTION" in sql.upper()
+

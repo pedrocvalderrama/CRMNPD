@@ -107,6 +107,7 @@ def main() -> int:
             _ok("SELECT 1 no Sisplan", False, str(exc)[:200])
             falhas += 1
         else:
+            from crm_npd.repositories.firebird.conexao import diagnosticar_saude_firebird
             from crm_npd.repositories.firebird.consultas import sql_cdc_max_log, sql_cdc_max_log_alteracao
 
             try:
@@ -120,6 +121,19 @@ def main() -> int:
             except Exception as exc:
                 _ok("logs CDC (LOG / LOG_ALTERACAO)", False, str(exc)[:200])
                 falhas += 1
+
+            try:
+                saude = diagnosticar_saude_firebird()
+                if saude and saude.get("status") != "erro":
+                    _ok(
+                        "saúde de transações Firebird (OAT/GAP)",
+                        saude.get("status") in ("ok", "atencao"),
+                        f"OAT={saude.get('oat')} NEXT={saude.get('proxima_transacao')} GAP={saude.get('gap_acumulado')} ({saude.get('mensagem')})",
+                    )
+                    if saude.get("status") == "critico":
+                        falhas += 1
+            except Exception as exc:
+                _ok("saúde de transações Firebird (OAT/GAP)", False, str(exc)[:200])
 
     print()
     print("Pronto." if falhas == 0 else f"{falhas} ponto(s) exigem acao.")
