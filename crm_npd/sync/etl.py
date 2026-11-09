@@ -582,7 +582,7 @@ def _gravar_faturamento(conn, m, rows: list[dict], agora: str, cache: dict) -> i
             None, numero, data_emissao, cliente_id, vendor_id, valor, qtde,
             pedido or None, produto or None, medida or None, agora,
             medida or None, fantasia or None, vendor_nome or None, dedupe,
-            0, rede_nome or None, rede_key or None, grupo or None, tipo_item_ref, None,
+            0, rede_nome or None, rede_key or None, grupo or None, tipo_item_ref, _txt(row.get("DESC_MARCA")) or None,
             preco, valor, produto_codigo or None, valor_frete, comissionavel,
         ))
     if inserts:

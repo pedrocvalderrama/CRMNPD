@@ -333,3 +333,56 @@ def test_desempenho_frete_cliche_e_mercado_livre() -> None:
 
 
 
+
+
+@pytest.mark.parametrize('alias', ['i', 'o'])
+def test_multiplos_papeis_combinam_com_outros_filtros(alias):
+    import sqlite3
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE itens (papel_ref TEXT, grupo_ref TEXT, valor REAL)')
+    conn.executemany('INSERT INTO itens VALUES (?, ?, ?)', [
+        ('KRAFT', 'SACOLAS', 10), ('BRANCO', 'SACOLAS', 20),
+        ('SEDA', 'SACOLAS', 40), ('KRAFT', 'CAIXAS', 80),
+    ])
+    sql, params = m._desempenho_filtro_sql({'papel': ['KRAFT', 'BRANCO'], 'grupo': ['SACOLAS']}, alias)
+    assert conn.execute(f'SELECT SUM(valor) FROM itens {alias} WHERE 1=1' + sql, params).fetchone()[0] == 30
+    conn.close()
+
+
+def test_multiplas_selecoes_preservadas_nos_links(admin_client):
+    from html import unescape
+    from urllib.parse import parse_qs, urlsplit
+    import re
+
+    response = admin_client.get('/desempenho?papel=KRAFT&papel=BRANCO&uf=SC&uf=PR')
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'name="papel" multiple' in html
+    assert 'value="KRAFT" selected' in html
+    assert 'value="BRANCO" selected' in html
+    links = [parse_qs(urlsplit(unescape(url)).query) for url in re.findall(r'href="([^"]+)"', html)]
+    assert any(link.get('visao') == ['pedidos'] and link.get('papel') == ['KRAFT', 'BRANCO'] and link.get('uf') == ['SC', 'PR'] for link in links)
+
+
+def test_filtros_abrem_vazios_e_com_componente_pesquisavel(admin_client):
+    import re
+
+    response = admin_client.get('/desempenho')
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    selects = re.findall(
+        r'<select class="form-select desempenho-multi".*?</select>',
+        html,
+        flags=re.DOTALL,
+    )
+    assert len(selects) == 7
+    assert all(' selected' not in select for select in selects)
+    assert '/static/js/desempenho-filtros.js?v=3' in html
+
+    script = admin_client.get('/static/js/desempenho-filtros.js?v=3')
+    assert script.status_code == 200
+    source = script.get_data(as_text=True)
+    assert "Digite para buscar" in source
+    assert "desempenho-multi-tag" in source

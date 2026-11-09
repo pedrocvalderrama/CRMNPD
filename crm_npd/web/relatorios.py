@@ -286,17 +286,23 @@ def registrar_rotas(m) -> None:
         user=get_current_user()
         if not user or user['role'] not in ['admin','gestor']:
             flash('Acesso restrito à gestão.','warning'); return redirect(url_for('home'))
-        scope=(request.args.get('escopo') or 'TOTAL').strip().upper()
-        vendedor=(request.args.get('vendedor') or '').strip(); cliente=(request.args.get('cliente') or '').strip()
-        produto=(request.args.get('produto') or request.args.get('grupo') or '').strip(); medida=(request.args.get('medida') or '').strip()
-        status=(request.args.get('status') or '').strip().upper(); entrega_ini=(request.args.get('entrega_ini') or '').strip(); entrega_fim=(request.args.get('entrega_fim') or '').strip()
+        scopes=list(dict.fromkeys(
+            value.strip().upper() for value in request.args.getlist('escopo')
+            if value.strip().upper() in {'INTERNO','EXTERNO','SITE'}
+        ))
+        vendedores=list(dict.fromkeys(value.strip() for value in request.args.getlist('vendedor') if value.strip()))
+        clientes=list(dict.fromkeys(value.strip() for value in request.args.getlist('cliente') if value.strip()))
+        produtos=list(dict.fromkeys(value.strip() for value in (request.args.getlist('produto') + request.args.getlist('grupo')) if value.strip()))
+        medidas=list(dict.fromkeys(value.strip() for value in request.args.getlist('medida') if value.strip()))
+        statuses=list(dict.fromkeys(value.strip().upper() for value in request.args.getlist('status') if value.strip()))
+        entrega_ini=(request.args.get('entrega_ini') or '').strip(); entrega_fim=(request.args.get('entrega_fim') or '').strip()
         selected_months=_report_selected_months(request.args)
         try:
             filter_year=int(request.args.get('ano_filtro') or 0)
         except Exception:
             filter_year=0
         # Sem nenhum filtro explícito, abre automaticamente no mês mais recente com pedidos válidos.
-        explicit_filter = bool(vendedor or cliente or produto or medida or status or entrega_ini or entrega_fim or scope!='TOTAL' or selected_months or filter_year)
+        explicit_filter = bool(scopes or vendedores or clientes or produtos or medidas or statuses or entrega_ini or entrega_fim or selected_months or filter_year)
         default_period_label=''
         with conectar() as conn:
             if not explicit_filter:
@@ -316,14 +322,22 @@ def registrar_rotas(m) -> None:
                     ld=date.today()
                 filter_year=ld.year; selected_months=[ld.month]
                 default_period_label=f"{_MONTH_NAME_PT.get(ld.month,str(ld.month))}/{ld.year}"
-            data=_a_faturar_data(conn,scope=scope,vendedor=vendedor,cliente=cliente,produto=produto,medida=medida,status=status,entrega_ini=entrega_ini,entrega_fim=entrega_fim,year=(filter_year if selected_months else None),months=selected_months)
+            data=_a_faturar_data(conn,scope=scopes,vendedor=vendedores,cliente=clientes,produto=produtos,medida=medidas,status=statuses,entrega_ini=entrega_ini,entrega_fim=entrega_fim,year=(filter_year if selected_months else None),months=selected_months)
             cobertura = conn.execute(
                 "SELECT AVG(CASE WHEN TRIM(COALESCE(entrega_pedido,''))<>'' THEN 1.0 ELSE 0.0 END) FROM orders WHERE TRIM(COALESCE(pedido,''))<>''"
             ).fetchone()
             entrega_ok = float((cobertura[0] if cobertura else 0) or 0) > 0
             vendors=[r[0] for r in conn.execute("SELECT DISTINCT COALESCE(NULLIF(TRIM(o.vendor_nome_ref),''),NULLIF(TRIM(v.nome),'')) nome FROM orders o LEFT JOIN vendors v ON v.id=o.vendor_id WHERE TRIM(COALESCE(o.pedido,''))<>'' AND TRIM(COALESCE(COALESCE(NULLIF(TRIM(o.vendor_nome_ref),''),NULLIF(TRIM(v.nome),'')),''))<>'' ORDER BY nome").fetchall()]
+            clients=[r[0] for r in conn.execute("SELECT DISTINCT COALESCE(NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(o.cliente_nome_ref),'')) nome FROM orders o LEFT JOIN customers c ON c.id=o.cliente_id WHERE TRIM(COALESCE(o.pedido,''))<>'' AND COALESCE(NULLIF(TRIM(c.fantasia),''),NULLIF(TRIM(c.nome),''),NULLIF(TRIM(o.cliente_nome_ref),'')) IS NOT NULL ORDER BY nome").fetchall()]
+            products=[r[0] for r in conn.execute("""
+                SELECT DISTINCT valor FROM (
+                    SELECT TRIM(grupo_ref) valor FROM orders WHERE TRIM(COALESCE(grupo_ref,''))<>''
+                    UNION SELECT TRIM(papel_ref) FROM orders WHERE TRIM(COALESCE(papel_ref,''))<>''
+                    UNION SELECT TRIM(produto_ref) FROM orders WHERE TRIM(COALESCE(produto_ref,''))<>''
+                ) ORDER BY valor
+            """).fetchall()]
             measures=[r[0] for r in conn.execute("SELECT DISTINCT medida_ref FROM orders WHERE TRIM(COALESCE(medida_ref,''))<>'' ORDER BY medida_ref").fetchall()]
-        export_params=dict(relatorio='a_faturar',escopo=scope,vendedor=vendedor,cliente=cliente,grupo=produto,medida=medida,status=status,entrega_ini=entrega_ini,entrega_fim=entrega_fim)
+        export_params=dict(relatorio='a_faturar',escopo=scopes,vendedor=vendedores,cliente=clientes,grupo=produtos,medida=medidas,status=statuses,entrega_ini=entrega_ini,entrega_fim=entrega_fim)
         if selected_months:
             export_params['ano_filtro']=filter_year
             export_params['meses']=','.join(str(m) for m in selected_months)
@@ -331,12 +345,22 @@ def registrar_rotas(m) -> None:
         body=render_template_string(r'''
         <div class="page-hero mb-4"><div class="d-flex justify-content-between align-items-start flex-wrap gap-3"><div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Pedido → Faturamento → Liquidez</div><div class="hero-title">A Faturar</div><div class="hero-sub mt-1">O que ainda precisa ser faturado por vendedor, cliente, produto, medida e data prevista de entrega.</div>{% if default_period_label %}<div class="mt-2"><span class="chip"><i class="bi bi-calendar3 me-1"></i>Visão padrão: {{ default_period_label }}</span></div>{% endif %}</div><div class="d-flex gap-2"><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#afFilters"><i class="bi bi-funnel me-1"></i>Filtros</button>{% if entrega_ok %}<a class="btn btn-success" href="{{ export_url }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>{% else %}<a class="btn btn-warning" href="{{ url_for('importar_csv') }}"><i class="bi bi-arrow-repeat me-1"></i>Atualizar Sisplan</a>{% endif %}</div></div></div>
         {% if not entrega_ok %}<div class="alert alert-warning border mb-4"><b>Datas de entrega ainda não estão no CRM.</b> Use <b>Atualizar Sisplan</b> para reler o FDB; o campo vem de <code>PEDIDO_001.ENTREGA</code>.</div>{% endif %}
-        <div class="collapse {% if vendedor or cliente or produto or medida or status or entrega_ini or entrega_fim or scope!='TOTAL' %}show{% endif %}" id="afFilters"><div class="cardx p-4 mb-4"><form method="get" class="row g-3"><div class="col-12 col-md-3"><label class="form-label fw-bold">Time</label><select class="form-select" name="escopo"><option value="TOTAL">Todos</option>{% for t in ['INTERNO','EXTERNO','SITE'] %}<option value="{{t}}" {% if scope==t %}selected{% endif %}>{{t.title()}}</option>{% endfor %}</select></div><div class="col-12 col-md-3"><label class="form-label fw-bold">Vendedor</label><select class="form-select" name="vendedor"><option value="">Todos</option>{% for x in vendors %}<option value="{{x}}" {% if vendedor==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></div><div class="col-12 col-md-3"><label class="form-label fw-bold">Cliente</label><input class="form-control" name="cliente" value="{{cliente}}" placeholder="Todos"></div><div class="col-12 col-md-3"><label class="form-label fw-bold">Produto / grupo / papel</label><input class="form-control" name="produto" value="{{produto}}" placeholder="Todos"></div><div class="col-12 col-md-3"><label class="form-label fw-bold">Medida</label><input class="form-control" name="medida" value="{{medida}}" list="afMeasures" placeholder="Todas"><datalist id="afMeasures">{% for x in measures %}<option value="{{x}}">{% endfor %}</datalist></div><div class="col-12 col-md-3"><label class="form-label fw-bold">Situação</label><select class="form-select" name="status"><option value="">Todas pendências</option>{% for st in ['NÃO FATURADO','PARCIAL','ATRASADO','A VENCER','SEM PREVISÃO'] %}<option value="{{st}}" {% if status==st %}selected{% endif %}>{{st}}</option>{% endfor %}</select></div><div class="col-6 col-md-3"><label class="form-label fw-bold">Entrega de</label><input type="date" class="form-control" name="entrega_ini" value="{{entrega_ini}}"></div><div class="col-6 col-md-3"><label class="form-label fw-bold">Entrega até</label><input type="date" class="form-control" name="entrega_fim" value="{{entrega_fim}}"></div><div class="col-12 d-flex gap-2 justify-content-end"><a class="btn btn-light border" href="{{ url_for('a_faturar') }}">Limpar</a><button class="btn btn-primary"><i class="bi bi-funnel me-1"></i>Aplicar</button></div></form></div></div>
+        <div class="collapse {% if scopes or vendedores or clientes or produtos or medidas or statuses or entrega_ini or entrega_fim %}show{% endif %}" id="afFilters"><div class="cardx p-4 mb-4"><form method="get" class="row g-3">
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Time</label><select class="form-select desempenho-multi" name="escopo" multiple aria-label="Time">{% for value,label in [('INTERNO','Interno'),('EXTERNO','Externo'),('SITE','Site')] %}<option value="{{value}}" {% if value in scopes %}selected{% endif %}>{{label}}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Vendedor</label><select class="form-select desempenho-multi" name="vendedor" multiple aria-label="Vendedor">{% for x in vendors %}<option value="{{x}}" {% if x in vendedores %}selected{% endif %}>{{x}}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Cliente</label><select class="form-select desempenho-multi" name="cliente" multiple aria-label="Cliente">{% for x in clients %}<option value="{{x}}" {% if x in clientes %}selected{% endif %}>{{x}}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Produto / grupo / papel</label><select class="form-select desempenho-multi" name="produto" multiple aria-label="Produto, grupo ou papel">{% for x in products %}<option value="{{x}}" {% if x in produtos %}selected{% endif %}>{{x}}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Medida</label><select class="form-select desempenho-multi" name="medida" multiple aria-label="Medida">{% for x in measures %}<option value="{{x}}" {% if x in medidas %}selected{% endif %}>{{x}}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-3"><label class="form-label fw-bold">Situação</label><select class="form-select desempenho-multi" name="status" multiple aria-label="Situação">{% for st in ['NÃO FATURADO','PARCIAL','ATRASADO','A VENCER','SEM PREVISÃO'] %}<option value="{{st}}" {% if st in statuses %}selected{% endif %}>{{st}}</option>{% endfor %}</select></div>
+          <div class="col-6 col-md-3"><label class="form-label fw-bold">Entrega de</label><input type="date" class="form-control" name="entrega_ini" value="{{entrega_ini}}"></div>
+          <div class="col-6 col-md-3"><label class="form-label fw-bold">Entrega até</label><input type="date" class="form-control" name="entrega_fim" value="{{entrega_fim}}"></div>
+          <div class="col-12 d-flex gap-2 justify-content-end"><a class="btn btn-light border" href="{{ url_for('a_faturar') }}">Limpar</a><button class="btn btn-primary"><i class="bi bi-funnel me-1"></i>Aplicar</button></div>
+        </form></div></div>
         <div class="row g-3 mb-4"><div class="col-6 col-xl-3"><div class="metric-pill h-100"><div class="metric-label">Falta faturar</div><div class="num">{{format_brl(d.total_falta)}}</div><div class="desc">{{d.total_pedidos}} pedidos em aberto</div></div></div><div class="col-6 col-xl-3"><div class="metric-pill h-100"><div class="metric-label">Faturado nesses pedidos</div><div class="num">{{format_brl(d.total_faturado)}}</div><div class="desc">já conciliado por nº do pedido</div></div></div><div class="col-6 col-xl-3"><div class="metric-pill h-100"><div class="metric-label">Entregas atrasadas</div><div class="num">{{d.atrasados}}</div><div class="desc">pendentes com data vencida</div></div></div><div class="col-6 col-xl-3"><div class="metric-pill h-100"><div class="metric-label">Faturamento parcial</div><div class="num">{{d.parciais}}</div><div class="desc">pedidos faturados em parte</div></div></div></div>
         {% if d.delivery_coverage < 95 %}<div class="alert alert-warning border"><b>Previsão de entrega parcial:</b> {{'%.1f'|format(d.delivery_coverage)}}% dos pedidos desta visão têm data/condição suficiente. A data exata vem de <code>PEDIDO_001.ENTREGA</code> após <b>Atualizar Sisplan</b>.</div>{% endif %}
         <div class="cardx p-4 mb-4"><div class="section-title mb-1">Por vendedor</div><div class="section-sub mb-3">Saldo a faturar consolidado dos pedidos selecionados.</div><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Vendedor</th><th>Time</th><th class="text-end">Pedidos</th><th class="text-end">Já faturado</th><th class="text-end">Falta faturar</th><th class="text-end">Liquidado</th></tr></thead><tbody>{% for r in d.vendors %}<tr><td class="fw-bold">{{r.vendedor}}</td><td><span class="chip">{{r.time}}</span></td><td class="text-end">{{r.pedidos}}</td><td class="text-end">{{format_brl(r.faturado)}}</td><td class="text-end fw-bold text-primary">{{format_brl(r.falta)}}</td><td class="text-end">{{format_brl(r.liquidado)}}</td></tr>{% else %}<tr><td colspan="6" class="text-center text-muted py-4">Sem pendências.</td></tr>{% endfor %}</tbody></table></div></div>
         <div class="cardx p-4"><div class="d-flex justify-content-between align-items-start gap-3 mb-3"><div><div class="section-title">Pedidos pendentes de faturamento</div><div class="section-sub">Clique em Itens para ver produto, medida, papel, quantidade e valor de cada linha do pedido.</div></div><span class="chip">Conciliação por nº do pedido</span></div><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Entrega</th><th>Pedido</th><th>Cliente</th><th>Vendedor</th><th>Produto</th><th>Medida</th><th class="text-end">Pedido</th><th class="text-end">Faturado</th><th class="text-end">Falta</th><th>Situação</th><th>Status</th><th></th></tr></thead><tbody>{% for r in d.rows %}<tr><td><div class="fw-bold {% if r.entrega_status.startswith('ATRASADO') %}text-danger{% endif %}">{{r.entrega or '—'}}</div><div class="small text-muted">{{r.entrega_status}}</div></td><td class="fw-bold text-primary">{{r.pedido}}</td><td>{{r.cliente}}</td><td><div>{{r.vendedor}}</div><span class="chip">{{r.time}}</span></td><td class="small" style="min-width:210px;max-width:310px">{{r.produtos}}</td><td class="small">{{r.medidas}}</td><td class="text-end">{{format_brl(r.valor_pedido)}}</td><td class="text-end"><div>{{format_brl(r.faturado)}}</div><div class="small text-muted">{{'%.1f'|format(r.pct_faturado)}}%</div></td><td class="text-end fw-bold text-primary">{{format_brl(r.falta_faturar)}}</td><td><span class="badge text-bg-secondary">{{r.situacao_721}}</span></td><td><span class="badge {% if r.status=='PARCIAL' %}text-bg-warning{% else %}text-bg-danger{% endif %}">{{r.status}}</span><div class="small text-muted mt-1">Liq. {{format_brl(r.liquidado)}}</div></td><td><button class="btn btn-sm btn-light border" data-bs-toggle="collapse" data-bs-target="#af{{loop.index}}">Itens</button></td></tr><tr class="collapse" id="af{{loop.index}}"><td colspan="12" class="p-0"><div class="p-3 bg-light"><div class="small text-muted mb-2">NFs: {{r.nfs or '—'}} · Última NF: {{r.ultima_nf or '—'}} · Último pagamento: {{r.ultimo_pagamento or '—'}} · Condição: {{r.condicao_entrega or '—'}} · {{r.entrega_origem or ''}}{% if r.observacao %} · Obs.: {{r.observacao}}{% endif %}</div><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Produto</th><th>Código</th><th>Descrição 721</th><th>Medida</th><th>Papel</th><th class="text-end">Qtd.</th><th class="text-end">Preço un.</th><th class="text-end">Valor linha</th></tr></thead><tbody>{% for it in r['items'] %}<tr><td>{{it.produto}}</td><td>{{it.codigo or '—'}}</td><td class="small">{{it.descricao or '—'}}</td><td>{{it.medida or '—'}}</td><td>{{it.papel or '—'}}</td><td class="text-end">{{format_num_br(it.quantidade,0)}}</td><td class="text-end">{{format_brl(it.preco_unitario)}}</td><td class="text-end">{{format_brl(it.valor_item)}}</td></tr>{% endfor %}</tbody></table></div></div></td></tr>{% else %}<tr><td colspan="12" class="text-center text-muted py-5">Nenhum pedido pendente com os filtros selecionados.</td></tr>{% endfor %}</tbody></table></div></div>
-        ''',d=data,scope=scope,vendedor=vendedor,cliente=cliente,produto=produto,medida=medida,status=status,entrega_ini=entrega_ini,entrega_fim=entrega_fim,vendors=vendors,measures=measures,export_url=export_url,default_period_label=default_period_label,entrega_ok=entrega_ok,format_brl=format_brl,format_num_br=format_num_br)
+        ''',d=data,scopes=scopes,vendedores=vendedores,clientes=clientes,produtos=produtos,medidas=medidas,statuses=statuses,entrega_ini=entrega_ini,entrega_fim=entrega_fim,vendors=vendors,clients=clients,products=products,measures=measures,export_url=export_url,default_period_label=default_period_label,entrega_ok=entrega_ok,format_brl=format_brl,format_num_br=format_num_br)
         return render_page('A Faturar',body,'a_faturar')
 
 
@@ -569,11 +593,17 @@ def registrar_rotas(m) -> None:
         if relatorio == "a_faturar":
             entrega_ini=(request.args.get("entrega_ini") or "").strip()
             entrega_fim=(request.args.get("entrega_fim") or "").strip()
+            af_scopes=[value.strip().upper() for value in request.args.getlist("escopo") if value.strip().upper() in {"INTERNO","EXTERNO","SITE"}]
+            af_vendors=[value.strip() for value in request.args.getlist("vendedor") if value.strip()]
+            af_clients=[value.strip() for value in request.args.getlist("cliente") if value.strip()]
+            af_products=[value.strip() for value in (request.args.getlist("grupo") + request.args.getlist("produto")) if value.strip()]
+            af_measures=[value.strip() for value in request.args.getlist("medida") if value.strip()]
+            af_statuses=[value.strip().upper() for value in request.args.getlist("status") if value.strip()]
             with conectar() as conn:
-                data=_a_faturar_data(conn,scope=scope,vendedor=vendedor_filtro,cliente=cliente_filtro,produto=grupo_filtro,medida=medida_filtro,status=status_filtro_global,entrega_ini=entrega_ini,entrega_fim=entrega_fim,year=(filter_year if selected_months else None),months=selected_months)
+                data=_a_faturar_data(conn,scope=af_scopes,vendedor=af_vendors,cliente=af_clients,produto=af_products,medida=af_measures,status=af_statuses,entrega_ini=entrega_ini,entrega_fim=entrega_fim,year=(filter_year if selected_months else None),months=selected_months)
             rows=[[r.get("entrega"),r.get("entrega_status"),r.get("entrega_origem"),r.get("data_pedido"),r.get("pedido"),r.get("cliente"),r.get("vendedor"),r.get("time"),r.get("produtos"),r.get("codigos_produto"),r.get("descricoes_produto"),r.get("medidas"),r.get("papeis"),r.get("quantidade"),r.get("valor_pedido"),r.get("faturado"),r.get("falta_faturar"),r.get("pct_faturado")/100.0,r.get("liquidado"),r.get("a_receber"),r.get("situacao_721"),r.get("status"),r.get("nfs"),r.get("ultima_nf"),r.get("ultimo_pagamento"),r.get("condicao_entrega"),r.get("observacao")] for r in data["rows"]]
             sheets=[{"name":"A Faturar","title":"Pedidos pendentes de faturamento","headers":["Entrega prevista","Situação entrega","Origem previsão","Data pedido","Pedido","Cliente","Vendedor","Time","Produto","Código produto","Descrição","Medida","Papel","Quantidade","Valor pedido","Já faturado","Falta faturar","% faturado","Liquidado","A receber","Situação","Status faturamento","NFs","Última NF","Último pagamento","Condição entrega","Observação"],"rows":rows}]
-            metadata=[("Relatório","A Faturar"),("Time",_analysis_scope_label(scope)),("Vendedor",vendedor_filtro or "Todos"),("Cliente",cliente_filtro or "Todos"),("Produto/grupo",grupo_filtro or "Todos"),("Medida",medida_filtro or "Todas"),("Pedidos pendentes",data["total_pedidos"]),("Falta faturar",data["total_falta"]),("Já faturado",data["total_faturado"]),("Liquidado",data["total_liquidado"]),("Entregas atrasadas",data["atrasados"]),("Gerado em",datetime.now().strftime("%d/%m/%Y %H:%M"))]
+            metadata=[("Relatório","A Faturar"),("Time",_analysis_scope_label(af_scopes)),("Vendedor",", ".join(af_vendors) or "Todos"),("Cliente",", ".join(af_clients) or "Todos"),("Produto/grupo",", ".join(af_products) or "Todos"),("Medida",", ".join(af_measures) or "Todas"),("Pedidos pendentes",data["total_pedidos"]),("Falta faturar",data["total_falta"]),("Já faturado",data["total_faturado"]),("Liquidado",data["total_liquidado"]),("Entregas atrasadas",data["atrasados"]),("Gerado em",datetime.now().strftime("%d/%m/%Y %H:%M"))]
             return _xlsx_response("a_faturar", "CRM NPD · A Faturar", metadata, sheets)
 
         if relatorio == "performance":
@@ -736,17 +766,23 @@ def registrar_rotas(m) -> None:
         if relatorio in {"historico", "planejamento", "consumo"}:
             try: target_year=int(request.args.get("ano") or request.args.get("ano_filtro") or ref.year)
             except Exception: target_year=ref.year
-            vendor_id_export=None
-            try:
-                raw_v=str(request.args.get("vendedor") or "").strip()
-                vendor_id_export=int(raw_v) if raw_v else None
-            except Exception:
-                vendor_id_export=None
+            export_scopes=list(dict.fromkeys(
+                value.strip().upper() for value in request.args.getlist("escopo")
+                if value.strip().upper() in {"INTERNO","EXTERNO","SITE"}
+            ))
+            vendor_ids_export=[]
+            for raw_vendor in request.args.getlist("vendedor"):
+                try:
+                    parsed_vendor=int(str(raw_vendor).strip())
+                except Exception:
+                    continue
+                if parsed_vendor > 0 and parsed_vendor not in vendor_ids_export:
+                    vendor_ids_export.append(parsed_vendor)
             with conectar() as conn:
                 fonte_export=(request.args.get("fonte") or "pedidos").strip().lower()
                 if fonte_export not in {"pedidos","faturamento"}: fonte_export="pedidos"
                 metric_export=(request.args.get("metric") or "valor").strip().lower()
-                a=_planning_analysis_data(conn,periodo,ref,target_year,scope,selected_months=selected_months,vendor_id=vendor_id_export,metric=metric_export,fonte=fonte_export)
+                a=_planning_analysis_data(conn,periodo,ref,target_year,export_scopes,selected_months=selected_months,vendor_id=vendor_ids_export,metric=metric_export,fonte=fonte_export)
             comp=[[r['year'],r['orders'],r['clients'],r['qty'],r['value'],(r['variation']/100.0 if r['variation'] is not None else None)] for r in sorted(a['year_rows'],key=lambda x:x['year'])]
             expected_rows=[[c['name'],", ".join(map(str,c['years'])),c['recurrence'],c['likely_month_name'],c['projected'],c['target_value'],c['gap'],c['status'],c['frequency'],c['last_purchase'].isoformat() if c['last_purchase'] else '',c['next_purchase'].isoformat() if c['next_purchase'] else ''] for c in a['expected_clients']]
             risk_rows=[[c['name'],c['projected'],c['target_value'],c['gap'],c['status'],c['likely_month_name'],c['frequency']] for c in a['expected_clients'] if c['gap']>0]
@@ -792,11 +828,12 @@ def registrar_rotas(m) -> None:
                 for x in a['top_measures']: consumo_rows.append(["Top medida",x['name'],x['qty'],x['kg'],x['kg']/1000.0 if x['kg'] else 0,x['pct']/100.0])
                 sheets=[{"name":"Consumo","title":"Plano de consumo projetado","headers":["Tipo","Item","Quantidade (un.)","Kg","Toneladas","Participação"],"rows":consumo_rows}]
             metadata=[
-                ("Relatório","Consumo projetado de papel" if relatorio=="consumo" else "Planejamento gerencial"),("Recorte",a['period_name']),("Ano-alvo",target_year),("Time",_analysis_scope_label(scope)),("Vendedor",a.get('vendor_name') or "Todos"),
+                ("Relatório","Consumo projetado de papel" if relatorio=="consumo" else "Planejamento gerencial"),("Recorte",a['period_name']),("Ano-alvo",target_year),("Time",_analysis_scope_label(export_scopes)),("Vendedor",a.get('vendor_name') or "Todos"),
                 ("Realizado",a['actual_target_value']),("Conservador",a['scenarios']['conservative']),("Forecast provável",a['forecast_value']),("Otimista",a['scenarios']['optimistic']),
                 ("Gap potencial",a['revenue_risk']),("Papel projetado kg",a['total_paper_kg']),("Cobertura consumo",f"{a['paper_coverage']:.1f}%"),("Gerado em",datetime.now().strftime('%d/%m/%Y %H:%M'))
             ]
-            return _xlsx_response(f"planejamento_{periodo}_{target_year}_{scope.lower()}", "CRM NPD · Planejamento Gerencial", metadata, sheets)
+            scope_slug="-".join(item.lower() for item in export_scopes) or "total"
+            return _xlsx_response(f"planejamento_{periodo}_{target_year}_{scope_slug}", "CRM NPD · Planejamento Gerencial", metadata, sheets)
 
         d0,d1,period_label=_export_bounds()
         with conectar() as conn: ds=_report_datasets(conn,d0,d1,scope)
@@ -844,14 +881,18 @@ def registrar_rotas(m) -> None:
         tx_cons = _parse_optional_pct(request.args.get("tx_cons"))
         tx_prov = _parse_optional_pct(request.args.get("tx_prov"))
         tx_otim = _parse_optional_pct(request.args.get("tx_otim"))
-        scope=(request.args.get("escopo") or "TOTAL").strip().upper()
-        if scope not in {"TOTAL","INTERNO","EXTERNO","SITE"}: scope="TOTAL"
-        vendor_id=None
-        try:
-            raw_v=str(request.args.get("vendedor") or "").strip()
-            vendor_id=int(raw_v) if raw_v else None
-        except Exception:
-            vendor_id=None
+        scopes=list(dict.fromkeys(
+            value.strip().upper() for value in request.args.getlist("escopo")
+            if value.strip().upper() in {"INTERNO","EXTERNO","SITE"}
+        ))
+        vendor_ids=[]
+        for raw_vendor in request.args.getlist("vendedor"):
+            try:
+                parsed_vendor=int(str(raw_vendor).strip())
+            except Exception:
+                continue
+            if parsed_vendor > 0 and parsed_vendor not in vendor_ids:
+                vendor_ids.append(parsed_vendor)
         metric=(request.args.get("metric") or "valor").strip().lower()
         if metric=="faturamento": metric="valor"
         if metric not in {"valor","quantidade"}: metric="valor"
@@ -866,27 +907,25 @@ def registrar_rotas(m) -> None:
                 FROM vendors
             """
             vendor_options=[dict(r) for r in conn.execute(vendor_sql_select + " WHERE COALESCE(ativo,1)=1 AND COALESCE(TRIM(nome),'')<>'' ORDER BY nome").fetchall()]
-            if vendor_id and not any(int(v["id"])==int(vendor_id) for v in vendor_options):
-                extra=conn.execute(vendor_sql_select + " WHERE id=?", (vendor_id,)).fetchone()
-                if extra:
-                    vendor_options.append(dict(extra))
-                    vendor_options.sort(key=lambda x: str(x.get("nome") or "").upper())
+            missing_vendor_ids=[vendor_id for vendor_id in vendor_ids if not any(int(v["id"])==vendor_id for v in vendor_options)]
+            if missing_vendor_ids:
+                placeholders=','.join('?' for _ in missing_vendor_ids)
+                extras=conn.execute(vendor_sql_select + f" WHERE id IN ({placeholders})", tuple(missing_vendor_ids)).fetchall()
+                vendor_options.extend(dict(extra) for extra in extras)
+                vendor_options.sort(key=lambda x: str(x.get("nome") or "").upper())
             a=_planning_analysis_data(
-                conn, periodo, anchor, target_year, scope,
+                conn, periodo, anchor, target_year, scopes,
                 selected_months=selected_months,
                 conservative_growth_pct=tx_cons,
                 probable_growth_pct=tx_prov,
                 optimistic_growth_pct=tx_otim,
-                vendor_id=vendor_id,
+                vendor_id=vendor_ids,
                 metric=metric,
                 fonte=fonte,
             )
         vendor_name=a.get("vendor_name") or ""
-        if vendor_id and not vendor_name:
-            for v in vendor_options:
-                if int(v["id"])==vendor_id:
-                    vendor_name=v.get("nome") or ""
-                    break
+        if vendor_ids and not vendor_name:
+            vendor_name=" + ".join(str(v.get("nome") or "") for v in vendor_options if int(v["id"]) in vendor_ids)
         ano_hoje = date.today().year
         chart_rows=sorted(
             [x for x in a['year_rows'] if 1990 <= int(x.get('year') or 0) <= ano_hoje + 1],
@@ -905,7 +944,7 @@ def registrar_rotas(m) -> None:
             money=not metric_qty,
         ) if chart_rows else None
         year_options=list(range(max(a['max_db_year']+2,target_year+1),a['min_db_year']-1,-1))
-        export_url=url_for('relatorios_exportar',relatorio='planejamento',periodo=periodo,data_base=anchor.isoformat(),ano=target_year,ano_filtro=target_year,meses=','.join(map(str,selected_months)),escopo=scope,conteudo='AMBOS',vendedor=vendor_id or '',fonte=fonte,metric=metric)
+        export_url=url_for('relatorios_exportar',relatorio='planejamento',periodo=periodo,data_base=anchor.isoformat(),ano=target_year,ano_filtro=target_year,meses=','.join(map(str,selected_months)),escopo=scopes,conteudo='AMBOS',vendedor=vendor_ids,fonte=fonte,metric=metric)
         clear_filters_url=url_for('analise_historica', ano=today.year, mes=today.month)
         from urllib.parse import urlencode
         def toggle_url(param, kind):
@@ -922,21 +961,22 @@ def registrar_rotas(m) -> None:
         <div class="page-hero mb-4"><div class="d-flex justify-content-between align-items-start flex-wrap gap-3"><div><div class="small text-uppercase fw-bold mb-2" style="letter-spacing:.12em;color:#86dbe6">Planejamento comercial, financeiro e produção</div><div class="hero-title">Análise Histórica & Forecast</div><div class="hero-sub mt-1">Sazonalidade por mês, trimestre ou semestre sem perder clientes que deslocam a compra dentro da janela. Forecast de vendas, risco e consumo de papel em kg.</div></div><span class="chip"><i class="bi bi-database-check"></i> Histórico desde {{ a.min_db_year }}</span></div></div>
 
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4"><div class="small text-muted"><i class="bi bi-calendar3 me-1"></i>{{ a.period_name }} · {{ target_year }} · {{ scope_label }}{% if vendor_name %} · {{ vendor_name }}{% endif %}</div><div class="d-flex gap-2 align-items-center flex-wrap"><nav class="dash-tabs" aria-label="Fonte da análise"><a class="{{ 'active' if fonte=='faturamento' else '' }}" href="{{ toggle_url('fonte','faturamento') }}">Faturamento</a><a class="{{ 'active' if fonte=='pedidos' else '' }}" href="{{ toggle_url('fonte','pedidos') }}">Pedidos</a></nav><nav class="dash-tabs" aria-label="Métrica da análise"><a class="{{ 'active' if metric=='valor' else '' }}" href="{{ toggle_url('metric','valor') }}">Valor</a><a class="{{ 'active' if metric=='quantidade' else '' }}" href="{{ toggle_url('metric','quantidade') }}">Quantidade</a></nav><button class="btn btn-primary" type="button" data-bs-toggle="collapse" data-bs-target="#analysisFilters"><i class="bi bi-funnel me-1"></i>Filtros</button><a class="btn btn-success" href="{{ export_url }}"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a><a class="btn btn-outline-primary" href="{{ url_for('relatorios') }}" title="Central de relatórios"><i class="bi bi-file-earmark-spreadsheet"></i></a></div></div>
-        <div class="collapse mb-4 {% if scope!='TOTAL' or vendor_id %}show{% endif %}" id="analysisFilters"><form class="cardx p-4" method="get"><input type="hidden" name="periodo" value="meses"><input type="hidden" name="metric" value="{{ metric }}"><input type="hidden" name="fonte" value="{{ fonte }}"><div class="row g-3">
+        <div class="collapse mb-4 {% if scopes or vendor_ids %}show{% endif %}" id="analysisFilters"><form class="cardx p-4" method="get"><input type="hidden" name="periodo" value="meses"><input type="hidden" name="metric" value="{{ metric }}"><input type="hidden" name="fonte" value="{{ fonte }}"><div class="row g-3">
           <div class="col-12 col-md-4"><label class="form-label fw-bold">Ano-alvo</label><select class="form-select" name="ano">{% for y in year_options %}<option value="{{ y }}" {% if y==target_year %}selected{% endif %}>{{ y }}</option>{% endfor %}</select></div>
-          <div class="col-12 col-md-4"><label class="form-label fw-bold">Time</label><select class="form-select" name="escopo" id="analysisScope"><option value="TOTAL" {% if scope=='TOTAL' %}selected{% endif %}>Empresa inteira</option><option value="INTERNO" {% if scope=='INTERNO' %}selected{% endif %}>Interno</option><option value="EXTERNO" {% if scope=='EXTERNO' %}selected{% endif %}>Externo</option><option value="SITE" {% if scope=='SITE' %}selected{% endif %}>Site</option></select></div>
-          <div class="col-12 col-md-4"><label class="form-label fw-bold">Vendedor</label><select class="form-select" name="vendedor" id="analysisVendor"><option value="">Todos</option>{% for v in vendor_options %}<option value="{{ v.id }}" data-tipo="{{ v.tipo }}" {% if vendor_id==v.id %}selected{% endif %}>{{ v.nome }}</option>{% endfor %}</select></div>
+          <div class="col-12 col-md-4"><label class="form-label fw-bold">Time</label><select class="form-select desempenho-multi" name="escopo" id="analysisScope" multiple aria-label="Time"><option value="INTERNO" {% if 'INTERNO' in scopes %}selected{% endif %}>Interno</option><option value="EXTERNO" {% if 'EXTERNO' in scopes %}selected{% endif %}>Externo</option><option value="SITE" {% if 'SITE' in scopes %}selected{% endif %}>Site</option></select></div>
+          <div class="col-12 col-md-4"><label class="form-label fw-bold">Vendedor</label><select class="form-select desempenho-multi" name="vendedor" id="analysisVendor" multiple aria-label="Vendedor">{% for v in vendor_options %}<option value="{{ v.id }}" data-tipo="{{ v.tipo }}" {% if v.id in vendor_ids %}selected{% endif %}>{{ v.nome }}</option>{% endfor %}</select></div>
           <div class="col-12"><label class="form-label fw-bold">Atalhos</label><div class="d-flex flex-wrap gap-2"><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([1,2,3])">1º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([4,5,6])">2º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([7,8,9])">3º tri</button><button type="button" class="btn btn-sm btn-outline-primary" onclick="analysisMonths([10,11,12])">4º tri</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([1,2,3,4,5,6])">1º semestre</button><button type="button" class="btn btn-sm btn-outline-info" onclick="analysisMonths([7,8,9,10,11,12])">2º semestre</button><button type="button" class="btn btn-sm btn-light border" onclick="analysisMonths([1,2,3,4,5,6,7,8,9,10,11,12])">Ano todo</button></div></div>
-          <div class="col-12"><label class="form-label fw-bold">Meses que entram na comparação</label><div class="border rounded-3 p-3 bg-light"><div class="row g-2">{% for m,n in months_pt %}<div class="col-4 col-md-2"><label class="form-check d-flex align-items-center gap-2 mb-0"><input class="form-check-input analysis-month" type="checkbox" name="mes" value="{{ m }}" {% if m in selected_months %}checked{% elif not selected_months and m==anchor.month %}checked{% endif %}><span>{{ n[:3] }}</span></label></div>{% endfor %}</div></div><div class="form-text">Você pode marcar qualquer combinação: por exemplo Out + Nov + Dez, ou Jan + Mar + Jul.</div></div>
+          <div class="col-12"><label class="form-label fw-bold">Meses que entram na comparação</label><select class="form-select desempenho-multi analysis-months" name="mes" multiple aria-label="Meses que entram na comparação">{% for m,n in months_pt %}<option value="{{ m }}" {% if m in selected_months %}selected{% endif %}>{{ n }}</option>{% endfor %}</select><div class="form-text">Você pode selecionar qualquer combinação: por exemplo Outubro + Novembro + Dezembro.</div></div>
           <div class="col-12 d-flex justify-content-end gap-2"><a class="btn btn-light border" href="{{ clear_filters_url }}"><i class="bi bi-x-circle me-1"></i>Limpar filtros</a><button class="btn btn-primary"><i class="bi bi-check2 me-1"></i>Aplicar filtros</button></div>
           {% if tx_cons is not none %}<input type="hidden" name="tx_cons" value="{{ '%.1f'|format(tx_cons) }}">{% endif %}
           {% if tx_prov is not none %}<input type="hidden" name="tx_prov" value="{{ '%.1f'|format(tx_prov) }}">{% endif %}
           {% if tx_otim is not none %}<input type="hidden" name="tx_otim" value="{{ '%.1f'|format(tx_otim) }}">{% endif %}
         </div></form></div>
         <script>
-        function analysisMonths(list){const wanted=new Set(list.map(Number));document.querySelectorAll('.analysis-month').forEach(cb=>cb.checked=wanted.has(Number(cb.value)));}
+        function analysisMonths(list){const wanted=new Set(list.map(Number));const sel=document.querySelector('.analysis-months');if(!sel)return;sel.querySelectorAll('option').forEach(opt=>opt.selected=wanted.has(Number(opt.value)));sel.dispatchEvent(new Event('change',{bubbles:true}));}
         function analysisFilterVendors(clearHidden){
-          const team=(document.getElementById('analysisScope')||{}).value||'TOTAL';
+          const scope=document.getElementById('analysisScope');
+          const teams=new Set(scope?[...scope.selectedOptions].map(opt=>opt.value):[]);
           const sel=document.getElementById('analysisVendor');
           if(!sel) return;
           sel.querySelectorAll('option[data-tipo]').forEach(opt=>{
@@ -944,12 +984,11 @@ def registrar_rotas(m) -> None:
             const nome=(opt.textContent||'').trim().toUpperCase();
             const isSite=tipo==='SITE'||nome==='SITE';
             let show=true;
-            if(team==='INTERNO') show=tipo==='INTERNO'&&!isSite;
-            else if(team==='EXTERNO') show=tipo==='EXTERNO'&&!isSite;
-            else if(team==='SITE') show=isSite;
+            if(teams.size) show=(teams.has('INTERNO')&&tipo==='INTERNO'&&!isSite)||(teams.has('EXTERNO')&&tipo==='EXTERNO'&&!isSite)||(teams.has('SITE')&&isSite);
             opt.hidden=!show;
-            if(clearHidden && !show && opt.selected){ opt.selected=false; sel.value=''; }
+            if(clearHidden && !show && opt.selected) opt.selected=false;
           });
+          sel.dispatchEvent(new Event('change',{bubbles:true}));
         }
         const scopeEl=document.getElementById('analysisScope');
         if(scopeEl) scopeEl.addEventListener('change', function(){ analysisFilterVendors(true); });
@@ -961,10 +1000,10 @@ def registrar_rotas(m) -> None:
         <form method="get" class="row g-3 mb-4">
           <input type="hidden" name="periodo" value="meses">
           <input type="hidden" name="ano" value="{{ target_year }}">
-          <input type="hidden" name="escopo" value="{{ scope }}">
+          {% for selected_scope in scopes %}<input type="hidden" name="escopo" value="{{ selected_scope }}">{% endfor %}
           <input type="hidden" name="metric" value="{{ metric }}">
           <input type="hidden" name="fonte" value="{{ fonte }}">
-          {% if vendor_id %}<input type="hidden" name="vendedor" value="{{ vendor_id }}">{% endif %}
+          {% for selected_vendor in vendor_ids %}<input type="hidden" name="vendedor" value="{{ selected_vendor }}">{% endfor %}
           {% if selected_months %}{% for m in selected_months %}<input type="hidden" name="mes" value="{{ m }}">{% endfor %}{% else %}<input type="hidden" name="mes" value="{{ anchor.month }}">{% endif %}
           <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Realizado</div><div class="stat-value">{{ format_metric(a.actual_target_value) }}{% if metric_qty %} <span class="fs-6 fw-bold text-muted">un.</span>{% endif %}</div><div class="stat-sub">{% if metric_qty %}peças {{ 'faturadas' if fonte=='faturamento' else 'vendidas' }} no recorte{% else %}{{ 'faturado' if fonte=='faturamento' else 'pedidos' }} no recorte{% endif %}</div></div></div>
           <div class="col-6 col-xl-3"><div class="stat-card h-100"><div class="stat-label">Conservador</div><div class="stat-value">{{ format_metric(a.scenarios.conservative) }}{% if metric_qty %} <span class="fs-6 fw-bold text-muted">un.</span>{% endif %}</div><div class="stat-sub d-flex align-items-center gap-1 mt-2"><span>tendência</span><input type="text" name="tx_cons" class="form-control form-control-sm fw-bold" value="{{ '%.1f'|format(a.scenarios.conservative_growth) }}" inputmode="decimal" style="width:72px" onchange="this.form.submit()"><span>%</span><button class="btn btn-sm btn-light border" title="Aplicar">OK</button></div></div></div>
@@ -984,10 +1023,10 @@ def registrar_rotas(m) -> None:
 
         <div class="row g-4 mb-4"><div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="section-title mb-3">Mix previsto de produto</div>{% for r in a.fam_proj %}<div class="mb-3"><div class="d-flex justify-content-between"><b>{{ r.name }}</b><span>{{ format_num_br(r.qty,0) }} un. · {{ '%.1f'|format(r.pct) }}%</span></div><div class="progress mt-1" style="height:7px"><div class="progress-bar" style="width:{{ r.pct }}%"></div></div></div>{% endfor %}</div></div><div class="col-12 col-xl-6"><div class="cardx p-4 h-100"><div class="section-title mb-1">Top 5 medidas mais consumidas</div><div class="section-sub mb-3">Quantidade prevista em unidades na mesma janela sazonal.</div>{% for r in a.top_measures %}<div class="mb-3"><div class="d-flex justify-content-between gap-3"><b>{{ r.name }}</b><span class="text-end">{{ format_num_br(r.qty,0) }} un. · {{ '%.1f'|format(r.pct) }}%{% if r.kg>0 %}<br><small class="text-muted">≈ {{ format_num_br(r.kg,0) }} kg</small>{% endif %}</span></div><div class="progress mt-1" style="height:7px"><div class="progress-bar bg-info" style="width:{{ r.pct }}%"></div></div></div>{% else %}<div class="text-muted">Sem medidas suficientes no histórico-base.</div>{% endfor %}</div></div></div>
 
-        <div class="modal fade" id="paperBreakdownModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Papel previsto por gramatura</h5><div class="small text-muted">Consumo físico estimado para {{ a.period_name }} · {{ target_year }}</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Gramatura</th><th class="text-end">Kg previstos</th><th class="text-end">Toneladas</th><th class="text-end">% do total</th></tr></thead><tbody>{% for r in a.paper_consumption %}<tr><td class="fw-bold">{{ r.gram }}</td><td class="text-end fw-bold">{{ format_num_br(r.kg,0) }} kg</td><td class="text-end">{{ format_num_br(r.ton,3) }} t</td><td class="text-end">{{ '%.1f'|format(r.pct) }}%</td></tr>{% else %}<tr><td colspan="4" class="text-center text-muted py-4">Sem medida e gramatura suficientes para calcular o consumo.</td></tr>{% endfor %}</tbody><tfoot><tr class="fw-bold"><td>Total</td><td class="text-end">{{ format_num_br(a.total_paper_kg,0) }} kg</td><td class="text-end">{{ format_num_br(a.total_paper_kg/1000,3) }} t</td><td class="text-end">100%</td></tr></tfoot></table></div><div class="alert alert-light border mt-3 mb-0">Cobertura da estimativa: <b>{{ '%.1f'|format(a.paper_coverage) }}%</b>. Para compras/financeiro, o Excel de Planejamento também traz essa quebra mês a mês.</div></div><div class="modal-footer"><a class="btn btn-success" href="{{ url_for('relatorios_exportar', relatorio='consumo', periodo=periodo, data_base=anchor.isoformat(), ano=target_year, escopo=scope, vendedor=vendor_id or '') }}"><i class="bi bi-file-earmark-excel me-1"></i>Exportar consumo</a><button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div></div></div></div>
+        <div class="modal fade" id="paperBreakdownModal" tabindex="-1" aria-hidden="true"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><div><h5 class="modal-title">Papel previsto por gramatura</h5><div class="small text-muted">Consumo físico estimado para {{ a.period_name }} · {{ target_year }}</div></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead><tr><th>Gramatura</th><th class="text-end">Kg previstos</th><th class="text-end">Toneladas</th><th class="text-end">% do total</th></tr></thead><tbody>{% for r in a.paper_consumption %}<tr><td class="fw-bold">{{ r.gram }}</td><td class="text-end fw-bold">{{ format_num_br(r.kg,0) }} kg</td><td class="text-end">{{ format_num_br(r.ton,3) }} t</td><td class="text-end">{{ '%.1f'|format(r.pct) }}%</td></tr>{% else %}<tr><td colspan="4" class="text-center text-muted py-4">Sem medida e gramatura suficientes para calcular o consumo.</td></tr>{% endfor %}</tbody><tfoot><tr class="fw-bold"><td>Total</td><td class="text-end">{{ format_num_br(a.total_paper_kg,0) }} kg</td><td class="text-end">{{ format_num_br(a.total_paper_kg/1000,3) }} t</td><td class="text-end">100%</td></tr></tfoot></table></div><div class="alert alert-light border mt-3 mb-0">Cobertura da estimativa: <b>{{ '%.1f'|format(a.paper_coverage) }}%</b>. Para compras/financeiro, o Excel de Planejamento também traz essa quebra mês a mês.</div></div><div class="modal-footer"><a class="btn btn-success" href="{{ url_for('relatorios_exportar', relatorio='consumo', periodo=periodo, data_base=anchor.isoformat(), ano=target_year, escopo=scopes, vendedor=vendor_ids) }}"><i class="bi bi-file-earmark-excel me-1"></i>Exportar consumo</a><button class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div></div></div></div>
 
         <details class="cardx p-4 mb-4"><summary class="fw-bold" style="cursor:pointer"><i class="bi bi-calculator me-2"></i>Como o sistema chegou nesses números?</summary><div class="mt-3 small"><p><b>Forecast:</b> média sazonal ponderada dos até 3 anos anteriores (50% / 30% / 20%). Os três cenários calculam automaticamente a tendência e a dispersão do crescimento observado no mesmo período, sem percentual manual.</p><p><b>Trimestre/Semestre:</b> o cliente é considerado recorrente se comprar em qualquer mês da mesma janela. O “mês provável” usa onde ele concentrou valor nos anos-base.</p><p><b>Risco de receita:</b> valor projetado por cliente menos o realizado no período-alvo, nunca abaixo de zero.</p><p><b>Kg de papel:</b> estimativa geométrica para sacolas/cartuchos com medida L×A×F: área ≈ 2×(L+F)×(A+F); depois × gramatura × quantidade e + {{ '%.1f'|format(a.waste_pct) }}% de margem técnica padronizada. <b>Não substitui ficha técnica/BOM</b>; cobertura atual {{ '%.1f'|format(a.paper_coverage) }}%.</p><p class="mb-0"><b>Fonte:</b> {% if fonte=='faturamento' %}notas fiscais (faturamento){% else %}pedidos realizados{% endif %} do próprio CRM, time {{ scope_label }}{% if vendor_name %}, vendedor {{ vendor_name }}{% endif %}, base {{ a.source_text }}.</p></div></details>
-        """, a=a,periodo=periodo,periodo_label={"dia":"dia","semana":"semana","mes":"mês","trimestre":"trimestre","semestre":"semestre","ano":"ano","meses":"meses selecionados"}.get(periodo,periodo),anchor=anchor,target_year=target_year,year_options=year_options,scope=scope,scope_label=_analysis_scope_label(scope),sales_chart=sales_chart,export_url=export_url,clear_filters_url=clear_filters_url,selected_months=selected_months,months_pt=_MONTHS_PT,format_brl=format_brl,format_num_br=format_num_br,format_metric=format_metric,request=request,dict=dict,tx_cons=tx_cons,tx_prov=tx_prov,tx_otim=tx_otim,vendor_id=vendor_id,vendor_name=vendor_name,vendor_options=vendor_options,metric=metric,metric_qty=metric_qty,fonte=fonte,toggle_url=toggle_url)
+        """, a=a,periodo=periodo,periodo_label={"dia":"dia","semana":"semana","mes":"mês","trimestre":"trimestre","semestre":"semestre","ano":"ano","meses":"meses selecionados"}.get(periodo,periodo),anchor=anchor,target_year=target_year,year_options=year_options,scopes=scopes,scope_label=_analysis_scope_label(scopes),sales_chart=sales_chart,export_url=export_url,clear_filters_url=clear_filters_url,selected_months=selected_months,months_pt=_MONTHS_PT,format_brl=format_brl,format_num_br=format_num_br,format_metric=format_metric,request=request,dict=dict,tx_cons=tx_cons,tx_prov=tx_prov,tx_otim=tx_otim,vendor_ids=vendor_ids,vendor_name=vendor_name,vendor_options=vendor_options,metric=metric,metric_qty=metric_qty,fonte=fonte,toggle_url=toggle_url)
         return render_page("Análise Histórica",body,"analise_historica")
 
 

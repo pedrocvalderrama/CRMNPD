@@ -443,28 +443,36 @@ MONTHS_PT = [
 MONTH_NAME_PT = dict(MONTHS_PT)
 
 
-def _analysis_scope_sql(scope: str, vendor_alias: str = "v") -> str:
+def _analysis_scope_sql(scope: Any, vendor_alias: str = "v") -> str:
     """Filtro de equipe com a mesma classificação usada no Dashboard."""
-    s = (scope or "TOTAL").strip().upper()
     v = vendor_alias
     tipo = f"COALESCE(UPPER(TRIM({v}.tipo)), 'EXTERNO')"
     nome = f"COALESCE(UPPER(TRIM({v}.nome)), '')"
-    if s == "INTERNO":
-        return f"({tipo}='INTERNO' AND {nome}<>'SITE')"
-    if s == "EXTERNO":
-        return f"({tipo}='EXTERNO' AND {nome}<>'SITE')"
-    if s == "SITE":
-        return f"({tipo}='SITE' OR {nome}='SITE')"
-    return "1=1"
+    raw = scope if isinstance(scope, (list, tuple, set)) else [scope]
+    scopes = [str(item or "").strip().upper() for item in raw]
+    scopes = list(dict.fromkeys(item for item in scopes if item in {"INTERNO", "EXTERNO", "SITE"}))
+    clauses = []
+    for item in scopes:
+        if item == "INTERNO":
+            clauses.append(f"({tipo}='INTERNO' AND {nome}<>'SITE')")
+        elif item == "EXTERNO":
+            clauses.append(f"({tipo}='EXTERNO' AND {nome}<>'SITE')")
+        elif item == "SITE":
+            clauses.append(f"({tipo}='SITE' OR {nome}='SITE')")
+    return "(" + " OR ".join(clauses) + ")" if clauses else "1=1"
 
 
-def _analysis_scope_label(scope: str) -> str:
-    return {
+def _analysis_scope_label(scope: Any) -> str:
+    labels = {
         "TOTAL": "Empresa inteira",
         "INTERNO": "Time interno",
         "EXTERNO": "Time externo",
         "SITE": "Site / Marketplace",
-    }.get((scope or "TOTAL").upper(), "Empresa inteira")
+    }
+    raw = scope if isinstance(scope, (list, tuple, set)) else [scope]
+    scopes = list(dict.fromkeys(str(item or "").strip().upper() for item in raw if str(item or "").strip()))
+    selected = [labels[item] for item in scopes if item in labels and item != "TOTAL"]
+    return " + ".join(selected) if selected else "Empresa inteira"
 
 def _pedido_match_key(value: Any) -> str:
     """Normaliza nº de pedido preservando subpedido (/01, /02...).
@@ -607,14 +615,20 @@ def _prever_entrega_721(item: dict) -> dict:
 
     return {"date": None, "iso": "", "display": "—", "source": "", "label": "Sem condição de entrega", "stock": False}
 
-def _a_faturar_data(conn: sqlite3.Connection, *, scope: str = "TOTAL", vendedor: str = "", cliente: str = "",
-                    produto: str = "", medida: str = "", status: str = "", entrega_ini: str = "",
+def _a_faturar_data(conn: sqlite3.Connection, *, scope: Any = "TOTAL", vendedor: Any = "", cliente: Any = "",
+                    produto: Any = "", medida: Any = "", status: Any = "", entrega_ini: str = "",
                     entrega_fim: str = "", year: Optional[int] = None, months: Optional[List[int]] = None,
                     include_faturados: bool = False) -> dict:
     """Concilia PEDIDOS 721 x FATURAMENTO x LIQUIDEZ por número de pedido."""
-    scope = (scope or "TOTAL").strip().upper()
-    if scope not in {"TOTAL","INTERNO","EXTERNO","SITE"}: scope="TOTAL"
-    scope_sql = _report_scope_sql(scope, "v")
+    def _values(value: Any, *, upper: bool = False) -> list[str]:
+        raw = value if isinstance(value, (list, tuple, set)) else [value]
+        values = [str(item or "").strip() for item in raw]
+        values = [item.upper() if upper else item for item in values if item]
+        return list(dict.fromkeys(values))
+
+    scopes = [item for item in _values(scope, upper=True) if item in {"INTERNO", "EXTERNO", "SITE"}]
+    scope_sql = " OR ".join(f"({_report_scope_sql(item, 'v')})" for item in scopes) or "1=1"
+    scope_sql = f"({scope_sql})"
     order_rows = [dict(r) for r in conn.execute(f"""
         SELECT o.id, TRIM(COALESCE(o.pedido,'')) pedido, date(o.data_emissao) data_emissao,
                date(o.entrega_pedido) entrega_pedido,
@@ -681,11 +695,11 @@ def _a_faturar_data(conn: sqlite3.Connection, *, scope: str = "TOTAL", vendedor:
     for r in liq_rows:
         liq_by[_resolve_fact_order_key(r.get('pedido'))].append(r)
 
-    vendedor_n=_legacy().norm(vendedor) if vendedor else ''
-    cliente_n=_legacy().norm(cliente) if cliente else ''
-    produto_n=_legacy().norm(produto) if produto else ''
-    medida_n=_legacy().norm(medida) if medida else ''
-    status_n=(status or '').strip().upper()
+    vendedor_ns=[_legacy().norm(item) for item in _values(vendedor)]
+    cliente_ns=[_legacy().norm(item) for item in _values(cliente)]
+    produto_ns=[_legacy().norm(item) for item in _values(produto)]
+    medida_ns=[_legacy().norm(item) for item in _values(medida)]
+    status_ns=_values(status, upper=True)
     months=set(months or [])
     today=date.today()
     rows=[]; delivery_known=0; product_known=0
@@ -819,12 +833,14 @@ def _a_faturar_data(conn: sqlite3.Connection, *, scope: str = "TOTAL", vendedor:
             'nfs':', '.join(nfs),'ultima_nf':inv_dates[-1] if inv_dates else '', 'ultimo_pagamento':pay_dates[-1] if pay_dates else '',
             'condicao_entrega':base.get('condicao_entrega') or '', 'observacao':base.get('observacao') or '', 'items':item_detail,
         }
-        if vendedor_n and vendedor_n not in _legacy().norm(row['vendedor']): continue
-        if cliente_n and cliente_n not in _legacy().norm(row['cliente']): continue
-        if produto_n and produto_n not in _legacy().norm(row['produtos']+' '+row['grupos']+' '+row['papeis']+' '+row.get('codigos_produto','')+' '+row.get('descricoes_produto','')): continue
-        if medida_n and medida_n not in _legacy().norm(row['medidas']): continue
-        if status_n and status_n not in {'TODOS','TOTAL'}:
-            if status_n not in {row['status'],row['entrega_status']} and status_n not in _legacy().norm(row['status']+' '+row['entrega_status']).upper(): continue
+        if vendedor_ns and not any(value in _legacy().norm(row['vendedor']) for value in vendedor_ns): continue
+        if cliente_ns and not any(value in _legacy().norm(row['cliente']) for value in cliente_ns): continue
+        product_text=_legacy().norm(row['produtos']+' '+row['grupos']+' '+row['papeis']+' '+row.get('codigos_produto','')+' '+row.get('descricoes_produto',''))
+        if produto_ns and not any(value in product_text for value in produto_ns): continue
+        if medida_ns and not any(value in _legacy().norm(row['medidas']) for value in medida_ns): continue
+        if status_ns:
+            status_text=_legacy().norm(row['status']+' '+row['entrega_status']).upper()
+            if not any(value in {row['status'],row['entrega_status']} or value in status_text for value in status_ns): continue
         if entrega_ini and (not entrega_iso or entrega_iso < entrega_ini): continue
         if entrega_fim and (not entrega_iso or entrega_iso > entrega_fim): continue
         if year is not None and months:

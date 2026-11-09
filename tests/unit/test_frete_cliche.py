@@ -98,6 +98,7 @@ def test_gravar_faturamento_distingue_cliche_e_frete():
             "VALOR_FRETE": 150.00,
             "MEDIDA": "30X40",
             "GRUPO": "SACOLAS",
+            "DESC_MARCA": "PAPEL KRAFT",
             "NAT_TIPO": "V",
             "ORDEM": 1,
         },
@@ -125,6 +126,7 @@ def test_gravar_faturamento_distingue_cliche_e_frete():
     cache = m.build_import_entity_cache(conn)
     n = _gravar_faturamento(conn, m, rows, "2026-10-15T12:00:00", cache)
     assert n == 2
+    assert conn.execute("SELECT papel_ref FROM invoices WHERE produto_codigo_ref = ?", ("PROD01",)).fetchone()[0] == "PAPEL KRAFT"
 
     # Verifica faturamento padrão sem clichê e sem frete
     fat_padrao = conn.execute("""

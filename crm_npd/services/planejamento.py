@@ -202,13 +202,13 @@ def _auto_growth(year_stats: Dict[int, Dict[str, Any]], key: str, target_year: i
     return probable_growth, conservative_growth, optimistic_growth, spread
 
 
-def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, scope: str,
+def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, scope: Any,
                             growth: Optional[float] = None, scenario_band: Optional[float] = None,
                             waste_pct: Optional[float] = None, selected_months: Optional[List[int]] = None,
                             conservative_growth_pct: Optional[float] = None,
                             probable_growth_pct: Optional[float] = None,
                             optimistic_growth_pct: Optional[float] = None,
-                            vendor_id: Optional[int] = None,
+                            vendor_id: Any = None,
                             metric: Optional[str] = None,
                             fonte: Optional[str] = None) -> Dict[str, Any]:
     """Fonte única para tela e Excel de planejamento.
@@ -218,7 +218,11 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
     no mesmo trimestre. A provável distribuição mensal é calculada dentro da janela.
     """
     periodo = (periodo or "mes").lower()
-    scope = (scope or "TOTAL").upper()
+    raw_scopes = scope if isinstance(scope, (list, tuple, set)) else [scope]
+    scopes = list(dict.fromkeys(
+        str(item or "").strip().upper() for item in raw_scopes
+        if str(item or "").strip().upper() in {"INTERNO", "EXTERNO", "SITE"}
+    ))
     metric = (metric or "valor").strip().lower()
     if metric == "faturamento":
         metric = "valor"
@@ -236,17 +240,25 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
         system_waste = 8.0
     waste_pct = max(0.0, min(30.0, float(system_waste)))
     waste_factor = 1.0 + waste_pct/100.0
-    scope_sql = _analysis_scope_sql(scope, "v")
-    try:
-        vendor_id = int(vendor_id) if vendor_id not in (None, "", 0, "0") else None
-    except Exception:
-        vendor_id = None
-    vendor_sql = "v.id=?" if vendor_id else "1=1"
-    vendor_params: Tuple[Any, ...] = (vendor_id,) if vendor_id else ()
+    scope_sql = _analysis_scope_sql(scopes, "v")
+    raw_vendor_ids = vendor_id if isinstance(vendor_id, (list, tuple, set)) else [vendor_id]
+    vendor_ids = []
+    for raw_vendor_id in raw_vendor_ids:
+        try:
+            parsed_id = int(raw_vendor_id)
+        except Exception:
+            continue
+        if parsed_id > 0 and parsed_id not in vendor_ids:
+            vendor_ids.append(parsed_id)
+    vendor_sql = "v.id IN (" + ",".join("?" for _ in vendor_ids) + ")" if vendor_ids else "1=1"
+    vendor_params: Tuple[Any, ...] = tuple(vendor_ids)
     vendor_name = None
-    if vendor_id:
-        vrow = conn.execute("SELECT nome FROM vendors WHERE id=?", (vendor_id,)).fetchone()
-        vendor_name = (vrow[0] if vrow else None) or None
+    if vendor_ids:
+        names = [str(row[0]) for row in conn.execute(
+            "SELECT nome FROM vendors WHERE id IN (" + ",".join("?" for _ in vendor_ids) + ") ORDER BY nome",
+            vendor_params,
+        ).fetchall() if row[0]]
+        vendor_name = " + ".join(names) or None
     selected_months = sorted({int(m) for m in (selected_months or []) if 1 <= int(m) <= 12})
     if selected_months:
         qmarks = ",".join("?" for _ in selected_months)
@@ -541,11 +553,11 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
                 continue
             _k,meta=_legacy()._performance_resolve_orc_vendor(vendors,bycode,o.get('vendedor_id'),o.get('vendedor_nome'))
             tm=str(meta.get('tipo') or '').upper()
-            if scope in {'INTERNO','EXTERNO','SITE'} and tm!=scope: continue
-            if vendor_id:
+            if scopes and tm not in scopes: continue
+            if vendor_ids:
                 try: mid=int(meta.get('id') or 0)
                 except Exception: mid=0
-                if mid!=vendor_id: continue
+                if mid not in vendor_ids: continue
             if str(o.get('pedido_id') or '').strip() not in {'','0'}: continue
             desc=_legacy().norm(o.get('desc_status') or o.get('status') or '')
             if any(x in desc for x in ['CANCEL','PERD','REPROV']): continue
@@ -561,8 +573,8 @@ def _planning_analysis_data(conn, periodo: str, anchor: date, target_year: int, 
 
     min_db_year=min(db_years) if db_years else target_year-5; max_db_year=max(db_years) if db_years else target_year
     return {
-        'periodo':periodo,'period_name':period_name,'anchor':anchor,'target_year':target_year,'scope':scope,'selected_months':selected_months,
-        'vendor_id':vendor_id,'vendor_name':vendor_name,
+        'periodo':periodo,'period_name':period_name,'anchor':anchor,'target_year':target_year,'scope':scopes,'selected_months':selected_months,
+        'vendor_id':vendor_ids,'vendor_name':vendor_name,
         'growth':growth,'scenario_band':scenario_band,'waste_pct':waste_pct,'source_years':source_years,
         'source_text':' / '.join(map(str,source_years)) if source_years else 'sem histórico anterior suficiente',
         'baseline_value':baseline_value,'forecast_value':forecast_value,'forecast_qty':forecast_qty,'forecast_orders':forecast_orders,'forecast_clients':forecast_clients,

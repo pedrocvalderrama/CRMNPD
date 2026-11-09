@@ -108,7 +108,7 @@ else:
 
 DB_PATH = os.path.join(BASE_DIR, DB_FILENAME)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"))
 app.secret_key = SECRET_KEY
 
 
@@ -5007,7 +5007,7 @@ def import_faturamento_csv(file_bytes: bytes, filename: str) -> Tuple[int, int, 
                         contexto_pedido_cache[pedido_cand] = contexto_pedido
             grupo_ref = (contexto_pedido.get("grupo_ref") or "").strip()
             tipo_item_ref = (contexto_pedido.get("tipo_item_ref") or "").strip()
-            papel_ref = (contexto_pedido.get("papel_ref") or "").strip()
+            papel_ref = str(rr.get("desc_marca") or "").strip()
             preco_ref = float(contexto_pedido.get("preco_ref") or 0)
             valor_item_ref = float(contexto_pedido.get("valor_item_ref") or 0)
             is_jit = int(contexto_pedido.get("is_jit") or 0)
@@ -9292,18 +9292,15 @@ def _intervalo_meses_calendario(ano: int, mes_ini: int, mes_fim: int) -> tuple[d
 _desemp_unused_var = 1
 
 def _desempenho_filtros_request() -> dict:
-    equipe = (request.args.get("equipe") or "").strip().upper()
-    if equipe not in ("INTERNO", "EXTERNO", "SITE"):
-        equipe = ""
-    return {
-        "equipe": equipe,
-        "vendedor": (request.args.get("vendedor") or "").strip(),
-        "grupo": (request.args.get("grupo") or "").strip(),
-        "formato": (request.args.get("formato") or "").strip(),
-        "papel": (request.args.get("papel") or "").strip(),
-        "uf": (request.args.get("uf") or "").strip().upper(),
-        "cidade": (request.args.get("cidade") or "").strip(),
-    }
+    filtros = {}
+    for key in ("equipe", "vendedor", "grupo", "formato", "papel", "uf", "cidade"):
+        values = [v.strip() for v in request.args.getlist(key) if v.strip()]
+        if key in ("equipe", "uf"):
+            values = [v.upper() for v in values]
+        if key == "equipe":
+            values = [v for v in values if v in ("INTERNO", "EXTERNO", "SITE")]
+        filtros[key] = list(dict.fromkeys(values))
+    return filtros
 
 
 def _parece_logradouro(valor: str) -> bool:
@@ -9326,7 +9323,7 @@ def _parece_logradouro(valor: str) -> bool:
     return False
 
 
-def _desempenho_filtro_sql(filtros: dict, alias: str = "i") -> tuple[str, list]:
+def _desempenho_filtro_sql_unico(filtros: dict, alias: str = "i") -> tuple[str, list]:
     clauses: List[str] = []
     params: list = []
     if filtros.get("equipe") in ("INTERNO", "EXTERNO", "SITE"):
@@ -9423,23 +9420,23 @@ def _desempenho_filtro_sql(filtros: dict, alias: str = "i") -> tuple[str, list]:
     return " AND " + " AND ".join(clauses), params
 
 
+def _desempenho_filtro_sql(filtros: dict, alias: str = "i") -> tuple[str, list]:
+    clauses, params = [], []
+    for key, values in filtros.items():
+        alternatives = []
+        for value in (values if isinstance(values, list) else [values]):
+            sql, args = _desempenho_filtro_sql_unico({key: value}, alias)
+            if sql:
+                alternatives.append("(" + sql.removeprefix(" AND ") + ")")
+                params.extend(args)
+        if alternatives:
+            clauses.append("(" + " OR ".join(alternatives) + ")")
+    return (" AND " + " AND ".join(clauses), params) if clauses else ("", [])
+
+
 def _desempenho_filtros_ativos(filtros: dict) -> List[str]:
-    labels = []
-    if filtros.get("equipe"):
-        labels.append("Equipe " + str(filtros["equipe"]).title())
-    if filtros.get("vendedor"):
-        labels.append(filtros["vendedor"])
-    if filtros.get("grupo"):
-        labels.append(filtros["grupo"])
-    if filtros.get("formato"):
-        labels.append(filtros["formato"])
-    if filtros.get("papel"):
-        labels.append(filtros["papel"])
-    if filtros.get("uf"):
-        labels.append(filtros["uf"])
-    if filtros.get("cidade"):
-        labels.append(filtros["cidade"])
-    return labels
+    return [str(value) for values in filtros.values()
+            for value in (values if isinstance(values, list) else [values]) if value]
 
 
 def _ensure_customers_geo_cols(conn) -> None:
@@ -9532,7 +9529,10 @@ def _desempenho_opcoes_filtro(conn, filtros: dict, include_site: bool = False, v
             ORDER BY 1
             LIMIT 1200
         """
-        cidade_params = (filtros["uf"], filtros["uf"])
+        states = filtros["uf"] if isinstance(filtros["uf"], list) else [filtros["uf"]]
+        placeholders = ",".join("UPPER(?)" for _ in states)
+        cidade_sql = cidade_sql.replace("= UPPER(?)", f"IN ({placeholders})")
+        cidade_params = tuple(states + states)
     cidades_brutas = [
         str(r[0]).strip()
         for r in conn.execute(cidade_sql, cidade_params).fetchall()
@@ -9921,7 +9921,7 @@ def desempenho():
         toggle_ml: bool = False,
         toggle_frete_cliche: bool = False,
     ) -> str:
-        params = dict(request.args)
+        params = request.args.to_dict(flat=False)
         if new_visao is not None:
             params["visao"] = new_visao
         elif "visao" not in params:
@@ -10277,57 +10277,21 @@ def desempenho():
             <div class="row g-3">
               <div class="col-12 col-md-6 col-xl-3">
                 <label class="form-label fw-bold small mb-1">Equipe</label>
-                <select class="form-select" name="equipe">
-                  <option value="">Todas</option>
-                  <option value="INTERNO" {% if filtros.equipe == 'INTERNO' %}selected{% endif %}>Interna</option>
-                  <option value="EXTERNO" {% if filtros.equipe == 'EXTERNO' %}selected{% endif %}>Externa</option>
-                  {% if mostrar_site %}
-                  <option value="SITE" {% if filtros.equipe == 'SITE' %}selected{% endif %}>Site</option>
-                  {% endif %}
+                <select class="form-select desempenho-multi" name="equipe" multiple aria-label="Equipe">
+                  <option value="INTERNO" {% if 'INTERNO' in filtros.equipe %}selected{% endif %}>Interna</option>
+                  <option value="EXTERNO" {% if 'EXTERNO' in filtros.equipe %}selected{% endif %}>Externa</option>
+                  {% if mostrar_site %}<option value="SITE" {% if 'SITE' in filtros.equipe %}selected{% endif %}>Site</option>{% endif %}
                 </select>
               </div>
+              {% for key, label, options in [('vendedor', 'Vendedor', opcoes.vendors|map(attribute='nome')|list), ('grupo', 'Grupo de produto', opcoes.grupos), ('formato', 'Formato', opcoes.formatos), ('papel', 'Tipo de papel', opcoes.papeis), ('uf', 'Estado', opcoes.ufs), ('cidade', 'Cidade', opcoes.cidades)] %}
               <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Vendedor</label>
-                <input class="form-control" name="vendedor" list="desempListaVendedores" value="{{ filtros.vendedor }}" placeholder="Digite para buscar" autocomplete="off">
-                <datalist id="desempListaVendedores">
-                  {% for v in opcoes.vendors %}<option value="{{ v.nome }}"></option>{% endfor %}
-                </datalist>
-              </div>
-              <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Grupo de produto</label>
-                <select class="form-select" name="grupo">
-                  <option value="">Todos</option>
-                  {% for g in opcoes.grupos %}<option value="{{ g }}" {% if filtros.grupo == g %}selected{% endif %}>{{ g }}</option>{% endfor %}
+                <label class="form-label fw-bold small mb-1">{{ label }}</label>
+                <select class="form-select desempenho-multi" name="{{ key }}" multiple aria-label="{{ label }}">
+                  {% for value in options %}<option value="{{ value }}" {% if value in filtros[key] %}selected{% endif %}>{{ value }}</option>{% endfor %}
+                  {% for value in filtros[key] if value not in options %}<option value="{{ value }}" selected>{{ value }}</option>{% endfor %}
                 </select>
               </div>
-              <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Formato</label>
-                <input class="form-control" name="formato" list="desempListaFormatos" value="{{ filtros.formato }}" placeholder="Ex.: 18X30X10" autocomplete="off">
-                <datalist id="desempListaFormatos">
-                  {% for f in opcoes.formatos %}<option value="{{ f }}"></option>{% endfor %}
-                </datalist>
-              </div>
-              <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Tipo de papel</label>
-                <select class="form-select" name="papel">
-                  <option value="">Todos</option>
-                  {% for p in opcoes.papeis %}<option value="{{ p }}" {% if filtros.papel == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
-                </select>
-              </div>
-              <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Estado</label>
-                <select class="form-select" name="uf" onchange="this.form.submit()">
-                  <option value="">Todos</option>
-                  {% for u in opcoes.ufs %}<option value="{{ u }}" {% if filtros.uf == u %}selected{% endif %}>{{ u }}</option>{% endfor %}
-                </select>
-              </div>
-              <div class="col-12 col-md-6 col-xl-3">
-                <label class="form-label fw-bold small mb-1">Cidade</label>
-                <input class="form-control" name="cidade" list="desempListaCidades" value="{{ filtros.cidade }}" placeholder="Digite para buscar" autocomplete="off">
-                <datalist id="desempListaCidades">
-                  {% for c in opcoes.cidades %}<option value="{{ c }}"></option>{% endfor %}
-                </datalist>
-              </div>
+              {% endfor %}
               <div class="col-12 col-md-6 col-xl-3 d-flex align-items-end gap-2">
                 <button type="submit" class="btn btn-primary flex-grow-1"><i class="bi bi-check2 me-1"></i>Aplicar</button>
                 <a class="btn btn-light border" href="{{ url_for('desempenho', visao=visao, site='1' if mostrar_site else None, ml='1' if mostrar_ml else None, frete_cliche='1' if mostrar_frete_cliche else None, cmp_ano=cmp_ano, cmp_mes_ini=cmp_mes_ini, cmp_mes_fim=cmp_mes_fim, ref_ano=ref_ano, ref_mes_ini=ref_mes_ini, ref_mes_fim=ref_mes_fim) }}" title="Limpar filtros"><i class="bi bi-x-lg"></i></a>

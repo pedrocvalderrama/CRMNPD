@@ -63,6 +63,49 @@ def test_paginas_novas_existem_e_abrem_com_admin(admin_app_client) -> None:
         assert "Relatórios" in html
 
 
+def test_a_faturar_usa_filtros_pesquisaveis_multiplos(admin_app_client) -> None:
+    _app, client = admin_app_client
+    response = client.get("/a-faturar?escopo=INTERNO&escopo=EXTERNO&status=PARCIAL&status=ATRASADO")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    for name in ("escopo", "vendedor", "cliente", "produto", "medida", "status"):
+        assert f'name="{name}" multiple' in html
+    assert 'value="INTERNO" selected' in html
+    assert 'value="EXTERNO" selected' in html
+    assert 'value="PARCIAL" selected' in html
+    assert 'value="ATRASADO" selected' in html
+
+    exported = client.get(
+        "/relatorios/exportar?relatorio=a_faturar&escopo=INTERNO&escopo=EXTERNO"
+        "&status=PARCIAL&status=ATRASADO"
+    )
+    assert exported.status_code == 200
+    assert "spreadsheetml" in exported.content_type
+
+
+def test_analise_historica_usa_filtros_pesquisaveis_multiplos(admin_app_client) -> None:
+    _app, client = admin_app_client
+    response = client.get(
+        "/analises/historico?escopo=INTERNO&escopo=EXTERNO&mes=1&mes=3&ano=2026"
+    )
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'name="escopo" id="analysisScope" multiple' in html
+    assert 'name="vendedor" id="analysisVendor" multiple' in html
+    assert 'name="mes" multiple' in html
+    assert 'value="INTERNO" selected' in html
+    assert 'value="EXTERNO" selected' in html
+    assert 'value="1" selected' in html
+    assert 'value="3" selected' in html
+
+    exported = client.get(
+        "/relatorios/exportar?relatorio=planejamento&escopo=INTERNO&escopo=EXTERNO"
+        "&mes=1&mes=3&ano=2026"
+    )
+    assert exported.status_code == 200
+    assert "spreadsheetml" in exported.content_type
+
+
 def test_dashboard_faturamento_e_pedidos_periodo_com_excel(admin_app_client) -> None:
     _app, client = admin_app_client
 

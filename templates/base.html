@@ -444,6 +444,7 @@
       .sidebar{transform:translateX(-100%);width:260px}.main{margin-left:0}.mobile-menu{display:grid;place-items:center}.sidebar-open .sidebar{transform:translateX(0)}.sidebar-open:after{content:"";position:fixed;inset:0;background:rgba(3,12,25,.46);z-index:1030}.user-name,.user-role{display:none}.topbar{padding:0 14px}.content{padding:14px}.quick-add span{display:none}.quick-add{width:38px;justify-content:center;padding:0}.page-kicker{display:none}.ticker-wrap{margin:-14px -14px 16px -14px}.metric-strip{grid-template-columns:1fr}.chart-frame{min-height:250px}
     }
   </style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/crm.css') }}?v=3">
 </head>
 <body>
 <div class="layout">
@@ -534,5 +535,6 @@ document.addEventListener('click', function(e){
   if(document.body.classList.contains('sidebar-open') && !e.target.closest('#crmSidebar') && !e.target.closest('.mobile-menu')) document.body.classList.remove('sidebar-open');
 });
 </script>
+<script src="{{ url_for('static', filename='js/desempenho-filtros.js') }}?v=3"></script>
 </body>
 </html>
