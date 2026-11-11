@@ -2191,6 +2191,7 @@ def get_last_vendor_for_identity(conn, identity_key: str) -> int:
             SELECT
                 i.vendor_id AS vendor_id,
                 date(i.data_emissao) AS mov_date,
+                1 AS mov_priority,
                 COALESCE(i.id, 0) AS mov_id
             FROM invoices i
             LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
@@ -2203,6 +2204,7 @@ def get_last_vendor_for_identity(conn, identity_key: str) -> int:
             SELECT
                 o.vendor_id AS vendor_id,
                 date(o.data_emissao) AS mov_date,
+                2 AS mov_priority,
                 COALESCE(o.id, 0) AS mov_id
             FROM orders o
             LEFT JOIN customer_identity_rules cir ON cir.customer_id = o.cliente_id
@@ -2213,7 +2215,9 @@ def get_last_vendor_for_identity(conn, identity_key: str) -> int:
         SELECT vendor_id
         FROM movs
         WHERE vendor_id IS NOT NULL
-        ORDER BY mov_date DESC, mov_id DESC
+        -- Se pedido e nota caírem no mesmo dia, o pedido representa a
+        -- atribuição comercial mais recente da carteira.
+        ORDER BY mov_date DESC, mov_priority DESC, mov_id DESC
         LIMIT 1
     """, (identity_key, identity_key)).fetchone()
     return int(row["vendor_id"] or 0) if row else 0
@@ -2226,6 +2230,7 @@ def build_last_vendor_map(conn) -> Dict[str, int]:
                 COALESCE(cir.identity_key, 'CLIENTE:' || i.cliente_id) AS identity_key,
                 i.vendor_id AS vendor_id,
                 date(i.data_emissao) AS mov_date,
+                1 AS mov_priority,
                 COALESCE(i.id, 0) AS mov_id
             FROM invoices i
             LEFT JOIN customer_identity_rules cir ON cir.customer_id = i.cliente_id
@@ -2238,16 +2243,17 @@ def build_last_vendor_map(conn) -> Dict[str, int]:
                 COALESCE(cir.identity_key, 'CLIENTE:' || o.cliente_id) AS identity_key,
                 o.vendor_id AS vendor_id,
                 date(o.data_emissao) AS mov_date,
+                2 AS mov_priority,
                 COALESCE(o.id, 0) AS mov_id
             FROM orders o
             LEFT JOIN customer_identity_rules cir ON cir.customer_id = o.cliente_id
             WHERE o.data_emissao IS NOT NULL
               AND COALESCE(o.vendor_id, 0) > 0
         )
-        SELECT identity_key, vendor_id, mov_date, mov_id
+        SELECT identity_key, vendor_id, mov_date, mov_priority, mov_id
         FROM movs
         WHERE COALESCE(identity_key, '') <> ''
-        ORDER BY identity_key ASC, mov_date DESC, mov_id DESC
+        ORDER BY identity_key ASC, mov_date DESC, mov_priority DESC, mov_id DESC
     """).fetchall()
 
     out: Dict[str, int] = {}
@@ -9901,6 +9907,242 @@ def _delta_pct(atual: float, base: float) -> float:
     return 100.0 if atual > 0 else 0.0
 
 
+def _desempenho_linhas_exportacao(
+    conn,
+    d0: date,
+    d1: date,
+    *,
+    visao: str,
+    filtro_sql: str,
+    filtro_params: list,
+    mostrar_site: bool,
+    mostrar_ml: bool,
+    mostrar_frete_cliche: bool,
+) -> list[list]:
+    """Retorna as linhas detalhadas exatamente no recorte da tela de Desempenho."""
+    params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
+    site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
+    canal_expr = """
+        CASE
+            WHEN UPPER(TRIM(COALESCE(v.nome, ''))) = 'SITE'
+              OR UPPER(TRIM(COALESCE(v.tipo, ''))) = 'SITE'
+            THEN 'SITE'
+            WHEN UPPER(TRIM(COALESCE(v.tipo, ''))) = 'INTERNO' THEN 'INTERNO'
+            ELSE 'EXTERNO'
+        END
+    """
+
+    if visao == "pedidos":
+        rows = conn.execute(
+            f"""
+            SELECT
+                date(o.data_emissao) AS data_emissao,
+                COALESCE(NULLIF(TRIM(o.pedido), ''), '-') AS documento,
+                COALESCE(NULLIF(TRIM(c.fantasia), ''), NULLIF(TRIM(c.nome), ''),
+                         NULLIF(TRIM(o.cliente_nome_ref), ''), '-') AS cliente,
+                COALESCE(NULLIF(TRIM(v.nome), ''), NULLIF(TRIM(o.vendor_nome_ref), ''), '-') AS vendedor,
+                {canal_expr} AS canal,
+                COALESCE(NULLIF(TRIM(o.grupo_ref), ''), '') AS grupo,
+                COALESCE(NULLIF(TRIM(o.produto_ref), ''), '') AS produto,
+                COALESCE(NULLIF(TRIM(o.medida_ref), ''), '') AS medida,
+                COALESCE(NULLIF(TRIM(o.papel_ref), ''), '') AS papel,
+                COALESCE(o.quantidade, 0) AS quantidade,
+                COALESCE(NULLIF(o.valor_item_ref, 0), o.valor, 0) AS valor
+            FROM orders o
+            LEFT JOIN customers c ON c.id = o.cliente_id
+            LEFT JOIN vendors v ON v.id = o.vendor_id
+            WHERE o.data_emissao IS NOT NULL
+              AND date(o.data_emissao) BETWEEN date(?) AND date(?)
+              AND {sql_pedidos_realizados_excel_cond('o', 'v')}
+              {site_cond}
+              {filtro_sql}
+            ORDER BY date(o.data_emissao), o.pedido, o.id
+            """,
+            params,
+        ).fetchall()
+        return [
+            [
+                _to_excel_date(r["data_emissao"]), r["documento"], "PEDIDO",
+                r["cliente"], r["vendedor"], r["canal"], r["grupo"], r["produto"],
+                r["medida"], r["papel"], float(r["quantidade"] or 0), float(r["valor"] or 0),
+            ]
+            for r in rows
+        ]
+
+    cliche_cond, _valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
+    devolucao_cond = _invoice_devolucao_sql(conn, "i")
+    valor_linha = (
+        "COALESCE(i.valor, 0) + COALESCE(i.valor_frete, 0)"
+        if mostrar_frete_cliche and _invoices_has_col(conn, "valor_frete")
+        else "COALESCE(i.valor, 0)"
+    )
+    rows = conn.execute(
+        f"""
+        SELECT
+            date(i.data_emissao) AS data_emissao,
+            COALESCE(NULLIF(TRIM(i.numero), ''), '-') AS documento,
+            CASE WHEN {devolucao_cond} THEN 'DEVOLUÇÃO'
+                 WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'DEMO' THEN 'DEMO'
+                 WHEN UPPER(TRIM(COALESCE(i.tipo_item_ref, ''))) = 'CLICHE'
+                   OR UPPER(TRIM(COALESCE(i.grupo_ref, ''))) LIKE '%CLICHE%' THEN 'CLICHÊ'
+                 ELSE 'VENDA' END AS natureza,
+            COALESCE(NULLIF(TRIM(c.fantasia), ''), NULLIF(TRIM(c.nome), ''),
+                     NULLIF(TRIM(i.cliente_nome_ref), ''), '-') AS cliente,
+            COALESCE(NULLIF(TRIM(v.nome), ''), NULLIF(TRIM(i.vendor_nome_ref), ''), '-') AS vendedor,
+            {canal_expr} AS canal,
+            COALESCE(NULLIF(TRIM(i.grupo_ref), ''), '') AS grupo,
+            COALESCE(NULLIF(TRIM(i.produto), ''), '') AS produto,
+            COALESCE(NULLIF(TRIM(i.formato), ''), NULLIF(TRIM(i.medida_ref), ''), '') AS medida,
+            COALESCE(NULLIF(TRIM(i.papel_ref), ''), '') AS papel,
+            CASE WHEN {devolucao_cond} THEN -ABS(COALESCE(i.quantidade, 0))
+                 ELSE COALESCE(i.quantidade, 0) END AS quantidade,
+            {valor_linha} AS valor
+        FROM invoices i
+        LEFT JOIN customers c ON c.id = i.cliente_id
+        LEFT JOIN vendors v ON v.id = i.vendor_id
+        WHERE i.data_emissao IS NOT NULL
+          AND date(i.data_emissao) BETWEEN date(?) AND date(?)
+          {site_cond}
+          {cliche_cond}
+          {filtro_sql}
+        ORDER BY date(i.data_emissao), i.numero, i.id
+        """,
+        params,
+    ).fetchall()
+    out = [
+        [
+            _to_excel_date(r["data_emissao"]), r["documento"], r["natureza"],
+            r["cliente"], r["vendedor"], r["canal"], r["grupo"], r["produto"],
+            r["medida"], r["papel"], float(r["quantidade"] or 0), float(r["valor"] or 0),
+        ]
+        for r in rows
+    ]
+
+    if mostrar_ml and not filtro_sql:
+        from crm_npd.services.mercado_livre import listar_faturamento_mercado_livre_periodo
+
+        _ml_notas, ml_itens = listar_faturamento_mercado_livre_periodo(
+            conn, d0, d1, include_items=True
+        )
+        for r in ml_itens:
+            valor = float(r.get("valor") or 0)
+            devolucao = valor < 0 or "DEVOL" in str(r.get("tipo_nf") or "").upper()
+            quantidade = float(r.get("quantidade") or 0)
+            out.append([
+                _to_excel_date(r.get("data_emissao")), r.get("nf") or "ML",
+                "DEVOLUÇÃO" if devolucao else (r.get("tipo_nf") or "VENDA"),
+                r.get("cliente") or "-", r.get("vendedor") or "MERCADO LIVRE",
+                "MERCADO LIVRE", r.get("grupo") or "MERCADO LIVRE",
+                r.get("produto") or "", r.get("formato") or "", r.get("papel") or "",
+                -abs(quantidade) if devolucao else quantidade, valor,
+            ])
+        out.sort(key=lambda row: (str(row[0] or ""), str(row[1] or "")))
+    return out
+
+
+@app.route("/desempenho/exportar.xlsx")
+@login_required
+def desempenho_exportar_excel():
+    """Exporta os dois períodos e todos os filtros ativos da tela de Desempenho."""
+    from crm_npd.services.relatorios import _xlsx_response
+
+    user = get_current_user()
+    if not user or user["role"] not in ["admin", "gestor"]:
+        flash("Acesso negado.", "warning")
+        return redirect(url_for("home"))
+
+    visao = (request.args.get("visao") or "faturamento").strip().lower()
+    if visao not in ("faturamento", "pedidos"):
+        visao = "faturamento"
+    hoje = date.today()
+    ref_ano = _parse_mes_ano(request.args.get("ref_ano"), hoje.year, 2000, hoje.year + 1)
+    ref_mes_ini = _parse_mes_ano(request.args.get("ref_mes_ini"), 1)
+    ref_mes_fim = _parse_mes_ano(request.args.get("ref_mes_fim"), hoje.month)
+    cmp_ano = _parse_mes_ano(request.args.get("cmp_ano"), hoje.year, 2000, hoje.year + 1)
+    cmp_mes_ini = _parse_mes_ano(request.args.get("cmp_mes_ini"), 1)
+    cmp_mes_fim = _parse_mes_ano(
+        request.args.get("cmp_mes_fim"), max(1, hoje.month - 1) if hoje.month > 1 else 1
+    )
+    ref_mes_fim = max(ref_mes_ini, ref_mes_fim)
+    cmp_mes_fim = max(cmp_mes_ini, cmp_mes_fim)
+    d0_ref, d1_ref = _intervalo_meses_calendario(ref_ano, ref_mes_ini, ref_mes_fim)
+    d0_cmp, d1_cmp = _intervalo_meses_calendario(cmp_ano, cmp_mes_ini, cmp_mes_fim)
+
+    filtros = _desempenho_filtros_request()
+    alias = "o" if visao == "pedidos" else "i"
+    filtro_sql, filtro_params = _desempenho_filtro_sql(filtros, alias=alias)
+    mostrar_site = (
+        request.args.get("site") in ("1", "true", "sim", "s")
+        or request.args.get("mostrar_site") in ("1", "true", "sim", "s")
+    )
+    mostrar_ml = (
+        request.args.get("ml") in ("1", "true", "sim", "s")
+        or request.args.get("mostrar_ml") in ("1", "true", "sim", "s")
+    )
+    mostrar_frete_cliche = (
+        request.args.get("frete_cliche") in ("1", "true", "sim", "s")
+        or request.args.get("mostrar_frete_cliche") in ("1", "true", "sim", "s")
+    )
+
+    with conectar() as conn:
+        _ensure_customers_geo_cols(conn)
+        linhas_ref = _desempenho_linhas_exportacao(
+            conn, d0_ref, d1_ref, visao=visao, filtro_sql=filtro_sql,
+            filtro_params=filtro_params, mostrar_site=mostrar_site, mostrar_ml=mostrar_ml,
+            mostrar_frete_cliche=mostrar_frete_cliche,
+        )
+        linhas_cmp = _desempenho_linhas_exportacao(
+            conn, d0_cmp, d1_cmp, visao=visao, filtro_sql=filtro_sql,
+            filtro_params=filtro_params, mostrar_site=mostrar_site, mostrar_ml=mostrar_ml,
+            mostrar_frete_cliche=mostrar_frete_cliche,
+        )
+        resumo_ref = _soma_faturamento_periodo(
+            conn, d0_ref, d1_ref, filtro_sql, filtro_params, visao=visao,
+            mostrar_site=mostrar_site, mostrar_ml=mostrar_ml,
+            mostrar_frete_cliche=mostrar_frete_cliche,
+        )
+        resumo_cmp = _soma_faturamento_periodo(
+            conn, d0_cmp, d1_cmp, filtro_sql, filtro_params, visao=visao,
+            mostrar_site=mostrar_site, mostrar_ml=mostrar_ml,
+            mostrar_frete_cliche=mostrar_frete_cliche,
+        )
+
+    label_ref = _rotulo_periodo_meses(ref_ano, ref_mes_ini, ref_mes_fim)
+    label_cmp = _rotulo_periodo_meses(cmp_ano, cmp_mes_ini, cmp_mes_fim)
+    filtros_label = ", ".join(_desempenho_filtros_ativos(filtros)) or "Todos"
+    unidade_documento = "Pedidos" if visao == "pedidos" else "Notas líquidas"
+    metadata = [
+        ("Relatório", "Desempenho · " + ("Pedidos" if visao == "pedidos" else "Faturamento")),
+        ("Período referência", label_ref),
+        ("Período comparação", label_cmp),
+        ("Filtros", filtros_label),
+        ("Inclui Site", "Sim" if mostrar_site else "Não"),
+        ("Inclui Mercado Livre", "Sim" if mostrar_ml else "Não"),
+        ("Inclui Frete/Clichê", "Sim" if mostrar_frete_cliche else "Não"),
+        ("Valor referência", resumo_ref[0]),
+        (unidade_documento + " referência", resumo_ref[1]),
+        ("Quantidade referência", resumo_ref[3]),
+        ("Valor comparação", resumo_cmp[0]),
+        (unidade_documento + " comparação", resumo_cmp[1]),
+        ("Quantidade comparação", resumo_cmp[3]),
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M")),
+    ]
+    headers = [
+        "Data", "Documento", "Natureza", "Cliente", "Vendedor", "Equipe",
+        "Grupo", "Produto", "Formato / Medida", "Tipo de papel", "Quantidade", "Valor",
+    ]
+    sheets = [
+        {"name": "Referência", "title": f"{label_ref} · {len(linhas_ref)} itens", "headers": headers, "rows": linhas_ref},
+        {"name": "Comparação", "title": f"{label_cmp} · {len(linhas_cmp)} itens", "headers": headers, "rows": linhas_cmp},
+    ]
+    return _xlsx_response(
+        f"desempenho_{visao}_{ref_ano}_{cmp_ano}",
+        "CRM NPD · Exportação de Desempenho",
+        metadata,
+        sheets,
+    )
+
+
 @app.route("/desempenho")
 @login_required
 def desempenho():
@@ -9991,6 +10233,9 @@ def desempenho():
     toggle_site_url = _build_desemp_url(toggle_site=True)
     toggle_ml_url = _build_desemp_url(toggle_ml=True)
     toggle_frete_cliche_url = _build_desemp_url(toggle_frete_cliche=True)
+    export_excel_url = url_for(
+        "desempenho_exportar_excel", **request.args.to_dict(flat=False)
+    )
 
     hoje = date.today()
     anos = list(range(hoje.year, hoje.year - 8, -1))
@@ -10204,6 +10449,9 @@ def desempenho():
         </div>
       </div>
       <div class="d-flex align-items-center gap-2 flex-wrap">
+        <a class="btn btn-sm btn-success fw-bold" href="{{ export_excel_url }}">
+          <i class="bi bi-file-earmark-excel me-1"></i>Exportar Excel
+        </a>
         <a class="btn btn-sm {{ 'text-white fw-bold' if mostrar_site else 'btn-outline-secondary' }}" {% if mostrar_site %}style="background:#0e7490;border-color:#0e7490"{% endif %} href="{{ toggle_site_url }}">
           <i class="bi {{ 'bi-check-square-fill' if mostrar_site else 'bi-square' }} me-1"></i>Mostrar Site
         </a>
@@ -10530,23 +10778,24 @@ def desempenho():
       <div class="dash-block-head mb-3">
         <div>
           <div class="h5 fw-bold mb-0" style="color:#0e7490">{% if visao == 'pedidos' %}Pedidos mensais{% else %}Faturamento mensal{% endif %} — Interno × Externo</div>
-          <div class="sub">Cada linha é um mês. Compare os valores do time interno e externo nas colunas lado a lado.</div>
+          <div class="sub">A faixa azul mostra o período analisado, a roxa identifica a referência e a faixa cinza reúne o resultado.</div>
         </div>
         <div class="dash-pill dash-pill--fat"><i class="bi bi-people"></i> Interno × externo</div>
       </div>
-      <div class="table-responsive">
+      <div class="table-responsive fat-mes-table-wrap">
         <table class="table table-sm align-middle mb-0 fat-mes-table">
           <thead>
             <tr>
               <th rowspan="2" class="fat-mes-th-mes">Mês</th>
-              <th colspan="{{ 3 if mostrar_site else 2 }}" class="text-center fat-mes-th-cmp">{{ label_cmp }} — Comparação</th>
-              <th colspan="{{ 3 if mostrar_site else 2 }}" class="text-center fat-mes-th-ref">{{ label_ref }} — Referência</th>
-              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time interno</th>
-              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>time externo</th>
-              {% if mostrar_site %}
-              <th rowspan="2" class="text-center fat-mes-th-var">Variação<br>Site</th>
-              {% endif %}
-              <th rowspan="2" class="text-center fat-mes-th-diff">Externo − Interno<br>na comparação (R$)</th>
+              <th colspan="{{ 3 if mostrar_site else 2 }}" class="fat-mes-group fat-mes-group-cmp">
+                <span class="fat-mes-group-label"><i class="bi bi-calendar-check"></i><span><small>Período analisado</small>{{ label_cmp }} — Comparação</span></span>
+              </th>
+              <th colspan="{{ 3 if mostrar_site else 2 }}" class="fat-mes-group fat-mes-group-ref">
+                <span class="fat-mes-group-label"><i class="bi bi-bookmark-check"></i><span><small>Base de referência</small>{{ label_ref }} — Referência</span></span>
+              </th>
+              <th colspan="{{ 4 if mostrar_site else 3 }}" class="fat-mes-group fat-mes-result-head">
+                <span class="fat-mes-group-label"><i class="bi bi-arrow-left-right"></i><span><small>Leitura final</small>Resultado da comparação</span></span>
+              </th>
             </tr>
             <tr>
               <th class="text-center fat-mes-th-cmp">Interno (R$)</th>
@@ -10554,45 +10803,51 @@ def desempenho():
               {% if mostrar_site %}
               <th class="text-center fat-mes-th-cmp">Site (R$)</th>
               {% endif %}
-              <th class="text-center fat-mes-th-ref">Interno (R$)</th>
+              <th class="text-center fat-mes-th-ref fat-mes-ref-start">Interno (R$)</th>
               <th class="text-center fat-mes-th-ref">Externo (R$)</th>
               {% if mostrar_site %}
               <th class="text-center fat-mes-th-ref">Site (R$)</th>
               {% endif %}
+              <th class="fat-mes-th-result fat-mes-result-start">Variação<br>time interno</th>
+              <th class="fat-mes-th-result">Variação<br>time externo</th>
+              {% if mostrar_site %}
+              <th class="fat-mes-th-result">Variação<br>Site</th>
+              {% endif %}
+              <th class="fat-mes-th-result">Externo − Interno<br>na comparação (R$)</th>
             </tr>
           </thead>
           <tbody>
             {% for r in tabela_meses %}
             <tr>
               <td class="fw-bold">{{ r.mes }}</td>
-              <td class="text-center">{{ format_brl(r.cmp_int) if r.cmp_int is not none else '—' }}</td>
-              <td class="text-center">{{ format_brl(r.cmp_ext) if r.cmp_ext is not none else '—' }}</td>
+              <td class="fat-mes-cmp-col">{{ format_brl(r.cmp_int) if r.cmp_int is not none else '—' }}</td>
+              <td class="fat-mes-cmp-col">{{ format_brl(r.cmp_ext) if r.cmp_ext is not none else '—' }}</td>
               {% if mostrar_site %}
-              <td class="text-center">{{ format_brl(r.cmp_site) if r.cmp_site is not none else '—' }}</td>
+              <td class="fat-mes-cmp-col">{{ format_brl(r.cmp_site) if r.cmp_site is not none else '—' }}</td>
               {% endif %}
-              <td class="text-center">{{ format_brl(r.ref_int) if r.ref_int is not none else '—' }}</td>
-              <td class="text-center">{{ format_brl(r.ref_ext) if r.ref_ext is not none else '—' }}</td>
+              <td class="fat-mes-ref-col fat-mes-ref-start">{{ format_brl(r.ref_int) if r.ref_int is not none else '—' }}</td>
+              <td class="fat-mes-ref-col">{{ format_brl(r.ref_ext) if r.ref_ext is not none else '—' }}</td>
               {% if mostrar_site %}
-              <td class="text-center">{{ format_brl(r.ref_site) if r.ref_site is not none else '—' }}</td>
+              <td class="fat-mes-ref-col">{{ format_brl(r.ref_site) if r.ref_site is not none else '—' }}</td>
               {% endif %}
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col fat-mes-result-start">
                 {% if r.var_int is not none %}
                   <span class="fat-mes-var {{ 'up' if r.var_int >= 0 else 'down' }}">{{ '↗' if r.var_int >= 0 else '↘' }} {{ '%.0f'|format(r.var_int) }}%</span>
                 {% else %}—{% endif %}
               </td>
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col">
                 {% if r.var_ext is not none %}
                   <span class="fat-mes-var {{ 'up' if r.var_ext >= 0 else 'down' }}">{{ '↗' if r.var_ext >= 0 else '↘' }} {{ '%.0f'|format(r.var_ext) }}%</span>
                 {% else %}—{% endif %}
               </td>
               {% if mostrar_site %}
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col">
                 {% if r.var_site is not none %}
                   <span class="fat-mes-var {{ 'up' if r.var_site >= 0 else 'down' }}">{{ '↗' if r.var_site >= 0 else '↘' }} {{ '%.0f'|format(r.var_site) }}%</span>
                 {% else %}—{% endif %}
               </td>
               {% endif %}
-              <td class="text-end {{ 'text-success' if (r.diff_ei or 0) >= 0 else 'text-danger' }}">
+              <td class="text-end fat-mes-result-col {{ 'text-success' if (r.diff_ei or 0) >= 0 else 'text-danger' }}">
                 {% if r.diff_ei is not none %}{{ '%s%s'|format('+' if r.diff_ei >= 0 else '', format_brl(r.diff_ei)) }}{% else %}—{% endif %}
               </td>
             </tr>
@@ -10601,28 +10856,28 @@ def desempenho():
           <tfoot>
             <tr class="fat-mes-total">
               <td class="fw-bold">TOTAL</td>
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_int) }}</td>
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_ext) }}</td>
+              <td class="fat-mes-cmp-col fw-bold">{{ format_brl(tabela_total.cmp_int) }}</td>
+              <td class="fat-mes-cmp-col fw-bold">{{ format_brl(tabela_total.cmp_ext) }}</td>
               {% if mostrar_site %}
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.cmp_site) }}</td>
+              <td class="fat-mes-cmp-col fw-bold">{{ format_brl(tabela_total.cmp_site) }}</td>
               {% endif %}
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_int) }}</td>
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_ext) }}</td>
+              <td class="fat-mes-ref-col fat-mes-ref-start fw-bold">{{ format_brl(tabela_total.ref_int) }}</td>
+              <td class="fat-mes-ref-col fw-bold">{{ format_brl(tabela_total.ref_ext) }}</td>
               {% if mostrar_site %}
-              <td class="text-center fw-bold">{{ format_brl(tabela_total.ref_site) }}</td>
+              <td class="fat-mes-ref-col fw-bold">{{ format_brl(tabela_total.ref_site) }}</td>
               {% endif %}
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col fat-mes-result-start">
                 <span class="fat-mes-var {{ 'up' if tabela_total.var_int >= 0 else 'down' }}">{{ '↗' if tabela_total.var_int >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_int) }}%</span>
               </td>
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col">
                 <span class="fat-mes-var {{ 'up' if tabela_total.var_ext >= 0 else 'down' }}">{{ '↗' if tabela_total.var_ext >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_ext) }}%</span>
               </td>
               {% if mostrar_site %}
-              <td class="text-center">
+              <td class="text-center fat-mes-result-col">
                 <span class="fat-mes-var {{ 'up' if tabela_total.var_site >= 0 else 'down' }}">{{ '↗' if tabela_total.var_site >= 0 else '↘' }} {{ '%.0f'|format(tabela_total.var_site) }}%</span>
               </td>
               {% endif %}
-              <td class="text-end fw-bold {{ 'text-success' if tabela_total.diff_ei >= 0 else 'text-danger' }}">
+              <td class="text-end fw-bold fat-mes-result-col {{ 'text-success' if tabela_total.diff_ei >= 0 else 'text-danger' }}">
                 {{ '%s%s'|format('+' if tabela_total.diff_ei >= 0 else '', format_brl(tabela_total.diff_ei)) }}
               </td>
             </tr>
@@ -10690,6 +10945,7 @@ def desempenho():
         toggle_site_url=toggle_site_url,
         toggle_ml_url=toggle_ml_url,
         toggle_frete_cliche_url=toggle_frete_cliche_url,
+        export_excel_url=export_excel_url,
     )
     return render_page("Desempenho", body, "desempenho")
 
@@ -13441,25 +13697,16 @@ def list_customer_identities_for_user(conn, user, q: str = "", limit: int = 300)
     """
     Lista carteira comercial consolidada pelo modelo novo:
     MATRIZ / FILIAL / CLIENTE
+
+    Para vendedores, cada identidade pertence exclusivamente ao responsável da
+    movimentação mais recente (pedido ou faturamento). O filtro acontece depois
+    da consolidação para impedir que filiais da mesma identidade apareçam nas
+    carteiras de vendedores diferentes.
     """
     role = ((user["role"] if user and "role" in user else "") or "").strip().lower()
     vendor_lock = get_user_vendor_id(conn, user)
 
-    params = []
-    vendor_sql = ""
-
-    if role not in ("admin", "gestor") and vendor_lock:
-        vendor_sql = """
-            AND EXISTS (
-                SELECT 1
-                FROM invoices i
-                WHERE i.cliente_id = c.id
-                  AND i.vendor_id = ?
-            )
-        """
-        params.append(vendor_lock)
-
-    rows = conn.execute(f"""
+    rows = conn.execute("""
         SELECT
             c.id,
             COALESCE(c.codigo, '') AS codigo,
@@ -13467,9 +13714,8 @@ def list_customer_identities_for_user(conn, user, q: str = "", limit: int = 300)
             COALESCE(c.fantasia, '') AS fantasia
         FROM customers c
         WHERE 1=1
-        {vendor_sql}
         ORDER BY COALESCE(c.fantasia, c.nome, '') ASC
-    """, params).fetchall()
+    """).fetchall()
 
     entidades = {}
     prioridade_tipo = {"MATRIZ": 0, "REDE": 1, "FILIAL": 2, "CLIENTE": 3}
@@ -13519,6 +13765,13 @@ def list_customer_identities_for_user(conn, user, q: str = "", limit: int = 300)
         entidades[identity_key]["total_clientes"] += 1
 
     items = list(entidades.values())
+
+    if role not in ("admin", "gestor"):
+        ultimo_responsavel = build_last_vendor_map(conn)
+        items = [
+            item for item in items
+            if int(ultimo_responsavel.get(item["identity_key"]) or 0) == int(vendor_lock or 0)
+        ]
 
     for item in items:
         total = int(item.get("total_clientes") or 0)
@@ -15764,7 +16017,10 @@ def clientes():
         page = min(page, total_pages)
         start = (page - 1) * per_page
         rows = all_rows[start:start + per_page]
-        score_map = build_identity_score_map(conn, user=user)
+        # O cliente já foi restringido ao último responsável. O score precisa
+        # considerar o histórico completo da identidade, não apenas as notas
+        # emitidas quando ela estava com o vendedor atual.
+        score_map = build_identity_score_map(conn)
 
         for r in rows:
             sc = score_map.get(r["identity_key"], {})

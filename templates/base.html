@@ -362,43 +362,39 @@
     .equipe-cmp-vals{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:#7a8ba0;font-weight:650}
 
     /* Desempenho: tabela mensal Interno × Externo */
-    .fat-mes-table{font-size:12.5px;border-collapse:separate;border-spacing:0}
-    .fat-mes-table th,.fat-mes-table td{padding:.55rem .7rem;border-bottom:1px solid #e8eef5;vertical-align:middle;white-space:nowrap}
-    .fat-mes-table thead th{font-size:11px;font-weight:800;color:#334155}
-    .fat-mes-th-mes{background:#f8fafc;min-width:64px}
-    .fat-mes-th-ref{background:#f1f5f9;color:#475569!important;text-align:center!important}
-    .fat-mes-th-cmp{background:#e0f2fe;color:#0e7490!important;text-align:center!important}
-    .fat-mes-table tbody td:nth-child(2),
-    .fat-mes-table tbody td:nth-child(3),
-    .fat-mes-table tbody td:nth-child(4),
-    .fat-mes-table tbody td:nth-child(5),
-    .fat-mes-table tfoot td:nth-child(2),
-    .fat-mes-table tfoot td:nth-child(3),
-    .fat-mes-table tfoot td:nth-child(4),
-    .fat-mes-table tfoot td:nth-child(5){text-align:center!important}
-    .fat-mes-th-var,.fat-mes-th-diff{background:#f8fafc;font-weight:750!important;line-height:1.25}
-    .fat-mes-table tbody tr:nth-child(even){background:#fafcfe}
-    .fat-mes-total td{background:#ecfdf5!important;border-top:2px solid #a7f3d0;padding-top:.7rem;padding-bottom:.7rem}
-    .fat-mes-var{display:inline-flex;align-items:center;gap:3px;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800}
+    .fat-mes-table-wrap{border:1px solid #dce5ef;border-radius:14px;overflow:auto;background:#fff}
+    .fat-mes-table{font-size:12.5px;border-collapse:separate;border-spacing:0;min-width:1040px}
+    .fat-mes-table th,.fat-mes-table td{padding:.65rem .75rem;border-bottom:1px solid #e8eef5;vertical-align:middle;white-space:nowrap}
+    .fat-mes-table thead th{font-size:11px;font-weight:800;letter-spacing:.025em}
+    .fat-mes-th-mes{position:sticky;left:0;z-index:4;min-width:74px;background:#f8fafc;color:#334155!important;border-right:1px solid #dce5ef}
+    .fat-mes-group{padding:.75rem .9rem!important;color:#fff!important;text-align:center!important;border-bottom:0!important}
+    .fat-mes-group-label{display:flex;align-items:center;justify-content:center;gap:9px}
+    .fat-mes-group-label i{font-size:15px}
+    .fat-mes-group-label span{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2}
+    .fat-mes-group-label small{font-size:9px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;opacity:.78}
+    .fat-mes-group-cmp{background-color:#0e7490!important;box-shadow:none!important}
+    .fat-mes-group-ref{background-color:#6658c7!important;box-shadow:none!important;border-left:4px solid #fff}
+    .fat-mes-result-head{background-color:#334155!important;box-shadow:none!important;border-left:4px solid #fff}
+    .fat-mes-th-cmp{background-color:#dff4f7!important;box-shadow:none!important;color:#0b6076!important;text-align:center!important}
+    .fat-mes-th-ref{background-color:#ede9fe!important;box-shadow:none!important;color:#5746b7!important;text-align:center!important}
+    .fat-mes-th-result{background-color:#eef2f7!important;box-shadow:none!important;color:#334155!important;text-align:center!important;line-height:1.25}
+    .fat-mes-th-ref:first-of-type,.fat-mes-ref-start{border-left:4px solid #fff!important}
+    .fat-mes-th-result:first-of-type,.fat-mes-result-start{border-left:4px solid #fff!important}
+    .fat-mes-cmp-col{background-color:#f4fbfc!important;box-shadow:none!important;text-align:center!important}
+    .fat-mes-ref-col{background-color:#f8f7ff!important;box-shadow:none!important;text-align:center!important}
+    .fat-mes-result-col{background-color:#fbfcfe!important;box-shadow:none!important}
+    .fat-mes-table tbody td:first-child,.fat-mes-table tfoot td:first-child{position:sticky;left:0;z-index:2;background:#fff;border-right:1px solid #dce5ef}
+    .fat-mes-table tbody tr:nth-child(even) td:first-child{background:#fafcfe}
+    .fat-mes-table tbody tr:hover .fat-mes-cmp-col{background-color:#e8f7f9!important}
+    .fat-mes-table tbody tr:hover .fat-mes-ref-col{background-color:#f0edff!important}
+    .fat-mes-table tbody tr:hover .fat-mes-result-col,.fat-mes-table tbody tr:hover td:first-child{background-color:#f3f6fa!important}
+    .fat-mes-total td{border-top:2px solid #a7f3d0;padding-top:.75rem;padding-bottom:.75rem}
+    .fat-mes-total td:first-child,.fat-mes-total .fat-mes-result-col{background:#ecfdf5!important}
+    .fat-mes-total .fat-mes-cmp-col{background:#dff5f7!important}
+    .fat-mes-total .fat-mes-ref-col{background:#ece9ff!important}
+    .fat-mes-var{display:inline-flex;align-items:center;gap:3px;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800}
     .fat-mes-var.up{background:#d1fae5;color:#047857}
     .fat-mes-var.down{background:#fee2e2;color:#b91c1c}
-    /* Divisórias centradas: Comparação | Referência | Variações */
-    .fat-mes-table thead tr:first-child th:nth-child(2),
-    .fat-mes-table thead tr:nth-child(2) th:nth-child(2),
-    .fat-mes-table tbody td:nth-child(3),
-    .fat-mes-table tfoot td:nth-child(3){padding-right:1.1rem}
-    .fat-mes-table thead tr:first-child th:nth-child(3),
-    .fat-mes-table thead tr:nth-child(2) th:nth-child(3),
-    .fat-mes-table tbody td:nth-child(4),
-    .fat-mes-table tfoot td:nth-child(4){border-left:2px solid #d7e3ee;padding-left:1.1rem;padding-right:.7rem}
-    .fat-mes-table thead tr:first-child th:nth-child(3),
-    .fat-mes-table thead tr:nth-child(2) th:nth-child(4),
-    .fat-mes-table tbody td:nth-child(5),
-    .fat-mes-table tfoot td:nth-child(5){padding-right:1.1rem}
-    .fat-mes-table thead tr:first-child th:nth-child(4),
-    .fat-mes-table thead tr:nth-child(2) th:nth-child(5),
-    .fat-mes-table tbody td:nth-child(6),
-    .fat-mes-table tfoot td:nth-child(6){border-left:2px solid #d7e3ee;padding-left:1.1rem}
 
     /* V4.4.4 seller analytics: charts stay inside their cards */
     .vendor-dashboard .viz-card{min-width:0}

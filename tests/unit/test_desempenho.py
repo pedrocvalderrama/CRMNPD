@@ -35,6 +35,11 @@ def test_desempenho_padrao_faturamento(admin_client) -> None:
     assert "bi-check-square-fill" not in html
     assert "Faturamento" in html
     assert "notas" in html
+    assert "Período analisado" in html
+    assert "Base de referência" in html
+    assert "Resultado da comparação" in html
+    assert "fat-mes-cmp-col" in html
+    assert "fat-mes-ref-col" in html
 
 
 def test_desempenho_aba_pedidos(admin_client) -> None:
@@ -478,3 +483,42 @@ def test_filtros_abrem_vazios_e_com_componente_pesquisavel(admin_client):
     source = script.get_data(as_text=True)
     assert "Digite para buscar" in source
     assert "desempenho-multi-tag" in source
+
+
+@pytest.mark.parametrize("visao", ["faturamento", "pedidos"])
+def test_desempenho_exporta_excel_dos_dois_periodos(admin_client, visao) -> None:
+    from io import BytesIO
+    from openpyxl import load_workbook
+
+    response = admin_client.get(
+        "/desempenho/exportar.xlsx"
+        f"?visao={visao}&ref_ano=2026&ref_mes_ini=1&ref_mes_fim=3"
+        "&cmp_ano=2025&cmp_mes_ini=1&cmp_mes_fim=3"
+    )
+
+    assert response.status_code == 200
+    assert "spreadsheetml" in response.content_type
+    workbook = load_workbook(BytesIO(response.data), read_only=True, data_only=False)
+    assert workbook.sheetnames == ["Resumo", "Referência", "Comparação"]
+    assert [cell.value for cell in workbook["Referência"][3]][:4] == [
+        "Data", "Documento", "Natureza", "Cliente",
+    ]
+    workbook.close()
+
+
+def test_link_excel_preserva_filtros_multiplos(admin_client) -> None:
+    from html import unescape
+    from urllib.parse import parse_qs, urlsplit
+    import re
+
+    response = admin_client.get(
+        "/desempenho?visao=faturamento&papel=KRAFT&papel=BRANCO"
+        "&equipe=INTERNO&equipe=EXTERNO&site=1"
+    )
+    assert response.status_code == 200
+    links = [unescape(url) for url in re.findall(r'href="([^"]+)"', response.get_data(as_text=True))]
+    export_link = next(url for url in links if url.startswith("/desempenho/exportar.xlsx"))
+    query = parse_qs(urlsplit(export_link).query)
+    assert query["papel"] == ["KRAFT", "BRANCO"]
+    assert query["equipe"] == ["INTERNO", "EXTERNO"]
+    assert query["site"] == ["1"]
