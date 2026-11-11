@@ -593,6 +593,8 @@ def resumo_mercado_livre_periodo(
         "valor_bruto": 0.0,
         "valor_devolvido": 0.0,
         "qtd_notas": 0,
+        "qtd_notas_liquidas": 0,
+        "quantidade_liquida": 0.0,
         "qtd_full": 0,
         "qtd_envios": 0,
         "ticket_medio": 0.0,
@@ -600,8 +602,14 @@ def resumo_mercado_livre_periodo(
     if not _tabela_existe(conn):
         return vazio
 
+    cols = {
+        str(r[1]).lower()
+        for r in conn.execute("PRAGMA table_info(mercado_livre_invoices)").fetchall()
+    }
+    quantidade_expr = "COALESCE(quantidade, 0)" if "quantidade" in cols else "0"
+
     row = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(SUM(COALESCE(valor_total, 0)), 0) AS valor_total,
             COALESCE(SUM(COALESCE(valor_produtos, 0)), 0) AS valor_produtos,
@@ -609,6 +617,13 @@ def resumo_mercado_livre_periodo(
             COALESCE(SUM(CASE WHEN COALESCE(valor_total, 0) > 0 THEN valor_total ELSE 0 END), 0) AS valor_bruto,
             COALESCE(SUM(CASE WHEN COALESCE(valor_total, 0) < 0 THEN ABS(valor_total) ELSE 0 END), 0) AS valor_devolvido,
             COUNT(*) AS qtd_notas,
+            COALESCE(SUM(CASE WHEN COALESCE(valor_total, 0) < 0 THEN -1 ELSE 1 END), 0) AS qtd_notas_liquidas,
+            COALESCE(SUM(
+                CASE WHEN COALESCE(valor_total, 0) < 0
+                         THEN -ABS({quantidade_expr})
+                         ELSE {quantidade_expr}
+                END
+            ), 0) AS quantidade_liquida,
             COALESCE(SUM(CASE WHEN LOWER(COALESCE(tipo_logistico, '')) LIKE '%fulfill%' THEN 1 ELSE 0 END), 0) AS qtd_full
         FROM mercado_livre_invoices
         WHERE data_emissao IS NOT NULL
@@ -630,6 +645,8 @@ def resumo_mercado_livre_periodo(
         "valor_bruto": float(row["valor_bruto"] or 0.0),
         "valor_devolvido": float(row["valor_devolvido"] or 0.0),
         "qtd_notas": qtd_notas,
+        "qtd_notas_liquidas": int(row["qtd_notas_liquidas"] or 0),
+        "quantidade_liquida": float(row["quantidade_liquida"] or 0.0),
         "qtd_full": qtd_full,
         "qtd_envios": qtd_envios,
         "ticket_medio": (valor_total / qtd_notas) if qtd_notas > 0 else 0.0,

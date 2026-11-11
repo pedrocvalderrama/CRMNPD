@@ -9565,6 +9565,14 @@ def _cliche_and_valor_expr(conn, mostrar_frete_cliche: bool) -> tuple[str, str]:
     return cliche_cond, valor_expr
 
 
+def _invoice_devolucao_sql(conn, alias: str = "i") -> str:
+    """Identifica devolução pela natureza ou pelo valor negativo da nota."""
+    clauses = [f"COALESCE({alias}.valor, 0) < 0"]
+    if _invoices_has_col(conn, "tipo_item_ref"):
+        clauses.append(f"UPPER(TRIM(COALESCE({alias}.tipo_item_ref, ''))) = 'D'")
+    return "(" + " OR ".join(clauses) + ")"
+
+
 def _soma_faturamento_periodo(
     conn,
     d0: date,
@@ -9576,7 +9584,7 @@ def _soma_faturamento_periodo(
     mostrar_ml: bool = False,
     mostrar_frete_cliche: bool = False,
 ) -> tuple[float, int, int, float, int]:
-    """Intervalo: valor, qtd (notas ou pedidos), clientes, unidades e itens."""
+    """Intervalo: valor, volume líquido, clientes, unidades líquidas e itens líquidos."""
     params = [d0.isoformat(), d1.isoformat()] + list(filtro_params or [])
     site_cond = "" if mostrar_site else f"AND {sql_site_exclusion_cond('v')}"
     if visao == "pedidos":
@@ -9608,14 +9616,21 @@ def _soma_faturamento_periodo(
         )
     else:
         cliche_cond, valor_expr = _cliche_and_valor_expr(conn, mostrar_frete_cliche)
+        devolucao_cond = _invoice_devolucao_sql(conn, "i")
         row = conn.execute(
             f"""
             SELECT
                 {valor_expr} AS val,
-                COUNT(DISTINCT TRIM(COALESCE(i.numero, ''))) AS qtd,
+                COUNT(DISTINCT CASE WHEN NOT {devolucao_cond} THEN TRIM(COALESCE(i.numero, '')) END)
+                  - COUNT(DISTINCT CASE WHEN {devolucao_cond} THEN TRIM(COALESCE(i.numero, '')) END) AS qtd,
                 COUNT(DISTINCT CASE WHEN COALESCE(i.cliente_id, 0) > 0 THEN i.cliente_id END) AS clientes,
-                COALESCE(SUM(COALESCE(i.quantidade, 0)), 0) AS unidades,
-                COUNT(*) AS itens
+                COALESCE(SUM(
+                    CASE WHEN {devolucao_cond}
+                         THEN -ABS(COALESCE(i.quantidade, 0))
+                         ELSE COALESCE(i.quantidade, 0)
+                    END
+                ), 0) AS unidades,
+                COALESCE(SUM(CASE WHEN {devolucao_cond} THEN -1 ELSE 1 END), 0) AS itens
             FROM invoices i
             LEFT JOIN vendors v ON v.id = i.vendor_id
             LEFT JOIN customers c ON c.id = i.cliente_id
@@ -9637,8 +9652,9 @@ def _soma_faturamento_periodo(
             from crm_npd.services.mercado_livre import resumo_mercado_livre_periodo
             ml_res = resumo_mercado_livre_periodo(conn, d0, d1)
             val += ml_res["valor_total"]
-            qtd += ml_res["qtd_notas"]
-            itens += ml_res["qtd_notas"]
+            qtd += int(ml_res.get("qtd_notas_liquidas", ml_res["qtd_notas"]) or 0)
+            unidades += float(ml_res.get("quantidade_liquida", 0) or 0)
+            itens += int(ml_res.get("qtd_notas_liquidas", ml_res["qtd_notas"]) or 0)
 
         return val, qtd, clientes, unidades, itens
 
@@ -10054,7 +10070,7 @@ def desempenho():
         ticket_sub = (
             "Valor total ÷ quantidade física de unidades"
             if visao == "pedidos"
-            else "Valor faturado ÷ quantidade física de unidades"
+            else "Valor faturado líquido ÷ quantidade física líquida"
         )
         ticket_meta = "por quantidade"
     elif ticket_modo == "item":
@@ -10063,7 +10079,7 @@ def desempenho():
         ticket_sub = (
             "Valor total ÷ quantidade de itens"
             if visao == "pedidos"
-            else "Valor faturado ÷ quantidade de itens"
+            else "Valor faturado líquido ÷ quantidade líquida de itens"
         )
         ticket_meta = "por item"
     else:
@@ -10072,7 +10088,7 @@ def desempenho():
         ticket_sub = (
             "Valor total ÷ quantidade de pedidos"
             if visao == "pedidos"
-            else "Valor faturado ÷ quantidade de notas"
+            else "Valor faturado líquido ÷ quantidade líquida de notas"
         )
         ticket_meta = "por pedido" if visao == "pedidos" else "por nota"
 
@@ -10324,7 +10340,7 @@ def desempenho():
             <div class="dash-pill mb-2"><i class="bi bi-clock-history"></i> Comparação</div>
             <div class="small mb-1">{{ d0_cmp.strftime('%d/%m/%Y') }} a {{ d1_cmp.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(fat_cmp) }}</div>
-            <div class="kpi-meta">{{ notas_cmp }} {% if visao == 'pedidos' %}pedidos{% else %}notas{% endif %}</div>
+            <div class="kpi-meta">{{ notas_cmp }} {% if visao == 'pedidos' %}pedidos{% else %}notas líquidas{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10332,7 +10348,7 @@ def desempenho():
             <div class="dash-pill dash-pill--fat mb-2"><i class="bi bi-calendar3"></i> Referência</div>
             <div class="small text-muted mb-1">{{ d0_ref.strftime('%d/%m/%Y') }} a {{ d1_ref.strftime('%d/%m/%Y') }}</div>
             <div class="kpi-value">{{ format_brl(fat_ref) }}</div>
-            <div class="kpi-meta">{{ notas_ref }} {% if visao == 'pedidos' %}pedidos{% else %}notas{% endif %}</div>
+            <div class="kpi-meta">{{ notas_ref }} {% if visao == 'pedidos' %}pedidos{% else %}notas líquidas{% endif %}</div>
           </div>
         </div>
         <div class="col-12 col-md-4">
@@ -10350,7 +10366,7 @@ def desempenho():
       <div class="dash-block-head mb-3">
         <div>
           <div class="h5 fw-bold mb-0">{% if visao == 'pedidos' %}Quantidade pedida{% else %}Quantidade faturada{% endif %}</div>
-          <div class="sub">{% if visao == 'pedidos' %}Unidades pedidas no período{% else %}Unidades vendidas no período{% endif %}</div>
+          <div class="sub">{% if visao == 'pedidos' %}Unidades pedidas no período{% else %}Unidades faturadas líquidas, com devoluções descontadas{% endif %}</div>
         </div>
       </div>
       <div class="row g-3">

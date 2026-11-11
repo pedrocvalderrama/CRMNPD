@@ -192,6 +192,52 @@ def test_ticket_medio_modo_nota_e_item() -> None:
     assert ticket_quantidade == 10.0
 
 
+def test_devolucao_desconta_notas_itens_e_quantidade_faturada() -> None:
+    """Devolução reduz os denominadores físicos da tela de desempenho."""
+    import sqlite3
+    from datetime import date
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE customers (id INTEGER PRIMARY KEY, nome TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, nome TEXT, tipo TEXT);
+        CREATE TABLE invoices (
+            id INTEGER PRIMARY KEY,
+            numero TEXT,
+            data_emissao TEXT,
+            vendor_id INTEGER,
+            valor REAL,
+            quantidade REAL,
+            cliente_id INTEGER,
+            tipo_item_ref TEXT
+        );
+    """)
+    conn.execute("INSERT INTO vendors (id, nome, tipo) VALUES (1, 'V1', 'INTERNO')")
+    conn.executemany(
+        """INSERT INTO invoices
+           (numero, data_emissao, vendor_id, valor, quantidade, cliente_id, tipo_item_ref)
+           VALUES (?, '2026-10-05', 1, ?, ?, 10, ?)""",
+        [
+            ("NF1", 60.0, 5.0, "V"),
+            ("NF1", 40.0, 5.0, "V"),
+            ("NF2", 100.0, 10.0, "V"),
+            ("DEV1", -40.0, 4.0, "D"),
+        ],
+    )
+    conn.commit()
+
+    valor, notas, _clientes, unidades, itens = m._soma_faturamento_periodo(
+        conn, date(2026, 10, 1), date(2026, 10, 31)
+    )
+
+    assert valor == 160.0
+    assert notas == 1       # 2 notas de venda - 1 nota de devolução
+    assert unidades == 16.0  # 20 peças vendidas - 4 devolvidas
+    assert itens == 2       # 3 linhas de venda - 1 linha devolvida
+
+
 def test_migracao_qtde_demo_por_pedidos() -> None:
     """Verifica que DEMO busca quantidade real do pedido e divide proporcionalmente entre parcelas."""
     import sqlite3
@@ -330,6 +376,52 @@ def test_desempenho_frete_cliche_e_mercado_livre() -> None:
     eq_ml = m._fat_por_equipe(conn, d0, d1, mostrar_frete_cliche=False, mostrar_ml=True)
     assert eq_ml["INTERNO"] == 100.0
     assert eq_ml["MERCADO LIVRE"] == 200.0
+
+
+def test_devolucao_mercado_livre_desconta_notas_e_quantidade_no_desempenho() -> None:
+    import sqlite3
+    from datetime import date
+    from crm_npd import legacy_monolith as m
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE customers (id INTEGER PRIMARY KEY, nome TEXT);
+        CREATE TABLE vendors (id INTEGER PRIMARY KEY, nome TEXT, tipo TEXT);
+        CREATE TABLE invoices (
+            id INTEGER PRIMARY KEY,
+            numero TEXT,
+            data_emissao TEXT,
+            vendor_id INTEGER,
+            valor REAL,
+            quantidade REAL,
+            cliente_id INTEGER,
+            tipo_item_ref TEXT
+        );
+        CREATE TABLE mercado_livre_invoices (
+            id INTEGER PRIMARY KEY,
+            data_emissao TEXT,
+            valor_total REAL,
+            valor_produtos REAL,
+            valor_frete REAL,
+            quantidade REAL,
+            tipo_logistico TEXT
+        );
+    """)
+    conn.executemany(
+        "INSERT INTO mercado_livre_invoices (data_emissao, valor_total, quantidade) VALUES ('2026-10-05', ?, ?)",
+        [(100.0, 10.0), (80.0, 8.0), (-30.0, 3.0)],
+    )
+    conn.commit()
+
+    valor, notas, _clientes, unidades, itens = m._soma_faturamento_periodo(
+        conn, date(2026, 10, 1), date(2026, 10, 31), mostrar_ml=True
+    )
+
+    assert valor == 150.0
+    assert notas == 1
+    assert unidades == 15.0
+    assert itens == 1
 
 
 
