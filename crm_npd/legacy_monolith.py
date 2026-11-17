@@ -2413,6 +2413,7 @@ def render_page(title: str, body_html: str, active: str) -> str:
                 {"label": "Importações", "endpoint": "importacoes", "icon": "bi-database-check"},
                 {"label": "Usuários", "endpoint": "usuarios", "icon": "bi-shield-lock"},
                 {"label": "Metas", "endpoint": "settings", "icon": "bi-bullseye"},
+                {"label": "Mudar senha", "endpoint": "mudar_senha", "icon": "bi-key"},
             ],
         },
     ]
@@ -2437,6 +2438,12 @@ def render_page(title: str, body_html: str, active: str) -> str:
                 "items": [
                     {"label": "IA", "endpoint": "ia_assistente", "icon": "bi-stars"},
                     {"label": "Medidas", "endpoint": "medidas", "icon": "bi-rulers"},
+                ],
+            },
+            {
+                "label": "Sistema", "icon": "bi-gear",
+                "items": [
+                    {"label": "Mudar senha", "endpoint": "mudar_senha", "icon": "bi-key"},
                 ],
             },
         ]
@@ -7264,6 +7271,91 @@ def login():
 def logout():
     session.pop("user_id", None)
     return redirect(url_for("login"))
+
+
+@app.route("/sistema/mudar-senha", methods=["GET", "POST"])
+@login_required
+def mudar_senha():
+    """Permite que o usuário autenticado altere somente a própria senha."""
+    user = get_current_user()
+
+    if request.method == "POST":
+        senha_atual = request.form.get("senha_atual", "")
+        nova_senha = request.form.get("nova_senha", "")
+        confirmar_senha = request.form.get("confirmar_senha", "")
+
+        if not senha_atual or not nova_senha or not confirmar_senha:
+            flash("Preencha a senha atual, a nova senha e a confirmação.", "warning")
+        elif nova_senha != confirmar_senha:
+            flash("A confirmação da nova senha não confere.", "danger")
+        else:
+            with conectar() as conn:
+                row = conn.execute(
+                    "SELECT senha_hash FROM users WHERE id=? AND ativo=1",
+                    (int(user["id"]),),
+                ).fetchone()
+
+                if not row or not check_password_hash(row["senha_hash"], senha_atual):
+                    flash("A senha atual está incorreta.", "danger")
+                elif check_password_hash(row["senha_hash"], nova_senha):
+                    flash("A nova senha deve ser diferente da senha atual.", "warning")
+                else:
+                    conn.execute(
+                        "UPDATE users SET senha_hash=? WHERE id=?",
+                        (generate_password_hash(nova_senha), int(user["id"])),
+                    )
+                    conn.commit()
+                    flash("Senha alterada com sucesso.", "success")
+                    return redirect(url_for("mudar_senha"))
+
+        return redirect(url_for("mudar_senha"))
+
+    body = render_template_string(r"""
+    <div class="row justify-content-center">
+      <div class="col-12 col-md-8 col-lg-6 col-xl-5">
+        <div class="page-hero mb-3">
+          <div class="d-flex align-items-center gap-3">
+            <div class="d-flex align-items-center justify-content-center rounded-circle bg-white bg-opacity-10" style="width:48px;height:48px;flex:0 0 48px">
+              <i class="bi bi-key fs-4"></i>
+            </div>
+            <div>
+              <div class="hero-title">Mudar senha</div>
+              <div class="hero-sub mt-1">Atualize com segurança a senha da sua própria conta.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="cardx p-4">
+          <div class="mb-4">
+            <div class="fw-bold">{{ user.nome }}</div>
+            <div class="small text-muted">{{ user.email }}</div>
+          </div>
+
+          <form method="post" autocomplete="off">
+            <div class="mb-3">
+              <label class="form-label fw-semibold" for="senhaAtual">Senha atual</label>
+              <input class="form-control" id="senhaAtual" name="senha_atual" type="password"
+                     autocomplete="current-password" required autofocus>
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-semibold" for="novaSenha">Nova senha</label>
+              <input class="form-control" id="novaSenha" name="nova_senha" type="password"
+                     autocomplete="new-password" required>
+            </div>
+            <div class="mb-4">
+              <label class="form-label fw-semibold" for="confirmarSenha">Confirmar nova senha</label>
+              <input class="form-control" id="confirmarSenha" name="confirmar_senha" type="password"
+                     autocomplete="new-password" required>
+            </div>
+            <button class="btn btn-primary w-100" type="submit">
+              <i class="bi bi-shield-check me-1"></i> Salvar nova senha
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+    """, user=user)
+    return render_page("Mudar senha", body, "mudar_senha")
 
 
 @app.route("/")
