@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from .config import DB_PATH, PROJECT_ROOT, SECRET_KEY
+from .config import DB_PATH, PROJECT_ROOT
 from .db import connect
 from .migrations import apply_safe_migrations
 from .services.identity import sync_identity_rules_from_jit_history_cached, clear_identity_cache
@@ -21,8 +21,11 @@ from .services.performance import (
 def patch_legacy_runtime(legacy_module) -> None:
     legacy_module.BASE_DIR = str(PROJECT_ROOT)
     legacy_module.DB_PATH = str(DB_PATH)
-    legacy_module.SECRET_KEY = SECRET_KEY
-    legacy_module.app.secret_key = SECRET_KEY
+    # Não reutilizar a constante importada antes do carregamento do .env.
+    # A chave efetiva precisa ser a mesma em toda forma de inicialização.
+    secret_key = os.environ.get("CRM_NPD_SECRET", "crm_npd_secret_key_change_me")
+    legacy_module.SECRET_KEY = secret_key
+    legacy_module.app.secret_key = secret_key
     legacy_module._crm_cache_db_version = str(os.path.getmtime(DB_PATH)) if os.path.exists(DB_PATH) else '0'
 
     def conectar_patched():

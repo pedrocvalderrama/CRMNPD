@@ -12,10 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 def create_app():
+    # A chave que assina o cookie precisa existir antes de importar/criar o app.
+    # Antes o .env era aplicado somente depois do import e o Flask podia ficar
+    # usando a chave fallback, invalidando sessões entre formas de inicialização.
+    aplicar_env()
     legacy = importlib.import_module('crm_npd.legacy_monolith')
+    configured_secret = os.environ.get("CRM_NPD_SECRET", "crm_npd_secret_key_change_me")
+    legacy.SECRET_KEY = configured_secret
+    legacy.app.secret_key = configured_secret
     if getattr(legacy.app, "_bootstrap_completed", False) or getattr(legacy.app, "_got_first_request", False):
         return legacy.app
-    aplicar_env()
     configurar_logging()
     legacy = importlib.import_module('crm_npd.legacy_monolith')
     patch_legacy_runtime(legacy)

@@ -110,6 +110,12 @@ DB_PATH = os.path.join(BASE_DIR, DB_FILENAME)
 
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"))
 app.secret_key = SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_NAME="crm_npd_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+)
 
 
 # -----------------------------
@@ -224,6 +230,20 @@ def init_db() -> None:
               permissao_aplicada TEXT,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
           );
+        """)
+        conn.execute("""
+          CREATE TABLE IF NOT EXISTS ia_chat_history(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              pergunta TEXT NOT NULL,
+              resposta TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+        """)
+        conn.execute("""
+          CREATE INDEX IF NOT EXISTS idx_ia_chat_history_user
+          ON ia_chat_history(user_id, id DESC);
         """)
         conn.execute("""
           CREATE TABLE IF NOT EXISTS crm_manual_overrides(
@@ -947,9 +967,13 @@ def login_required(view_func):
     def wrapper(*args, **kwargs):
         u = get_current_user()
         if not u or int(u["ativo"]) != 1:
-            session.pop("user_id", None)
+            session.clear()
             flash("Sessão expirada. Faça login novamente.", "warning")
             return redirect(url_for("login"))
+        # Migração transparente das sessões antigas, que carregavam todo o
+        # histórico da IA no cookie e podiam ultrapassar o limite do navegador.
+        session.pop("ia_chat_history", None)
+        session.permanent = True
         return view_func(*args, **kwargs)
     wrapper.__name__ = view_func.__name__
     return wrapper
@@ -5557,6 +5581,48 @@ def _ia_log(conn, user: dict | None, pergunta: str, resposta: str, fonte: str = 
     except Exception:
         pass
 
+
+def _ia_chat_history_load(conn, user_id: int, limit: int = 20) -> List[Dict[str, str]]:
+    """Carrega a conversa do usuário no servidor, sem aumentar o cookie."""
+    rows = conn.execute("""
+        SELECT pergunta, resposta, created_at
+        FROM ia_chat_history
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+    """, (int(user_id), max(1, int(limit)))).fetchall()
+    return [
+        {
+            "pergunta": str(row["pergunta"] or ""),
+            "resposta": str(row["resposta"] or ""),
+            "quando": str(row["created_at"] or ""),
+        }
+        for row in reversed(rows)
+    ]
+
+
+def _ia_chat_history_add(conn, user_id: int, pergunta: str, resposta: str, limit: int = 20) -> None:
+    """Adiciona uma mensagem e conserva apenas as últimas do usuário."""
+    conn.execute("""
+        INSERT INTO ia_chat_history(user_id, pergunta, resposta, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (int(user_id), pergunta, resposta, now_iso()))
+    conn.execute("""
+        DELETE FROM ia_chat_history
+        WHERE user_id = ?
+          AND id NOT IN (
+              SELECT id
+              FROM ia_chat_history
+              WHERE user_id = ?
+              ORDER BY id DESC
+              LIMIT ?
+          )
+    """, (int(user_id), int(user_id), max(1, int(limit))))
+
+
+def _ia_chat_history_clear(conn, user_id: int) -> None:
+    conn.execute("DELETE FROM ia_chat_history WHERE user_id = ?", (int(user_id),))
+
 def _system_explanation(question: str) -> str | None:
     q = norm(question)
     explicacoes = [
@@ -6884,29 +6950,27 @@ def ia_configuracao():
 @app.route('/ia', methods=['GET', 'POST'])
 @login_required
 def ia_assistente():
-    historico = session.get('ia_chat_history', [])
     user = get_current_user()
 
     if request.method == 'POST':
         if request.form.get('acao') == 'limpar':
-            session['ia_chat_history'] = []
+            with conectar() as conn:
+                _ia_chat_history_clear(conn, int(user["id"]))
+                conn.commit()
             return redirect(url_for('ia_assistente'))
 
         pergunta = (request.form.get('pergunta') or '').strip()
         if pergunta:
             resposta = responder_ia_crm(pergunta, user=user)
-            historico = historico + [{
-                'pergunta': pergunta,
-                'resposta': resposta,
-                'quando': now_iso(),
-            }]
-            historico = historico[-20:]
-            session['ia_chat_history'] = historico
+            with conectar() as conn:
+                _ia_chat_history_add(conn, int(user["id"]), pergunta, resposta)
+                conn.commit()
         else:
             flash('Digite uma pergunta para a IA.', 'warning')
         return redirect(url_for('ia_assistente'))
 
     with conectar() as conn:
+        historico = _ia_chat_history_load(conn, int(user["id"]))
         configured = _crm_ai_is_configured(conn)
         provider = _crm_ai_provider(conn)
         model = _crm_ai_model(conn, provider)
@@ -7230,6 +7294,10 @@ def login():
         if not u or int(u["ativo"]) != 1 or not check_password_hash(u["senha_hash"], senha):
             flash("E-mail não encontrado ou usuário inativo / senha incorreta.", "danger")
             return redirect(url_for("login"))
+        # Remove qualquer conteúdo legado/flash acumulado antes de criar a nova
+        # sessão. No cookie permanece apenas a identificação do usuário.
+        session.clear()
+        session.permanent = True
         session["user_id"] = int(u["id"])
         # Login por perfil: vendedor não passa pelo Dashboard administrativo.
         # Isso evita o flash indevido de "Acesso negado" e elimina um redirecionamento extra.
@@ -7269,7 +7337,7 @@ def login():
 
 @app.route("/logout")
 def logout():
-    session.pop("user_id", None)
+    session.clear()
     return redirect(url_for("login"))
 
 
